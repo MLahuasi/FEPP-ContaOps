@@ -539,3 +539,115 @@ La respuesta evita exponer mensajes internos, stack traces o información sensib
 **Conclusión:** `GlobalExceptionHandler` centraliza el tratamiento de excepciones, mientras que `ProblemDetailsResponseFactory` unifica la representación de errores HTTP. Ambas clases permiten mantener una API consistente, segura y desacoplada de la lógica de negocio.
 
 ---
+
+### 6. Configurar Swagger
+
+#### Configuración de Swagger por entorno — SwaggerSettings
+
+La clase `SwaggerSettings`, ubicada en `Fepp.ContaOps.Api.Swagger`, determina si Swagger debe habilitarse utilizando la configuración de la aplicación (`IConfiguration`) y el entorno de ejecución (`IHostEnvironment`).
+
+Su objetivo es **centralizar la decisión de habilitar Swagger**, permitiendo configurarlo explícitamente o utilizar un comportamiento predeterminado según el entorno.
+
+##### Diagrama de funcionamiento
+
+```mermaid
+flowchart TD
+    A["API / Program.cs"] --> B["SwaggerSettings.IsEnabled()"]
+
+    B --> C["Leer Swagger:Enabled<br/>desde IConfiguration"]
+
+    C --> D{"¿Valor booleano válido?"}
+
+    D -->|Sí| E{"¿Valor configurado?"}
+    E -->|true| F["Swagger habilitado"]
+    E -->|false| G["Swagger deshabilitado"]
+
+    D -->|No| H["IHostEnvironment.IsDevelopment()"]
+
+    H -->|Development| F
+    H -->|Otro entorno| G
+
+    style F fill:#196f3d,color:#fff
+    style G fill:#922b21,color:#fff
+```
+
+##### Responsabilidades y dependencias
+
+| Componente         | Responsabilidad                                                 |
+| ------------------ | --------------------------------------------------------------- |
+| `SwaggerSettings`  | Centraliza la regla para habilitar Swagger.                     |
+| `IsEnabled()`      | Devuelve `true` o `false` según la configuración y el entorno.  |
+| `IConfiguration`   | Obtiene el valor de `Swagger:Enabled`.                          |
+| `IHostEnvironment` | Identifica si la aplicación se ejecuta en Development.          |
+| `bool.TryParse()`  | Verifica si el valor configurado representa un booleano válido. |
+
+##### Reglas de configuración
+
+| `Swagger:Enabled` | Entorno     | Resultado     |
+| ----------------- | ----------- | ------------- |
+| `true`            | Cualquiera  | Habilitado    |
+| `false`           | Cualquiera  | Deshabilitado |
+| No configurado    | Development | Habilitado    |
+| No configurado    | Production  | Deshabilitado |
+| No configurado    | Staging     | Deshabilitado |
+| Valor inválido    | Development | Habilitado    |
+| Valor inválido    | Production  | Deshabilitado |
+
+**Prioridad:** la configuración explícita prevalece sobre el entorno. Si no existe un valor booleano válido, Swagger solamente se habilita en Development.
+
+##### Ejemplo de configuración
+
+**appsettings.json**
+
+```json
+{
+  "Swagger": {
+    "Enabled": false
+  }
+}
+```
+
+**appsettings.Development.json**
+
+```json
+{
+  "Swagger": {
+    "Enabled": true
+  }
+}
+```
+
+**Program.cs**
+
+```csharp
+if (SwaggerSettings.IsEnabled(
+    builder.Configuration,
+    app.Environment))
+{
+    app.UseSwagger();
+    app.UseSwaggerUI();
+}
+```
+
+El ejemplo supone que Swagger y sus servicios correspondientes ya están registrados en la aplicación.
+
+##### Justificación arquitectónica
+
+| Principio                  | Aplicación                                                                              |
+| -------------------------- | --------------------------------------------------------------------------------------- |
+| **Separation of Concerns** | Separa la decisión de habilitar Swagger de la configuración del pipeline HTTP.          |
+| **Configuración externa**  | Permite modificar el comportamiento mediante `appsettings.json` o variables de entorno. |
+| **Clean Architecture**     | La configuración de Swagger permanece en API, sin afectar Application ni Domain.        |
+| **Seguridad**              | Deshabilita Swagger por defecto fuera de Development, salvo configuración explícita.    |
+| **Mantenibilidad**         | Centraliza una regla que puede reutilizarse desde la configuración de API.              |
+
+##### Consideraciones
+
+- `SwaggerSettings` es una clase estática y no necesita registrarse mediante inyección de dependencias.
+- `IsEnabled()` únicamente evalúa una condición; no registra servicios ni activa Swagger directamente.
+- Un valor inválido de `Swagger:Enabled` no genera una excepción: utiliza el entorno como alternativa.
+- Habilitar Swagger en Production debe ser una decisión explícita, considerando los requisitos de seguridad y exposición de la documentación.
+
+**Conclusión:** `SwaggerSettings` proporciona un mecanismo sencillo y centralizado para controlar la disponibilidad de Swagger por configuración y entorno, manteniendo esta responsabilidad dentro de la capa API.
+
+---
