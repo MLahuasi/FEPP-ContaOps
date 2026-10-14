@@ -322,3 +322,115 @@ return result.Error switch
 **Conclusión:** estas clases proporcionan un mecanismo común para comunicar los resultados de los casos de uso, manteniendo Application independiente de HTTP y de las implementaciones de Infrastructure.
 
 ---
+
+### 4. Incorporar validación explícita y traducción a ProblemDetails.
+
+#### Validación de solicitudes HTTP — FluentValidation y ProblemDetails
+
+Las clases `ValidationFilter` y `ProblemDetailsResponseFactory`, ubicadas en `Fepp.ContaOps.Api.Validation`, implementan un mecanismo centralizado para validar solicitudes HTTP y devolver respuestas de error uniformes.
+
+##### Diagrama de funcionamiento
+
+```mermaid
+flowchart TD
+    A["Cliente HTTP"] --> B["API / Controller"]
+    B --> C["ValidationFilter"]
+
+    C --> D{"¿Existe IValidator para el argumento?"}
+
+    D -->|No| E["Continuar ejecución"]
+    D -->|Sí| F["FluentValidation<br/>ValidateAsync()"]
+
+    F --> G{"¿Validación correcta?"}
+
+    G -->|Sí| E
+    G -->|No| H["ProblemDetailsResponseFactory"]
+
+    H --> I["Agrupar errores por campo"]
+    I --> J["Generar ProblemDetails"]
+    J --> K["HTTP 400 Bad Request"]
+
+    E --> L["Controller Action"]
+    L --> M["Application / Caso de uso"]
+```
+
+**Nota:** `ValidationFilter` se ejecuta antes del método del controlador, aunque dentro del pipeline de ASP.NET Core. El diagrama representa el flujo lógico de validación.
+
+##### Responsabilidades
+
+| Clase                           | Responsabilidad                                                                                                             | Métodos principales                     |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
+| `ValidationFilter`              | Intercepta la ejecución de acciones MVC y valida sus argumentos utilizando los validadores registrados en FluentValidation. | `OnActionExecutionAsync()`              |
+| `ProblemDetailsResponseFactory` | Construye respuestas HTTP de error con una estructura uniforme basada en `ProblemDetails`.                                  | `Create()` y `CreateValidationResult()` |
+
+##### Dependencias
+
+| Clase                           | Dependencias         | Propósito                                                           |
+| ------------------------------- | -------------------- | ------------------------------------------------------------------- |
+| `ValidationFilter`              | `IAsyncActionFilter` | Integrarse en el pipeline de filtros de ASP.NET Core MVC.           |
+| `ValidationFilter`              | `IServiceProvider`   | Resolver dinámicamente los validadores registrados.                 |
+| `ValidationFilter`              | `IValidator<T>`      | Ejecutar las reglas de validación mediante FluentValidation.        |
+| `ProblemDetailsResponseFactory` | `ProblemDetails`     | Representar errores HTTP mediante un contrato estandarizado.        |
+| `ProblemDetailsResponseFactory` | `ValidationResult`   | Obtener los errores generados por FluentValidation.                 |
+| `ProblemDetailsResponseFactory` | `HttpContext`        | Obtener la ruta de la solicitud y el identificador de trazabilidad. |
+
+##### Ejemplo de uso
+
+Supongamos que una solicitud intenta registrar un balance contable con un importe inválido.
+
+**Request:**
+
+```json
+{
+  "accountCode": "1.1.01",
+  "amount": -100
+}
+```
+
+Si existe un validador registrado para el tipo de argumento recibido, `ValidationFilter` ejecuta sus reglas.
+
+Cuando la validación falla, `ProblemDetailsResponseFactory` genera una respuesta con estado **HTTP 400 Bad Request**.
+
+**Ejemplo ilustrativo de respuesta:**
+
+```json
+{
+  "type": "https://httpstatuses.com/400",
+  "title": "Request validation failed.",
+  "status": 400,
+  "detail": "One or more request fields are invalid.",
+  "instance": "/api/balances",
+  "code": "validation_error",
+  "traceId": "0HN123456789",
+  "errors": {
+    "Amount": ["El importe debe ser mayor que cero."]
+  }
+}
+```
+
+El contenido de `errors` depende de las reglas definidas en el validador. El formato de respuesta corresponde a `application/problem+json`.
+
+##### Justificación arquitectónica
+
+| Principio                        | Aplicación                                                                         |
+| -------------------------------- | ---------------------------------------------------------------------------------- |
+| **Arquitectura Hexagonal**       | La validación HTTP permanece en el adaptador de entrada (API).                     |
+| **Separation of Concerns (SoC)** | Los controladores no necesitan ejecutar manualmente los validadores.               |
+| **Dependency Injection (DI)**    | Los validadores se resuelven mediante el contenedor de dependencias.               |
+| **Reutilización**                | `ProblemDetailsResponseFactory` centraliza la construcción de respuestas de error. |
+| **Observabilidad**               | `traceId` permite relacionar una respuesta con la solicitud procesada.             |
+| **Estandarización**              | Los errores HTTP mantienen una estructura consistente basada en `ProblemDetails`.  |
+
+##### Consideraciones de implementación
+
+- `ValidationFilter` valida los argumentos no nulos para los que encuentre un `IValidator<T>` registrado.
+- Si no existe un validador, el argumento continúa sin validación por este filtro.
+- Ante el primer argumento inválido, devuelve HTTP 400 y detiene la ejecución de la acción.
+- Si la validación es correcta, continúa mediante `await next()`.
+- `ProblemDetailsResponseFactory` agrupa los errores por propiedad y elimina mensajes duplicados.
+- Estas clases gestionan la validación de entrada HTTP; no sustituyen las reglas e invariantes del dominio.
+- El filtro utiliza resolución dinámica de servicios mediante `IServiceProvider`, por lo que los validadores deben registrarse correctamente en el contenedor.
+
+**Conclusión:** `ValidationFilter` ejecuta las validaciones antes de que el controlador procese la solicitud, mientras que `ProblemDetailsResponseFactory` transforma los errores en respuestas HTTP uniformes. Esta separación mantiene los controladores más simples y evita acoplar la lógica de negocio a los mecanismos de validación HTTP.
+
+---
