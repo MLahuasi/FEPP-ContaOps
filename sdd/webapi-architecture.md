@@ -215,6 +215,26 @@ Application devuelve errores de aplicación explícitos. No debe depender de `Mo
 Domain protege las reglas que siempre deben cumplirse, independientemente del endpoint o adaptador: estado válido de agregados, transiciones permitidas y restricciones entre sus valores. Estas reglas se implementan en entidades, agregados u objetos de valor, sin depender de atributos de ASP.NET ni de una biblioteca de validación.
 
 Api traduce errores de Application y Domain al código y formato HTTP definido para cada operación.
+## Manejo centralizado de excepciones
+
+La capa `Api` es el único límite HTTP que convierte excepciones en respuestas. Implementar el manejo central con una clase `GlobalExceptionHandler` que implemente `IExceptionHandler`, registrarla con `AddExceptionHandler<GlobalExceptionHandler>()`, configurar `AddProblemDetails()` y añadir `UseExceptionHandler()` al inicio del pipeline, antes de los endpoints y de los middlewares que puedan producir excepciones. Estas APIs están disponibles en ASP.NET Core; no se requiere un paquete NuGet adicional.
+
+Los controladores no deben repetir bloques `try/catch` para transformar errores. Application devuelve resultados explícitos para fallos esperados; si un caso de uso representa un error conocido mediante un tipo de excepción, el handler central lo traduce. Domain y Application no deben construir `IActionResult`, códigos HTTP ni respuestas `ProblemDetails`.
+
+Mapeo HTTP esperado:
+
+| Situación | Respuesta |
+|---|---|
+| DTO o parámetros de entrada inválidos | `400 Bad Request` con errores de validación en formato `ProblemDetails`. |
+| Recurso solicitado inexistente | `404 Not Found`. |
+| Duplicidad o conflicto con el estado actual | `409 Conflict`. |
+| Usuario no autenticado o sin permisos | `401 Unauthorized` o `403 Forbidden`, gestionados por autenticación y autorización. |
+| Excepción inesperada | `500 Internal Server Error` con mensaje genérico. |
+
+El handler registra la excepción una sola vez con `ILogger` y agrega un `traceId` a la respuesta para correlacionarla con el log. No exponer mensajes internos, stack traces, consultas, rutas locales, secretos ni datos contables en respuestas de producción. Los detalles de validación deben incluir solo campos y mensajes seguros. Evitar capturar una excepción para registrarla y volverla a lanzar en cada capa, porque genera logs duplicados; las capas inferiores pueden agregar contexto solo cuando realmente resuelvan o transformen el error.
+
+Las excepciones de lectura o validación de un archivo individual del balance son errores recuperables del lote: Infrastructure/Application revierte la transacción del archivo, añade el detalle al reporte y continúa con el siguiente. No deben llegar al handler HTTP como excepciones no controladas. Una falla que impida ejecutar el proceso completo sí puede propagarse y convertirse en un error HTTP centralizado. Una solicitud cancelada por el cliente tampoco debe presentarse como un error interno `500`.
+
 
 ## Recorrido de una solicitud
 
@@ -267,6 +287,8 @@ La configuración se separa por ambiente. Claves, credenciales y cadenas de cone
 - **ARCH-008:** Application valida precondiciones del caso de uso y Domain protege las invariantes del negocio.
 - **ARCH-009:** Api traduce errores de validación y aplicación a respuestas HTTP uniformes.
 - **ARCH-010:** El modelo de datos y el proveedor concreto de base de datos se documentan en `README.md`.
+- **ARCH-011:** Api centraliza las excepciones no controladas y responde con `ProblemDetails` sin filtrar detalles internos.
+- **ARCH-012:** Los errores recuperables por archivo se registran en el reporte del lote y no interrumpen el procesamiento de otros archivos.
 
 ## Referencias
 
