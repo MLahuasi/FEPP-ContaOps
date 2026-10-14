@@ -8,7 +8,7 @@ Usar como contexto `global-balance-sheet.md`, `webapi-architecture.md`, `README.
 
 | Paso | Título | Prompt | Check |
 |---|---|---|---|
-| 1 | Preparar la API y el acceso autenticado | Analiza la arquitectura documentada y planifica la base necesaria para exponer el módulo de balance global: organización por capas, composición de dependencias, contratos DTO y validaciones. Incluye el módulo de registro e inicio de sesión con JWT descrito en `webapi-architecture.md`, además de Swagger. Entrega una spec breve con objetivo, responsabilidades por proyecto, archivos probables y criterios de aceptación. No implementes cambios todavía. | [ ] |
+| 1 | Preparar la API y el acceso autenticado | Analiza la arquitectura documentada y planifica la base necesaria para exponer el módulo de balance global: organización por capas, composición de dependencias, contratos DTO y validaciones. Incluye registro e inicio de sesión con JWT, Swagger y manejo centralizado de excepciones con `IExceptionHandler`, `UseExceptionHandler` y respuestas `ProblemDetails` seguras, según `webapi-architecture.md`. Pide mapear errores de validación, recurso inexistente, conflicto y excepción inesperada, con logging y `traceId`. Entrega una spec breve con objetivo, responsabilidades por proyecto y criterios de aceptación. No implementes cambios todavía. | [ ] |
 
 ## Fase 2: Regionales y planes de cuentas
 
@@ -38,7 +38,7 @@ Usar como contexto `global-balance-sheet.md`, `webapi-architecture.md`, `README.
 
 | Paso | Título | Prompt | Check |
 |---|---|---|---|
-| 6 | Integrar el módulo y comprobar criterios | Revisa las specs previas y planifica su integración en la Web API. Verifica que los DTOs y validaciones estén en Api, que Application coordine los casos de uso, que Domain proteja las reglas y que Infrastructure implemente persistencia y lectura de archivos. Incluye autorización JWT para las operaciones que correspondan, respuestas y errores coherentes, y criterios de aceptación que cubran regionales, jerarquía, duplicados, rollback por archivo y reporte final. Identifica inconsistencias o decisiones pendientes antes de implementar. No escribas código. | [ ] |
+| 6 | Integrar el módulo y comprobar criterios | Revisa las specs previas y planifica su integración en la Web API. Verifica que los DTOs y validaciones estén en Api, que Application coordine los casos de uso, que Domain proteja las reglas y que Infrastructure implemente persistencia y lectura de archivos. Incluye autorización JWT y manejo centralizado de excepciones conforme a `webapi-architecture.md`: respuestas ProblemDetails seguras, mapeo de errores conocidos, registro único de excepciones inesperadas y correlación por `traceId`. Verifica que los errores de un archivo se agreguen al reporte y permitan continuar el lote, mientras que una falla global llegue al handler HTTP. Los criterios de aceptación deben cubrir regionales, jerarquía, duplicados, rollback por archivo y reporte final. Identifica inconsistencias o decisiones pendientes antes de implementar. No escribas código. | [ ] |
 
 ## Criterio de avance
 

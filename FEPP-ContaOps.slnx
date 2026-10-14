@@ -1,0 +1,12 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Fepp.ContaOps.Api/Fepp.ContaOps.Api.csproj" />
+    <Project Path="src/Fepp.ContaOps.Application/Fepp.ContaOps.Application.csproj" />
+    <Project Path="src/Fepp.ContaOps.Domain/Fepp.ContaOps.Domain.csproj" />
+    <Project Path="src/Fepp.ContaOps.Infrastructure/Fepp.ContaOps.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Fepp.ContaOps.IntegrationTests/Fepp.ContaOps.IntegrationTests.csproj" />
+    <Project Path="tests/Fepp.ContaOps.UnitTests/Fepp.ContaOps.UnitTests.csproj" />
+  </Folder>
+</Solution>
