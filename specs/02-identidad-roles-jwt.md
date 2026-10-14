@@ -1,6 +1,6 @@
 # SPEC 02 — Identidad, roles y JWT
 
-> **Estado:** Borrador
+> **Estado:** Aprobado
 > **Dependencias:** SPEC 01
 > **Fecha:** 2026-10-13
 > **Objetivo:** Incorporar Identity, roles, administrador inicial e inicio de sesión mediante JWT sin acoplar Application a ASP.NET Core.
