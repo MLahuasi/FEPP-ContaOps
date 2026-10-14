@@ -179,3 +179,146 @@ Las clases `DependencyInjection` permiten:
 | **AddSingleton**                         | Mantiene una instancia compartida durante la vida del contenedor.                                                                              |
 
 **Conclusión:** `DependencyInjection` permite organizar la configuración del contenedor por capas, manteniendo las responsabilidades delimitadas. Application registra sus casos de uso, Infrastructure proporciona las implementaciones técnicas y API realiza la composición final. Esta organización favorece la mantenibilidad, la modularidad y la aplicación del principio de inversión de dependencias.
+
+---
+
+### 3. Definir resultados y errores tipados en Application.
+
+#### Manejo de resultados y errores — Result Pattern
+
+Las clases del namespace `Fepp.ContaOps.Application.Results` implementan el patrón **Result**, que permite a los casos de uso devolver un resultado exitoso o un error esperado de forma explícita y tipada.
+
+##### Diagrama de clases
+
+```mermaid
+classDiagram
+    direction TB
+
+    class Result~TValue~ {
+        +bool IsSuccess
+        +TValue? Value
+        +ApplicationError? Error
+        +Success(TValue value)$ Result
+        +Failure(ApplicationError error)$ Result
+    }
+
+    class ApplicationError {
+        <<abstract record>>
+        +string Code
+        +string Message
+    }
+
+    class ValidationError {
+        +IReadOnlyDictionary Errors
+        +Code = "validation_error"
+    }
+
+    class ResourceNotFoundError {
+        +string ResourceName
+        +string Identifier
+        +Code = "resource_not_found"
+    }
+
+    class ConflictError {
+        +Code = "resource_conflict"
+        +string Message
+    }
+
+    Result --> ApplicationError : Contiene error
+    ApplicationError <|-- ValidationError
+    ApplicationError <|-- ResourceNotFoundError
+    ApplicationError <|-- ConflictError
+```
+
+##### Responsabilidades
+
+| Clase                   | Responsabilidad                                                                              | Ejemplo                                  |
+| ----------------------- | -------------------------------------------------------------------------------------------- | ---------------------------------------- |
+| `Result<TValue>`        | Encapsula el resultado de un caso de uso, indicando éxito o fallo.                           | `Result<BalanceDto>`                     |
+| `ApplicationError`      | Clase base abstracta que define los contratos `Code` y `Message` para los errores esperados. | Base de los errores específicos.         |
+| `ValidationError`       | Representa errores de validación agrupados por campo.                                        | Importe inválido o campo obligatorio.    |
+| `ResourceNotFoundError` | Indica que un recurso solicitado no existe.                                                  | Balance contable inexistente.            |
+| `ConflictError`         | Representa conflictos con el estado actual de un recurso.                                    | Intentar registrar un balance duplicado. |
+
+##### Flujo de ejecución
+
+```mermaid
+flowchart TD
+    A["API solicita operación"] --> B["Application ejecuta caso de uso"]
+    B --> C{"Resultado"}
+
+    C -->|Éxito| D["Result.Success(valor)"]
+    C -->|Error esperado| E["Result.Failure(error)"]
+
+    E --> F{"Tipo de error"}
+
+    F --> G["ValidationError"]
+    F --> H["ResourceNotFoundError"]
+    F --> I["ConflictError"]
+
+    D --> J["API recibe Result"]
+    G --> J
+    H --> J
+    I --> J
+
+    J --> K["API construye respuesta HTTP"]
+```
+
+##### Ejemplo de uso
+
+**Caso de uso — Application**
+
+```csharp
+public async Task<Result<BalanceDto>> ExecuteAsync(Guid id)
+{
+    var balance = await repository.GetByIdAsync(id);
+
+    if (balance is null)
+    {
+        return Result<BalanceDto>.Failure(
+            new ResourceNotFoundError("Balance", id.ToString()));
+    }
+
+    return Result<BalanceDto>.Success(
+        new BalanceDto(balance.Id, balance.Total));
+}
+```
+
+**Controlador — API**
+
+```csharp
+var result = await useCase.ExecuteAsync(id);
+
+if (result.IsSuccess)
+    return Ok(result.Value);
+
+return result.Error switch
+{
+    ValidationError => BadRequest(result.Error),
+    ResourceNotFoundError => NotFound(result.Error),
+    ConflictError => Conflict(result.Error),
+    _ => StatusCode(500)
+};
+```
+
+##### Justificación arquitectónica
+
+| Principio                           | Beneficio                                                                            |
+| ----------------------------------- | ------------------------------------------------------------------------------------ |
+| **Result Pattern**                  | Representa éxitos y errores esperados mediante valores explícitos.                   |
+| **Clean Architecture**              | Application no depende de códigos HTTP ni de componentes de API.                     |
+| **Arquitectura Hexagonal**          | Los casos de uso devuelven resultados independientes del adaptador que los consume.  |
+| **DDD**                             | Permite comunicar fallos esperados de las operaciones sin acoplar el dominio a HTTP. |
+| **Separación de responsabilidades** | Application identifica el error; API determina cómo comunicarlo al cliente.          |
+
+**Consideraciones:**
+
+- `Result<TValue>` utiliza `Success()` y `Failure()` como métodos de fábrica.
+- `IsSuccess` se determina comprobando si `Error` es `null`.
+- Los errores heredan de `ApplicationError`, que establece un código estable y un mensaje.
+- Los errores esperados se representan mediante `Result`; los fallos técnicos inesperados deben gestionarse mediante mecanismos apropiados de excepciones y observabilidad.
+- La correspondencia entre errores y códigos HTTP es responsabilidad de API. Una asociación habitual es `ValidationError` → 400, `ResourceNotFoundError` → 404 y `ConflictError` → 409.
+
+**Conclusión:** estas clases proporcionan un mecanismo común para comunicar los resultados de los casos de uso, manteniendo Application independiente de HTTP y de las implementaciones de Infrastructure.
+
+---
