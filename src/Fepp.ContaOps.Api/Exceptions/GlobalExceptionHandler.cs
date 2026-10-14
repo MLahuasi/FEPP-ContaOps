@@ -2,6 +2,7 @@ using Fepp.ContaOps.Api.Validation;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
+using System.Text.Json;
 
 namespace Fepp.ContaOps.Api.Exceptions;
 
@@ -88,8 +89,8 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
     {
         httpContext.Response.StatusCode = status;
         httpContext.Response.ContentType = "application/problem+json";
-        await httpContext.Response.WriteAsJsonAsync(
-            ProblemDetailsResponseFactory.Create(httpContext, status, title, detail, code),
-            cancellationToken);
+        string responseBody = JsonSerializer.Serialize(
+            ProblemDetailsResponseFactory.Create(httpContext, status, title, detail, code));
+        await httpContext.Response.WriteAsync(responseBody, cancellationToken);
     }
 }

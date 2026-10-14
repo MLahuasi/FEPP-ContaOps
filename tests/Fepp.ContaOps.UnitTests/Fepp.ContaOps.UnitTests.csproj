@@ -18,4 +18,9 @@
     <Using Include="Xunit" />
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Fepp.ContaOps.Application\Fepp.ContaOps.Application.csproj" />
+    <ProjectReference Include="..\..\src\Fepp.ContaOps.Api\Fepp.ContaOps.Api.csproj" />
+  </ItemGroup>
+
 </Project>

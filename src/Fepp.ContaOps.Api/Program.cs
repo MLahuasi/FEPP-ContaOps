@@ -34,3 +34,10 @@ app.UseAuthorization();
 app.MapControllers();
 
 app.Run();
+
+/// <summary>
+/// Punto de entrada público para las pruebas de integración con WebApplicationFactory.
+/// </summary>
+public partial class Program
+{
+}

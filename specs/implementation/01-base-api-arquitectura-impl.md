@@ -63,122 +63,126 @@ Las flechas representan referencias entre proyectos (`ProjectReference`), no el 
 
 ---
 
-### 2. Configurar referencias e inyección de dependencias.
+### 2. Configurar referencias e inyección de dependencias
 
 #### Registro de dependencias (DependencyInjection)
 
-En **Clean Architecture**, las clases `DependencyInjection` permiten centralizar el registro de servicios y sus implementaciones mediante el mecanismo de **inyección de dependencias (Dependency Injection, DI)** de .NET.
+En **Arquitectura Hexagonal y Clean Architecture**, las clases `DependencyInjection` centralizan el registro de servicios de cada capa mediante el contenedor de **inyección de dependencias (DI)** de .NET.
 
-Cada capa encapsula sus propios registros, mientras que la capa **API actúa como Composition Root**, integrando las dependencias necesarias para ejecutar la aplicación.
+La capa **API**, mediante `Program.cs`, actúa como **Composition Root**, integrando las dependencias y configurando el procesamiento de solicitudes HTTP.
 
-#### Comparación entre Application e Infrastructure
+#### Diagrama de configuración
 
-| Característica                     | Application                                          | Infrastructure                                                                           |
-| ---------------------------------- | ---------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| **Clase**                          | `DependencyInjection`                                | `DependencyInjection`                                                                    |
-| **Ubicación**                      | `Fepp.ContaOps.Application`                          | `Fepp.ContaOps.Infrastructure`                                                           |
-| **Método**                         | `AddApplication()`                                   | `AddInfrastructure()`                                                                    |
-| **Propósito**                      | Registrar servicios y casos de uso de Application.   | Registrar adaptadores e implementaciones técnicas de Infrastructure.                     |
-| **Dependencias de .NET**           | `Microsoft.Extensions.DependencyInjection`           | `Microsoft.Extensions.DependencyInjection` y `Microsoft.Extensions.Configuration`        |
-| **Parámetros**                     | `IServiceCollection services`                        | `IServiceCollection services`, `IConfiguration configuration`                            |
-| **Servicios registrados**          | Casos de uso, validadores y servicios de aplicación. | Repositorios, persistencia, correo electrónico, almacenamiento e integraciones externas. |
-| **Ejemplo**                        | `services.AddScoped<ValidateBalanceUseCase>();`      | `services.AddScoped<IBalanceRepository, SqlBalanceRepository>();`                        |
-| **Configuración externa**          | Generalmente no requiere `IConfiguration`.           | Utiliza `IConfiguration` para conexiones y parámetros de servicios externos.             |
-| **Responsabilidad arquitectónica** | Encapsular los registros de la lógica de aplicación. | Vincular abstracciones con implementaciones técnicas concretas.                          |
-| **Invocación desde API**           | `builder.Services.AddApplication();`                 | `builder.Services.AddInfrastructure(builder.Configuration);`                             |
-| **Valor de retorno**               | `IServiceCollection`                                 | `IServiceCollection`                                                                     |
+```mermaid
+flowchart TD
+    A["Program.cs<br/>Composition Root"]
 
-#### Dependencias utilizadas
+    A --> B["Application<br/>AddApplication()"]
+    A --> C["Infrastructure<br/>AddInfrastructure()"]
+    A --> D["API<br/>AddApi()"]
+    A --> E["Swagger<br/>AddSwaggerDocumentation()"]
 
-| Dependencia                                | Descripción                                                                                                         | Utilización                           |
-| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------- | ------------------------------------- |
-| `Microsoft.Extensions.DependencyInjection` | Proporciona las abstracciones y métodos de registro de servicios del sistema de DI de .NET.                         | Application e Infrastructure.         |
-| `Microsoft.Extensions.Configuration`       | Proporciona las abstracciones para acceder a la configuración de la aplicación.                                     | Infrastructure.                       |
-| `IServiceCollection`                       | Colección que almacena los registros de servicios y sus ciclos de vida.                                             | Parámetro principal de ambos métodos. |
-| `IConfiguration`                           | Interfaz que permite consultar configuraciones provenientes de archivos JSON, variables de entorno y otras fuentes. | Parámetro de `AddInfrastructure()`.   |
+    B --> F["Casos de uso y servicios"]
+    C --> G["Repositorios y adaptadores"]
+    D --> H["Controllers y FluentValidation"]
+    E --> I["OpenAPI / Swagger"]
 
-#### Ejemplos de implementación
+    A --> J["Pipeline HTTP"]
+    J --> K["GlobalExceptionHandler"]
+    J --> L["HTTPS / Authorization"]
+    J --> M["Controllers"]
 
-[**Application — DependencyInjection.cs**](../../src/Fepp.ContaOps.Application/DependencyInjection.cs)
+    style A fill:#34495e,color:#fff
+    style B fill:#2471a3,color:#fff
+    style C fill:#566573,color:#fff
+    style D fill:#2471a3,color:#fff
+    style E fill:#2471a3,color:#fff
+```
+
+**Nota:** `AddApplication()` y `AddInfrastructure()` todavía no contienen registros de servicios. El diagrama muestra sus responsabilidades previstas.
+
+#### Responsabilidades por capa
+
+| Clase / Archivo                                                                                          | Método                      | Responsabilidad                                                                        |
+| -------------------------------------------------------------------------------------------------------- | --------------------------- | -------------------------------------------------------------------------------------- |
+| [API — DependencyInjection.cs](../../src/Fepp.ContaOps.Api/DependencyInjection.cs)                       | `AddApi()`                  | Registra controllers, validadores FluentValidation y `ValidationFilter`.               |
+| API — DependencyInjection.cs                                                                             | `AddSwaggerDocumentation()` | Configura la documentación OpenAPI/Swagger e incorpora comentarios XML cuando existen. |
+| [Application — DependencyInjection.cs](../../src/Fepp.ContaOps.Application/DependencyInjection.cs)       | `AddApplication()`          | Centraliza el registro de casos de uso y servicios de aplicación.                      |
+| [Infrastructure — DependencyInjection.cs](../../src/Fepp.ContaOps.Infrastructure/DependencyInjection.cs) | `AddInfrastructure()`       | Centraliza el registro de repositorios, adaptadores e integraciones externas.          |
+| [API — Program.cs](../../src/Fepp.ContaOps.Api/Program.cs)                                               | Punto de entrada            | Integra las dependencias y configura el pipeline HTTP.                                 |
+
+#### Configuración de Program.cs
+
+**1. Registro de servicios**
 
 ```csharp
-using Microsoft.Extensions.DependencyInjection;
+var builder = WebApplication.CreateBuilder(args);
 
-namespace Fepp.ContaOps.Application;
+builder.Logging.AddJsonConsole();
 
-public static class DependencyInjection
+builder.Services.AddApplication();
+builder.Services.AddInfrastructure(builder.Configuration);
+builder.Services.AddApi();
+builder.Services.AddSwaggerDocumentation();
+builder.Services.AddProblemDetails();
+builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
+```
+
+| Configuración               | Función                                                                   |
+| --------------------------- | ------------------------------------------------------------------------- |
+| `AddJsonConsole()`          | Habilita logging JSON en consola.                                         |
+| `AddApplication()`          | Incorpora los registros de Application.                                   |
+| `AddInfrastructure()`       | Incorpora los registros de Infrastructure.                                |
+| `AddApi()`                  | Registra controllers y validación HTTP.                                   |
+| `AddSwaggerDocumentation()` | Configura Swagger/OpenAPI.                                                |
+| `AddProblemDetails()`       | Registra servicios para generar respuestas de error estandarizadas.       |
+| `AddExceptionHandler()`     | Registra `GlobalExceptionHandler` para gestionar excepciones inesperadas. |
+
+**2. Configuración del pipeline HTTP**
+
+```csharp
+var app = builder.Build();
+
+app.UseExceptionHandler();
+
+if (SwaggerSettings.IsEnabled(builder.Configuration, app.Environment))
 {
-    public static IServiceCollection AddApplication(
-        this IServiceCollection services)
+    app.UseSwagger();
+    app.UseSwaggerUI(options =>
     {
-        services.AddScoped<ValidateBalanceUseCase>();
-
-        return services;
-    }
+        options.SwaggerEndpoint(
+            "/swagger/v1/swagger.json",
+            "FEPP-ContaOps API v1");
+    });
 }
+
+app.UseHttpsRedirection();
+app.UseAuthorization();
+app.MapControllers();
+
+app.Run();
 ```
 
-Este método registra los servicios propios de Application.
+| Configuración                 | Función                                                                   |
+| ----------------------------- | ------------------------------------------------------------------------- |
+| `UseExceptionHandler()`       | Gestiona excepciones no controladas.                                      |
+| `SwaggerSettings.IsEnabled()` | Determina si Swagger está habilitado según la configuración y el entorno. |
+| `UseHttpsRedirection()`       | Redirige solicitudes HTTP hacia HTTPS.                                    |
+| `UseAuthorization()`          | Aplica el middleware de autorización.                                     |
+| `MapControllers()`            | Habilita los endpoints definidos en controllers.                          |
+| `Run()`                       | Inicia la aplicación.                                                     |
 
-[**Infrastructure — DependencyInjection.cs**](../../src/Fepp.ContaOps.Infrastructure/DependencyInjection.cs)
+#### Justificación arquitectónica
 
-```csharp
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.DependencyInjection;
+| Principio                      | Aplicación                                                                              |
+| ------------------------------ | --------------------------------------------------------------------------------------- |
+| **Composition Root**           | `Program.cs` centraliza la integración de dependencias.                                 |
+| **Separation of Concerns**     | Cada capa encapsula el registro de sus propios servicios.                               |
+| **Dependency Inversion (DIP)** | Application utiliza abstracciones implementadas por Infrastructure.                     |
+| **Arquitectura Hexagonal**     | API actúa como adaptador de entrada e Infrastructure proporciona adaptadores de salida. |
+| **Mantenibilidad**             | Permite incorporar servicios sin concentrar sus configuraciones en `Program.cs`.        |
 
-namespace Fepp.ContaOps.Infrastructure;
-
-public static class DependencyInjection
-{
-    public static IServiceCollection AddInfrastructure(
-        this IServiceCollection services,
-        IConfiguration configuration)
-    {
-        services.AddScoped<
-            IBalanceRepository,
-            SqlBalanceRepository>();
-
-        return services;
-    }
-}
-```
-
-Este método registra implementaciones concretas de los contratos utilizados por Application o Domain. El parámetro `configuration` permite incorporar configuraciones externas cuando sean necesarias.
-
-**API — Program.cs**
-
-```csharp
-builder.Services
-    .AddApplication()
-    .AddInfrastructure(builder.Configuration);
-```
-
-La capa API invoca ambos métodos para configurar los servicios que utilizará la aplicación.
-
-#### ¿Por qué se implementan?
-
-Las clases `DependencyInjection` permiten:
-
-1. **Separación de responsabilidades:** cada capa centraliza el registro de sus propios servicios.
-2. **Bajo acoplamiento:** Application depende de abstracciones, sin conocer las implementaciones de Infrastructure.
-3. **Mantenibilidad:** los nuevos servicios se registran en su capa correspondiente, evitando modificar continuamente `Program.cs`.
-4. **Modularidad:** cada proyecto encapsula su configuración de dependencias.
-5. **Testabilidad:** las dependencias pueden sustituirse por implementaciones simuladas durante las pruebas.
-6. **Configuración centralizada:** Infrastructure puede utilizar parámetros externos sin incorporarlos directamente en los casos de uso.
-
-#### Conceptos relacionados
-
-| Concepto                                 | Descripción                                                                                                                                    |
-| ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Dependency Injection (DI)**            | Técnica que proporciona las dependencias de una clase desde el exterior, habitualmente mediante su constructor.                                |
-| **Dependency Inversion Principle (DIP)** | Principio SOLID que establece que los módulos de alto nivel no deben depender de módulos de bajo nivel; ambos deben depender de abstracciones. |
-| **Extension Method**                     | Método estático que utiliza `this` en su primer parámetro para permitir su invocación mediante la sintaxis de instancia.                       |
-| **Composition Root**                     | Punto donde se integran los registros y se configura la construcción de dependencias. Normalmente se encuentra en API (`Program.cs`).          |
-| **AddScoped**                            | Registra una instancia compartida dentro de un ámbito; en aplicaciones ASP.NET Core, generalmente una petición HTTP.                           |
-| **AddTransient**                         | Crea una nueva instancia cada vez que se solicita el servicio.                                                                                 |
-| **AddSingleton**                         | Mantiene una instancia compartida durante la vida del contenedor.                                                                              |
-
-**Conclusión:** `DependencyInjection` permite organizar la configuración del contenedor por capas, manteniendo las responsabilidades delimitadas. Application registra sus casos de uso, Infrastructure proporciona las implementaciones técnicas y API realiza la composición final. Esta organización favorece la mantenibilidad, la modularidad y la aplicación del principio de inversión de dependencias.
+**Conclusión:** las clases `DependencyInjection` organizan el registro de servicios por capa, mientras que `Program.cs` integra estos registros y configura el pipeline HTTP. Esta separación mantiene una estructura modular, facilita las pruebas y respeta los principios de Arquitectura Hexagonal y Clean Architecture.
 
 ---
 
@@ -651,3 +655,87 @@ El ejemplo supone que Swagger y sus servicios correspondientes ya están registr
 **Conclusión:** `SwaggerSettings` proporciona un mecanismo sencillo y centralizado para controlar la disponibilidad de Swagger por configuración y entorno, manteniendo esta responsabilidad dentro de la capa API.
 
 ---
+
+### 7. Agregar pruebas unitarias e HTTP
+
+#### Pruebas del manejo de excepciones y errores HTTP
+
+Se incorporan pruebas automatizadas para verificar que la API gestione correctamente los errores esperados y las excepciones inesperadas, utilizando respuestas estandarizadas **ProblemDetails**.
+
+Las pruebas se organizan en dos niveles: **Unit Tests** e **Integration Tests**.
+
+##### Diagrama de funcionamiento
+
+```mermaid
+flowchart TD
+    A["Pruebas automatizadas"]
+
+    A --> B["Unit Tests"]
+    A --> C["Integration Tests"]
+
+    B --> D["ProblemDetailsResponseFactoryTests"]
+    D --> E["ProblemDetailsResponseFactory"]
+    E --> F["Validación: HTTP 400"]
+    E --> G["Recurso inexistente: HTTP 404"]
+
+    C --> H["ExceptionPipelineTests"]
+    H --> I["WebApplicationFactory"]
+    I --> J["PipelineTestController"]
+    J -->|Lanza excepción| K["GlobalExceptionHandler"]
+    K --> L["ProblemDetailsResponseFactory"]
+    L --> M["HTTP 500 + JSON seguro"]
+
+    style A fill:#34495e,color:#fff
+    style B fill:#2471a3,color:#fff
+    style C fill:#2471a3,color:#fff
+    style K fill:#566573,color:#fff
+```
+
+##### Clases y responsabilidades
+
+| Clase                                | Proyecto         | Responsabilidad                                                                                          |
+| ------------------------------------ | ---------------- | -------------------------------------------------------------------------------------------------------- |
+| `ProblemDetailsResponseFactoryTests` | UnitTests        | Verifica la transformación de errores esperados en respuestas `ProblemDetails`.                          |
+| `ExceptionPipelineTests`             | IntegrationTests | Comprueba el manejo de excepciones mediante una solicitud HTTP real dentro del servidor de pruebas.      |
+| `PipelineTestController`             | IntegrationTests | Proporciona un endpoint exclusivo para provocar una excepción controlada durante las pruebas.            |
+| `GlobalExceptionHandler`             | API              | Captura excepciones inesperadas, registra información de diagnóstico y devuelve respuestas HTTP seguras. |
+
+##### Pruebas implementadas
+
+| Prueba                                                  | Validaciones                                                                                                                          |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `CreateValidationResult_ReturnsUniformProblemDetails()` | Comprueba HTTP 400, código `validation_error`, `traceId` y existencia de errores de validación.                                       |
+| `CreateApplicationErrorResult_NotFound_Returns404()`    | Comprueba HTTP 404, código `resource_not_found` y que el identificador interno no aparezca en el detalle.                             |
+| `UnexpectedException_ReturnsSafeProblemDetails()`       | Comprueba HTTP 500, `application/problem+json`, código `unexpected_error`, `traceId` y ausencia de detalles internos de la excepción. |
+
+##### Modificación de GlobalExceptionHandler
+
+Se reemplazó `WriteAsJsonAsync()` por una serialización explícita utilizando `JsonSerializer.Serialize()` y `Response.WriteAsync()`.
+
+```csharp
+httpContext.Response.StatusCode = status;
+httpContext.Response.ContentType = "application/problem+json";
+
+string responseBody = JsonSerializer.Serialize(
+    ProblemDetailsResponseFactory.Create(
+        httpContext, status, title, detail, code));
+
+await httpContext.Response.WriteAsync(
+    responseBody,
+    cancellationToken);
+```
+
+**Objetivo:** conservar explícitamente el tipo de contenido `application/problem+json` y mantener un contrato uniforme para las respuestas de error.
+
+##### Justificación arquitectónica
+
+| Principio                  | Aplicación                                                                                     |
+| -------------------------- | ---------------------------------------------------------------------------------------------- |
+| **Unit Testing**           | Verifica la construcción de respuestas sin iniciar el servidor HTTP.                           |
+| **Integration Testing**    | Comprueba el funcionamiento conjunto del pipeline, controladores y middleware.                 |
+| **Arquitectura Hexagonal** | Las pruebas verifican el comportamiento del adaptador HTTP sin modificar el núcleo de negocio. |
+| **Seguridad**              | Comprueba que los errores HTTP no expongan información interna sensible.                       |
+| **Observabilidad**         | Verifica la presencia de `traceId` en las respuestas.                                          |
+| **Estandarización**        | Garantiza que las respuestas mantengan el contrato `ProblemDetails`.                           |
+
+**Conclusión:** los cambios fortalecen el manejo de errores de `Fepp.ContaOps`, incorporando pruebas que verifican tanto la transformación de errores esperados como la respuesta ante excepciones inesperadas. Además, la modificación de `GlobalExceptionHandler` permite controlar explícitamente la serialización y el tipo de contenido de las respuestas HTTP.
