@@ -1,8 +1,10 @@
 using FluentValidation.Results;
 using Fepp.ContaOps.Api.Validation;
+using Fepp.ContaOps.Api.Exceptions;
 using Fepp.ContaOps.Application.Results;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Fepp.ContaOps.UnitTests;
 
@@ -49,6 +51,27 @@ public sealed class ProblemDetailsResponseFactoryTests
         Assert.Equal(StatusCodes.Status404NotFound, result.StatusCode);
         Assert.Equal("resource_not_found", problemDetails.Extensions["code"]);
         Assert.DoesNotContain("account-1", problemDetails.Detail, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Comprueba que una cancelación del cliente no se convierte en HTTP 500.
+    /// </summary>
+    [Fact]
+    public async Task CancelledRequest_Returns499()
+    {
+        DefaultHttpContext httpContext = CreateHttpContext();
+        using CancellationTokenSource cancellationTokenSource = new();
+        cancellationTokenSource.Cancel();
+        httpContext.RequestAborted = cancellationTokenSource.Token;
+        GlobalExceptionHandler handler = new(NullLogger<GlobalExceptionHandler>.Instance);
+
+        bool handled = await handler.TryHandleAsync(
+            httpContext,
+            new OperationCanceledException(),
+            httpContext.RequestAborted);
+
+        Assert.True(handled);
+        Assert.Equal(499, httpContext.Response.StatusCode);
     }
 
     /// <summary>

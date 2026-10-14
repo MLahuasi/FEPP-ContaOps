@@ -42,13 +42,17 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
                 httpContext.Request.Method,
                 httpContext.Request.Path);
 
-            await WriteProblemDetailsAsync(
-                httpContext,
-                499,
-                "Request cancelled.",
-                "The request was cancelled by the client.",
-                "request_cancelled",
-                cancellationToken);
+            httpContext.Response.StatusCode = 499;
+            if (!httpContext.RequestAborted.IsCancellationRequested)
+            {
+                await WriteProblemDetailsAsync(
+                    httpContext,
+                    499,
+                    "Request cancelled.",
+                    "The request was cancelled by the client.",
+                    "request_cancelled",
+                    cancellationToken);
+            }
             return true;
         }
 

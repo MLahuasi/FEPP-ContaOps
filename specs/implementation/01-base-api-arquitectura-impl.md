@@ -84,7 +84,7 @@ flowchart TD
 
     B --> F["Casos de uso y servicios"]
     C --> G["Repositorios y adaptadores"]
-    D --> H["Controllers y FluentValidation"]
+    D --> H["Controllers, FluentValidation<br/>y mapper de errores"]
     E --> I["OpenAPI / Swagger"]
 
     A --> J["Pipeline HTTP"]
@@ -103,13 +103,13 @@ flowchart TD
 
 #### Responsabilidades por capa
 
-| Clase / Archivo                                                                                          | Método                      | Responsabilidad                                                                        |
-| -------------------------------------------------------------------------------------------------------- | --------------------------- | -------------------------------------------------------------------------------------- |
-| [API — DependencyInjection.cs](../../src/Fepp.ContaOps.Api/DependencyInjection.cs)                       | `AddApi()`                  | Registra controllers, validadores FluentValidation y `ValidationFilter`.               |
-| API — DependencyInjection.cs                                                                             | `AddSwaggerDocumentation()` | Configura la documentación OpenAPI/Swagger e incorpora comentarios XML cuando existen. |
-| [Application — DependencyInjection.cs](../../src/Fepp.ContaOps.Application/DependencyInjection.cs)       | `AddApplication()`          | Centraliza el registro de casos de uso y servicios de aplicación.                      |
-| [Infrastructure — DependencyInjection.cs](../../src/Fepp.ContaOps.Infrastructure/DependencyInjection.cs) | `AddInfrastructure()`       | Centraliza el registro de repositorios, adaptadores e integraciones externas.          |
-| [API — Program.cs](../../src/Fepp.ContaOps.Api/Program.cs)                                               | Punto de entrada            | Integra las dependencias y configura el pipeline HTTP.                                 |
+| Clase / Archivo                                                                                          | Método                      | Responsabilidad                                                                                                  |
+| -------------------------------------------------------------------------------------------------------- | --------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| [API — DependencyInjection.cs](../../src/Fepp.ContaOps.Api/DependencyInjection.cs)                       | `AddApi()`                  | Registra controllers, validadores FluentValidation, `ValidationFilter` y `ApplicationErrorProblemDetailsMapper`. |
+| API — DependencyInjection.cs                                                                             | `AddSwaggerDocumentation()` | Configura la documentación OpenAPI/Swagger e incorpora comentarios XML cuando existen.                           |
+| [Application — DependencyInjection.cs](../../src/Fepp.ContaOps.Application/DependencyInjection.cs)       | `AddApplication()`          | Centraliza el registro de casos de uso y servicios de aplicación.                                                |
+| [Infrastructure — DependencyInjection.cs](../../src/Fepp.ContaOps.Infrastructure/DependencyInjection.cs) | `AddInfrastructure()`       | Centraliza el registro de repositorios, adaptadores e integraciones externas.                                    |
+| [API — Program.cs](../../src/Fepp.ContaOps.Api/Program.cs)                                               | Punto de entrada            | Integra las dependencias y configura el pipeline HTTP.                                                           |
 
 #### Configuración de Program.cs
 
@@ -133,7 +133,7 @@ builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
 | `AddJsonConsole()`          | Habilita logging JSON en consola.                                         |
 | `AddApplication()`          | Incorpora los registros de Application.                                   |
 | `AddInfrastructure()`       | Incorpora los registros de Infrastructure.                                |
-| `AddApi()`                  | Registra controllers y validación HTTP.                                   |
+| `AddApi()`                  | Registra controllers, validación HTTP y mapper de errores de Application. |
 | `AddSwaggerDocumentation()` | Configura Swagger/OpenAPI.                                                |
 | `AddProblemDetails()`       | Registra servicios para generar respuestas de error estandarizadas.       |
 | `AddExceptionHandler()`     | Registra `GlobalExceptionHandler` para gestionar excepciones inesperadas. |
@@ -362,21 +362,22 @@ flowchart TD
 
 ##### Responsabilidades
 
-| Clase                           | Responsabilidad                                                                                                             | Métodos principales                     |
-| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
-| `ValidationFilter`              | Intercepta la ejecución de acciones MVC y valida sus argumentos utilizando los validadores registrados en FluentValidation. | `OnActionExecutionAsync()`              |
-| `ProblemDetailsResponseFactory` | Construye respuestas HTTP de error con una estructura uniforme basada en `ProblemDetails`.                                  | `Create()` y `CreateValidationResult()` |
+| Clase                           | Responsabilidad                                                                                            | Métodos principales                     |
+| ------------------------------- | ---------------------------------------------------------------------------------------------------------- | --------------------------------------- |
+| `ValidationFilter`              | Valida los argumentos de las acciones MVC y registra una advertencia con `traceId` cuando detecta errores. | `OnActionExecutionAsync()`              |
+| `ProblemDetailsResponseFactory` | Construye respuestas HTTP de error con una estructura uniforme basada en `ProblemDetails`.                 | `Create()` y `CreateValidationResult()` |
 
 ##### Dependencias
 
-| Clase                           | Dependencias         | Propósito                                                           |
-| ------------------------------- | -------------------- | ------------------------------------------------------------------- |
-| `ValidationFilter`              | `IAsyncActionFilter` | Integrarse en el pipeline de filtros de ASP.NET Core MVC.           |
-| `ValidationFilter`              | `IServiceProvider`   | Resolver dinámicamente los validadores registrados.                 |
-| `ValidationFilter`              | `IValidator<T>`      | Ejecutar las reglas de validación mediante FluentValidation.        |
-| `ProblemDetailsResponseFactory` | `ProblemDetails`     | Representar errores HTTP mediante un contrato estandarizado.        |
-| `ProblemDetailsResponseFactory` | `ValidationResult`   | Obtener los errores generados por FluentValidation.                 |
-| `ProblemDetailsResponseFactory` | `HttpContext`        | Obtener la ruta de la solicitud y el identificador de trazabilidad. |
+| Clase                           | Dependencias                | Propósito                                                           |
+| ------------------------------- | --------------------------- | ------------------------------------------------------------------- |
+| `ValidationFilter`              | `IAsyncActionFilter`        | Integrarse en el pipeline de filtros de ASP.NET Core MVC.           |
+| `ValidationFilter`              | `IServiceProvider`          | Resolver dinámicamente los validadores registrados.                 |
+| `ValidationFilter`              | `ILogger<ValidationFilter>` | Registrar errores de validación con código y `traceId`.             |
+| `ValidationFilter`              | `IValidator<T>`             | Ejecutar las reglas de validación mediante FluentValidation.        |
+| `ProblemDetailsResponseFactory` | `ProblemDetails`            | Representar errores HTTP mediante un contrato estandarizado.        |
+| `ProblemDetailsResponseFactory` | `ValidationResult`          | Obtener los errores generados por FluentValidation.                 |
+| `ProblemDetailsResponseFactory` | `HttpContext`               | Obtener la ruta de la solicitud y el identificador de trazabilidad. |
 
 ##### Ejemplo de uso
 
@@ -429,7 +430,7 @@ El contenido de `errors` depende de las reglas definidas en el validador. El for
 
 - `ValidationFilter` valida los argumentos no nulos para los que encuentre un `IValidator<T>` registrado.
 - Si no existe un validador, el argumento continúa sin validación por este filtro.
-- Ante el primer argumento inválido, devuelve HTTP 400 y detiene la ejecución de la acción.
+- Ante el primer argumento inválido, registra un `LogWarning` con `validation_error` y `traceId`, devuelve HTTP 400 y detiene la ejecución de la acción.
 - Si la validación es correcta, continúa mediante `await next()`.
 - `ProblemDetailsResponseFactory` agrupa los errores por propiedad y elimina mensajes duplicados.
 - Estas clases gestionan la validación de entrada HTTP; no sustituyen las reglas e invariantes del dominio.
@@ -459,7 +460,8 @@ flowchart TD
     C -->|Excepción inesperada| E["GlobalExceptionHandler"]
     C -->|Éxito| F["Respuesta exitosa"]
 
-    D --> G["ProblemDetailsResponseFactory"]
+    D --> MAP["ApplicationErrorProblemDetailsMapper<br/>LogWarning + traceId"]
+    MAP --> G["ProblemDetailsResponseFactory"]
 
     E --> H["Registrar excepción con ILogger"]
     H --> G
@@ -477,29 +479,30 @@ flowchart TD
     L --> P
     M --> P
     N --> P
-    O --> P
+    O -.->|Cliente desconectado: no se escribe cuerpo| Q["Solo estado 499 y log"]
 ```
 
-**Nota:** los errores esperados se transforman en respuestas mediante `CreateApplicationErrorResult()`. Las excepciones inesperadas son procesadas por `GlobalExceptionHandler`, que utiliza `Create()` para construir el `ProblemDetails`.
+**Nota:** el controlador puede utilizar `ApplicationErrorProblemDetailsMapper.Map()` para registrar y traducir un `ApplicationError` mediante `CreateApplicationErrorResult()`. Las excepciones inesperadas las procesa `GlobalExceptionHandler`, que utiliza `Create()`. Cuando el cliente ya canceló la solicitud, el handler establece el estado 499 sin intentar escribir el cuerpo.
 
 ##### Responsabilidades
 
-| Clase                           | Responsabilidad                                                                                      | Métodos                                                                  |
-| ------------------------------- | ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| `GlobalExceptionHandler`        | Captura excepciones no controladas, registra información de diagnóstico y genera respuestas seguras. | `TryHandleAsync()`, `WriteProblemDetailsAsync()`                         |
-| `ProblemDetailsResponseFactory` | Centraliza la construcción de errores HTTP utilizando el contrato `ProblemDetails`.                  | `Create()`, `CreateValidationResult()`, `CreateApplicationErrorResult()` |
+| Clase                                  | Responsabilidad                                                                                               | Métodos                                                                  |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| `GlobalExceptionHandler`               | Captura excepciones no controladas, registra información de diagnóstico y genera respuestas seguras.          | `TryHandleAsync()`, `WriteProblemDetailsAsync()`                         |
+| `ProblemDetailsResponseFactory`        | Centraliza la construcción de errores HTTP utilizando el contrato `ProblemDetails`.                           | `Create()`, `CreateValidationResult()`, `CreateApplicationErrorResult()` |
+| `ApplicationErrorProblemDetailsMapper` | Registra errores esperados con `ILogger` y `traceId`, y los traduce a una respuesta HTTP mediante la fábrica. | `Map()`                                                                  |
 
 ##### Tipos de errores gestionados
 
-| Origen               | Error                   | HTTP | Código               |
-| -------------------- | ----------------------- | ---- | -------------------- |
-| Application          | `ValidationError`       | 400  | `validation_error`   |
-| Application          | `ResourceNotFoundError` | 404  | `resource_not_found` |
-| Application          | `ConflictError`         | 409  | `resource_conflict`  |
-| API / Infrastructure | Excepción inesperada    | 500  | `unexpected_error`   |
-| Solicitud HTTP       | Cancelación del cliente | 499  | `request_cancelled`  |
+| Origen               | Error                   | HTTP                               | Código                                                                                |
+| -------------------- | ----------------------- | ---------------------------------- | ------------------------------------------------------------------------------------- |
+| Application          | `ValidationError`       | 400                                | `validation_error`                                                                    |
+| Application          | `ResourceNotFoundError` | 404                                | `resource_not_found`                                                                  |
+| Application          | `ConflictError`         | 409                                | `resource_conflict`                                                                   |
+| API / Infrastructure | Excepción inesperada    | 500                                | `unexpected_error`                                                                    |
+| Solicitud HTTP       | Cancelación del cliente | 499 (solo estado si ya se canceló) | `request_cancelled` (previsto para ProblemDetails; no se envía en conexión cancelada) |
 
-El código **499** es una convención no estandarizada que representa una solicitud cancelada por el cliente. La implementación intenta devolverlo cuando detecta una `OperationCanceledException` asociada a `RequestAborted`; sin embargo, si el cliente ya se desconectó, la respuesta podría no llegar a transmitirse.
+El código **499** es una convención no estandarizada. Si `OperationCanceledException` coincide con una solicitud ya cancelada (`RequestAborted`), el handler registra el evento y establece el estado 499, pero **no intenta escribir `ProblemDetails` en la conexión cancelada**.
 
 ##### Ejemplo de respuesta HTTP
 
@@ -535,12 +538,13 @@ La respuesta evita exponer mensajes internos, stack traces o información sensib
 - `GlobalExceptionHandler` implementa `IExceptionHandler` de ASP.NET Core.
 - Debe registrarse en el contenedor y habilitarse mediante el middleware correspondiente para capturar excepciones.
 - `ProblemDetailsResponseFactory` es una clase estática reutilizable.
-- `CreateApplicationErrorResult()` es el método incorporado para transformar errores tipados de Application en respuestas HTTP.
+- `CreateApplicationErrorResult()` transforma los errores tipados de Application en respuestas HTTP.
+- `ApplicationErrorProblemDetailsMapper` añade `LogWarning` y delega la transformación en la fábrica; se registra como Scoped en `AddApi()`.
 - `ValidationFilter` continúa utilizando `CreateValidationResult()` para los errores de FluentValidation.
 - Los errores esperados no necesitan convertirse en excepciones; pueden comunicarse mediante `Result<TValue>`.
-- El manejo global está orientado a excepciones inesperadas y cancelaciones de solicitudes.
+- El manejo global está orientado a excepciones inesperadas y cancelaciones de solicitudes; no registra como error las cancelaciones causadas por la desconexión del cliente.
 
-**Conclusión:** `GlobalExceptionHandler` centraliza el tratamiento de excepciones, mientras que `ProblemDetailsResponseFactory` unifica la representación de errores HTTP. Ambas clases permiten mantener una API consistente, segura y desacoplada de la lógica de negocio.
+**Conclusión:** `GlobalExceptionHandler` trata excepciones imprevistas; `ApplicationErrorProblemDetailsMapper` registra y traduce errores esperados; y `ProblemDetailsResponseFactory` unifica sus respuestas HTTP sin acoplar Application a HTTP.
 
 ---
 
@@ -652,6 +656,8 @@ El ejemplo supone que Swagger y sus servicios correspondientes ya están registr
 - Un valor inválido de `Swagger:Enabled` no genera una excepción: utiliza el entorno como alternativa.
 - Habilitar Swagger en Production debe ser una decisión explícita, considerando los requisitos de seguridad y exposición de la documentación.
 
+**Pruebas incorporadas:** `SwaggerSettingsTests` verifica que Swagger esté deshabilitado por defecto en Production y que `Swagger:Enabled=true` pueda habilitarlo explícitamente. Utiliza un entorno de prueba que implementa `IHostEnvironment`.
+
 **Conclusión:** `SwaggerSettings` proporciona un mecanismo sencillo y centralizado para controlar la disponibilidad de Swagger por configuración y entorno, manteniendo esta responsabilidad dentro de la capa API.
 
 ---
@@ -674,16 +680,19 @@ flowchart TD
     A --> C["Integration Tests"]
 
     B --> D["ProblemDetailsResponseFactoryTests"]
+    B --> S["SwaggerSettingsTests"]
+    S --> T["Swagger deshabilitado por defecto<br/>o habilitado explícitamente"]
     D --> E["ProblemDetailsResponseFactory"]
     E --> F["Validación: HTTP 400"]
     E --> G["Recurso inexistente: HTTP 404"]
+    D --> X["Cancelación: estado 499"]
 
     C --> H["ExceptionPipelineTests"]
     H --> I["WebApplicationFactory"]
     I --> J["PipelineTestController"]
     J -->|Lanza excepción| K["GlobalExceptionHandler"]
     K --> L["ProblemDetailsResponseFactory"]
-    L --> M["HTTP 500 + JSON seguro"]
+    L --> M["HTTP 500 + JSON seguro<br/>y logs correlacionados"]
 
     style A fill:#34495e,color:#fff
     style B fill:#2471a3,color:#fff
@@ -693,20 +702,25 @@ flowchart TD
 
 ##### Clases y responsabilidades
 
-| Clase                                | Proyecto         | Responsabilidad                                                                                          |
-| ------------------------------------ | ---------------- | -------------------------------------------------------------------------------------------------------- |
-| `ProblemDetailsResponseFactoryTests` | UnitTests        | Verifica la transformación de errores esperados en respuestas `ProblemDetails`.                          |
-| `ExceptionPipelineTests`             | IntegrationTests | Comprueba el manejo de excepciones mediante una solicitud HTTP real dentro del servidor de pruebas.      |
-| `PipelineTestController`             | IntegrationTests | Proporciona un endpoint exclusivo para provocar una excepción controlada durante las pruebas.            |
-| `GlobalExceptionHandler`             | API              | Captura excepciones inesperadas, registra información de diagnóstico y devuelve respuestas HTTP seguras. |
+| Clase                                  | Proyecto         | Responsabilidad                                                                                          |
+| -------------------------------------- | ---------------- | -------------------------------------------------------------------------------------------------------- |
+| `ProblemDetailsResponseFactoryTests`   | UnitTests        | Verifica la transformación de errores esperados en respuestas `ProblemDetails`.                          |
+| `ExceptionPipelineTests`               | IntegrationTests | Comprueba el manejo de excepciones mediante una solicitud HTTP real dentro del servidor de pruebas.      |
+| `PipelineTestController`               | IntegrationTests | Proporciona un endpoint exclusivo para provocar una excepción controlada durante las pruebas.            |
+| `GlobalExceptionHandler`               | API              | Captura excepciones inesperadas, registra información de diagnóstico y devuelve respuestas HTTP seguras. |
+| `SwaggerSettingsTests`                 | UnitTests        | Comprueba la habilitación de Swagger según entorno y configuración explícita.                            |
+| `ApplicationErrorProblemDetailsMapper` | API              | Registra con `LogWarning` y traduce errores esperados de Application.                                    |
 
 ##### Pruebas implementadas
 
-| Prueba                                                  | Validaciones                                                                                                                          |
-| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `CreateValidationResult_ReturnsUniformProblemDetails()` | Comprueba HTTP 400, código `validation_error`, `traceId` y existencia de errores de validación.                                       |
-| `CreateApplicationErrorResult_NotFound_Returns404()`    | Comprueba HTTP 404, código `resource_not_found` y que el identificador interno no aparezca en el detalle.                             |
-| `UnexpectedException_ReturnsSafeProblemDetails()`       | Comprueba HTTP 500, `application/problem+json`, código `unexpected_error`, `traceId` y ausencia de detalles internos de la excepción. |
+| Prueba                                                  | Validaciones                                                                                                                                      |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `CreateValidationResult_ReturnsUniformProblemDetails()` | Comprueba HTTP 400, código `validation_error`, `traceId` y existencia de errores de validación.                                                   |
+| `CreateApplicationErrorResult_NotFound_Returns404()`    | Comprueba HTTP 404, código `resource_not_found` y que el identificador interno no aparezca en el detalle.                                         |
+| `UnexpectedException_ReturnsSafeProblemDetails()`       | Comprueba HTTP 500, `application/problem+json`, código `unexpected_error`, `traceId`, ocultamiento de detalles internos y correlación con el log. |
+| `CancelledRequest_Returns499()`                         | Comprueba que una solicitud cancelada sea manejada con estado 499 y no se convierta en HTTP 500.                                                  |
+| `IsEnabled_ProductionDefaultsToFalse()`                 | Comprueba que Swagger esté deshabilitado por defecto en Production.                                                                               |
+| `IsEnabled_ExplicitConfigurationWins()`                 | Comprueba que la configuración explícita prevalezca sobre el entorno.                                                                             |
 
 ##### Modificación de GlobalExceptionHandler
 
@@ -725,7 +739,7 @@ await httpContext.Response.WriteAsync(
     cancellationToken);
 ```
 
-**Objetivo:** conservar explícitamente el tipo de contenido `application/problem+json` y mantener un contrato uniforme para las respuestas de error.
+**Objetivo:** conservar explícitamente `application/problem+json`. Además, el handler evita escribir el cuerpo cuando `RequestAborted` indica que el cliente ya canceló la solicitud.
 
 ##### Justificación arquitectónica
 
@@ -738,4 +752,66 @@ await httpContext.Response.WriteAsync(
 | **Observabilidad**         | Verifica la presencia de `traceId` en las respuestas.                                          |
 | **Estandarización**        | Garantiza que las respuestas mantengan el contrato `ProblemDetails`.                           |
 
-**Conclusión:** los cambios fortalecen el manejo de errores de `Fepp.ContaOps`, incorporando pruebas que verifican tanto la transformación de errores esperados como la respuesta ante excepciones inesperadas. Además, la modificación de `GlobalExceptionHandler` permite controlar explícitamente la serialización y el tipo de contenido de las respuestas HTTP.
+**Conclusión:** las pruebas cubren respuestas 400, 404, 500 y cancelación 499, la correlación de logs y la configuración de Swagger. No se documenta un resultado de ejecución de estas pruebas, únicamente su implementación.
+
+---
+
+## IMPLEMENTACION
+
+#### Cambios realizados
+
+| Archivo                                                                    | Cambio implementado                                                                                                                                                   |
+| -------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/Fepp.ContaOps.Api/Validation/ApplicationErrorProblemDetailsMapper.cs` | **Nuevo.** Registra `ApplicationError` con `ILogger` (código y `traceId`) y lo transforma mediante `ProblemDetailsResponseFactory`.                                   |
+| `src/Fepp.ContaOps.Api/DependencyInjection.cs`                             | Registra `ApplicationErrorProblemDetailsMapper` con `AddScoped()` en `AddApi()`.                                                                                      |
+| `src/Fepp.ContaOps.Api/Validation/ValidationFilter.cs`                     | Incorpora `ILogger<ValidationFilter>` y genera `LogWarning` al detectar validaciones fallidas.                                                                        |
+| `src/Fepp.ContaOps.Api/Exceptions/GlobalExceptionHandler.cs`               | Ante una cancelación confirmada del cliente, registra el evento y establece 499 sin escribir el cuerpo; mantiene respuestas seguras 500 para excepciones inesperadas. |
+| `SwaggerSettingsTests.cs` (UnitTests)                                      | **Nuevo.** Comprueba el comportamiento predeterminado de Swagger en Production y la prioridad de su configuración explícita.                                          |
+| `ProblemDetailsResponseFactoryTests.cs` (UnitTests)                        | Incorpora la prueba `CancelledRequest_Returns499()`.                                                                                                                  |
+| `ExceptionPipelineTests.cs` (IntegrationTests)                             | Incorpora un `ILoggerProvider` de prueba para comprobar que se registra la excepción y que el `traceId` coincide con la respuesta HTTP.                               |
+
+#### Flujo de errores implementado
+
+```mermaid
+flowchart TD
+    R["Solicitud HTTP"] --> V["ValidationFilter"]
+    V -->|Validación inválida| W["LogWarning + ProblemDetails 400"]
+    V -->|Válida| U["Controlador / Application"]
+    U -->|ApplicationError| M["ApplicationErrorProblemDetailsMapper"]
+    M --> P["ProblemDetailsResponseFactory"]
+    P --> E["HTTP 400 / 404 / 409"]
+    U -->|Excepción no controlada| H["GlobalExceptionHandler"]
+    H -->|Error inesperado| X["LogError + ProblemDetails 500"]
+    H -->|Cliente canceló| Y["LogInformation + estado 499"]
+```
+
+**Alcance:** las clases describen el comportamiento implementado y las pruebas añadidas; no consta aquí un resultado de ejecución de `dotnet test` ni una prueba de integración específica para el mapper.
+
+#### Validación de la implementación
+
+- Ejecutar agente:
+
+```powershell
+/spec-acceptance-validator @specs/01-base-api-arquitectura.md
+```
+
+- Verificar actualización del [`Spec`](../01-base-api-arquitectura.md)
+
+- Acciones Git y PullRequest:
+
+```powershell
+git add .
+git commit -m "FEPP-ContaOps - spec-01-base-api-arquitectura - Implemented"
+git push -u origin spec-01-base-api-arquitectura
+```
+
+---
+
+Comandos de verificación:
+
+```powershell
+dotnet restore FEPP-ContaOps.slnx
+dotnet build FEPP-ContaOps.slnx
+dotnet test FEPP-ContaOps.slnx
+dotnet run --project src/Fepp.ContaOps.Api
+```

@@ -2,6 +2,7 @@ using FluentValidation;
 using FluentValidation.Results;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Filters;
+using Microsoft.Extensions.Logging;
 
 namespace Fepp.ContaOps.Api.Validation;
 
@@ -11,14 +12,19 @@ namespace Fepp.ContaOps.Api.Validation;
 public sealed class ValidationFilter : IAsyncActionFilter
 {
     private readonly IServiceProvider _serviceProvider;
+    private readonly ILogger<ValidationFilter> _logger;
 
     /// <summary>
     /// Inicializa el filtro de validación.
     /// </summary>
     /// <param name="serviceProvider">Proveedor utilizado para resolver validadores registrados.</param>
-    public ValidationFilter(IServiceProvider serviceProvider)
+    /// <param name="logger">Logger estructurado para errores de validación.</param>
+    public ValidationFilter(
+        IServiceProvider serviceProvider,
+        ILogger<ValidationFilter> logger)
     {
         _serviceProvider = serviceProvider;
+        _logger = logger;
     }
 
     /// <summary>
@@ -50,6 +56,10 @@ public sealed class ValidationFilter : IAsyncActionFilter
 
             if (!validationResult.IsValid)
             {
+                _logger.LogWarning(
+                    "Request validation failed. Code: {Code}, TraceId: {TraceId}",
+                    "validation_error",
+                    context.HttpContext.TraceIdentifier);
                 context.Result = ProblemDetailsResponseFactory.CreateValidationResult(
                     context.HttpContext,
                     validationResult);

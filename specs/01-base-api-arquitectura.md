@@ -1,6 +1,6 @@
 # SPEC 01 — Base arquitectónica de la Web API
 
-> **Estado:** Aprobado
+> **Estado:** Implementado
 > **Dependencias:** Ninguna
 > **Fecha:** 2026-10-13
 > **Objetivo:** Crear la solución por capas y un límite HTTP uniforme con validación, Swagger, logging estructurado y respuestas `ProblemDetails` seguras.
@@ -56,17 +56,17 @@ Los errores esperados se traducen desde resultados tipados. El handler central r
 
 ## Criterios de aceptación
 
-- [ ] Domain no referencia ningún otro proyecto.
-- [ ] Api referencia Application e Infrastructure y actúa como raíz de composición.
-- [ ] Ningún controller expone entidades de Domain o Infrastructure.
-- [ ] Los validadores se ejecutan antes del caso de uso.
-- [ ] Las respuestas 400, 404, 409 y 500 usan el contrato `ProblemDetails` definido.
-- [ ] Cada respuesta de error contiene el mismo `traceId` utilizado por el log.
-- [ ] Una excepción inesperada se registra exactamente una vez en nivel `Error`.
-- [ ] Los errores esperados se registran estructuradamente en nivel `Information` o `Warning`.
-- [ ] Una cancelación solicitada por el cliente no se presenta como 500.
-- [ ] Swagger puede activarse por configuración y queda deshabilitado por defecto en producción.
-- [ ] Las pruebas verifican que las respuestas no filtren detalles internos.
+- [x] Domain no referencia ningún otro proyecto.
+- [x] Api referencia Application e Infrastructure y actúa como raíz de composición.
+- [x] Ningún controller expone entidades de Domain o Infrastructure.
+- [x] Los validadores se ejecutan antes del caso de uso.
+- [x] Las respuestas 400, 404, 409 y 500 usan el contrato `ProblemDetails` definido.
+- [x] Cada respuesta de error contiene el mismo `traceId` utilizado por el log.
+- [x] Una excepción inesperada se registra exactamente una vez en nivel `Error`.
+- [x] Los errores esperados se registran estructuradamente en nivel `Information` o `Warning`.
+- [x] Una cancelación solicitada por el cliente no se presenta como 500.
+- [x] Swagger puede activarse por configuración y queda deshabilitado por defecto en producción.
+- [x] Las pruebas verifican que las respuestas no filtren detalles internos.
 
 ## Decisiones
 

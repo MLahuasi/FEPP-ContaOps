@@ -21,6 +21,7 @@ public static class DependencyInjection
     {
         services.AddValidatorsFromAssembly(typeof(DependencyInjection).Assembly);
         services.AddScoped<ValidationFilter>();
+        services.AddScoped<ApplicationErrorProblemDetailsMapper>();
         services.AddControllers(options => options.Filters.AddService<ValidationFilter>());
         return services;
     }
