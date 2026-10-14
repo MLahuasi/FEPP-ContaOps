@@ -434,3 +434,108 @@ El contenido de `errors` depende de las reglas definidas en el validador. El for
 **Conclusión:** `ValidationFilter` ejecuta las validaciones antes de que el controlador procese la solicitud, mientras que `ProblemDetailsResponseFactory` transforma los errores en respuestas HTTP uniformes. Esta separación mantiene los controladores más simples y evita acoplar la lógica de negocio a los mecanismos de validación HTTP.
 
 ---
+
+### 5. Configurar handler global, logging JSON y traceId.
+
+#### Manejo global de excepciones y respuestas HTTP — ProblemDetails
+
+Las clases `GlobalExceptionHandler` y `ProblemDetailsResponseFactory` permiten gestionar excepciones inesperadas y errores esperados mediante respuestas HTTP uniformes basadas en **ProblemDetails (RFC 9457)**.
+
+Ambas pertenecen a la capa `Fepp.ContaOps.Api` y mantienen los detalles HTTP separados de la lógica de Application.
+
+##### Diagrama de funcionamiento
+
+```mermaid
+flowchart TD
+    A["HTTP Request"] --> B["API / Application"]
+
+    B --> C{"Resultado de ejecución"}
+
+    C -->|Error esperado| D["ApplicationError"]
+    C -->|Excepción inesperada| E["GlobalExceptionHandler"]
+    C -->|Éxito| F["Respuesta exitosa"]
+
+    D --> G["ProblemDetailsResponseFactory"]
+
+    E --> H["Registrar excepción con ILogger"]
+    H --> G
+
+    G --> I["Construir ProblemDetails"]
+    I --> J{"Tipo de error"}
+
+    J -->|ValidationError| K["400 Bad Request"]
+    J -->|ResourceNotFoundError| L["404 Not Found"]
+    J -->|ConflictError| M["409 Conflict"]
+    J -->|Excepción inesperada| N["500 Internal Server Error"]
+    J -->|Solicitud cancelada| O["499 Client Closed Request"]
+
+    K --> P["Respuesta application/problem+json"]
+    L --> P
+    M --> P
+    N --> P
+    O --> P
+```
+
+**Nota:** los errores esperados se transforman en respuestas mediante `CreateApplicationErrorResult()`. Las excepciones inesperadas son procesadas por `GlobalExceptionHandler`, que utiliza `Create()` para construir el `ProblemDetails`.
+
+##### Responsabilidades
+
+| Clase                           | Responsabilidad                                                                                      | Métodos                                                                  |
+| ------------------------------- | ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| `GlobalExceptionHandler`        | Captura excepciones no controladas, registra información de diagnóstico y genera respuestas seguras. | `TryHandleAsync()`, `WriteProblemDetailsAsync()`                         |
+| `ProblemDetailsResponseFactory` | Centraliza la construcción de errores HTTP utilizando el contrato `ProblemDetails`.                  | `Create()`, `CreateValidationResult()`, `CreateApplicationErrorResult()` |
+
+##### Tipos de errores gestionados
+
+| Origen               | Error                   | HTTP | Código               |
+| -------------------- | ----------------------- | ---- | -------------------- |
+| Application          | `ValidationError`       | 400  | `validation_error`   |
+| Application          | `ResourceNotFoundError` | 404  | `resource_not_found` |
+| Application          | `ConflictError`         | 409  | `resource_conflict`  |
+| API / Infrastructure | Excepción inesperada    | 500  | `unexpected_error`   |
+| Solicitud HTTP       | Cancelación del cliente | 499  | `request_cancelled`  |
+
+El código **499** es una convención no estandarizada que representa una solicitud cancelada por el cliente. La implementación intenta devolverlo cuando detecta una `OperationCanceledException` asociada a `RequestAborted`; sin embargo, si el cliente ya se desconectó, la respuesta podría no llegar a transmitirse.
+
+##### Ejemplo de respuesta HTTP
+
+Ante una excepción inesperada, la API construye una respuesta similar a:
+
+```json
+{
+  "type": "https://httpstatuses.com/500",
+  "title": "An unexpected error occurred.",
+  "status": 500,
+  "detail": "The request could not be completed.",
+  "instance": "/api/balances",
+  "code": "unexpected_error",
+  "traceId": "0HN123456789"
+}
+```
+
+La respuesta evita exponer mensajes internos, stack traces o información sensible de la excepción.
+
+##### Justificación arquitectónica
+
+| Principio                  | Aplicación                                                                             |
+| -------------------------- | -------------------------------------------------------------------------------------- |
+| **Arquitectura Hexagonal** | La conversión de errores a respuestas HTTP permanece en el adaptador API.              |
+| **Separation of Concerns** | Application identifica errores esperados; API gestiona su representación HTTP.         |
+| **Centralización**         | `ProblemDetailsResponseFactory` evita duplicar la construcción de respuestas.          |
+| **Observabilidad**         | `ILogger` registra excepciones y `traceId` facilita su correlación.                    |
+| **Seguridad**              | Las excepciones inesperadas producen mensajes genéricos sin revelar detalles internos. |
+| **Estandarización**        | Los errores mantienen un contrato uniforme mediante `application/problem+json`.        |
+
+##### Consideraciones
+
+- `GlobalExceptionHandler` implementa `IExceptionHandler` de ASP.NET Core.
+- Debe registrarse en el contenedor y habilitarse mediante el middleware correspondiente para capturar excepciones.
+- `ProblemDetailsResponseFactory` es una clase estática reutilizable.
+- `CreateApplicationErrorResult()` es el método incorporado para transformar errores tipados de Application en respuestas HTTP.
+- `ValidationFilter` continúa utilizando `CreateValidationResult()` para los errores de FluentValidation.
+- Los errores esperados no necesitan convertirse en excepciones; pueden comunicarse mediante `Result<TValue>`.
+- El manejo global está orientado a excepciones inesperadas y cancelaciones de solicitudes.
+
+**Conclusión:** `GlobalExceptionHandler` centraliza el tratamiento de excepciones, mientras que `ProblemDetailsResponseFactory` unifica la representación de errores HTTP. Ambas clases permiten mantener una API consistente, segura y desacoplada de la lógica de negocio.
+
+---

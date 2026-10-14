@@ -1,4 +1,5 @@
 using FluentValidation.Results;
+using Fepp.ContaOps.Application.Results;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 
@@ -9,6 +10,57 @@ namespace Fepp.ContaOps.Api.Validation;
 /// </summary>
 public static class ProblemDetailsResponseFactory
 {
+    /// <summary>
+    /// Construye una respuesta HTTP para un error tipado de Application.
+    /// </summary>
+    /// <param name="httpContext">Contexto HTTP de la solicitud actual.</param>
+    /// <param name="error">Error esperado producido por Application.</param>
+    /// <returns>Resultado HTTP con el estado correspondiente al error.</returns>
+    public static ObjectResult CreateApplicationErrorResult(
+        HttpContext httpContext,
+        ApplicationError error)
+    {
+        int status = error switch
+        {
+            ValidationError => StatusCodes.Status400BadRequest,
+            ResourceNotFoundError => StatusCodes.Status404NotFound,
+            ConflictError => StatusCodes.Status409Conflict,
+            _ => StatusCodes.Status500InternalServerError
+        };
+
+        string detail = error switch
+        {
+            ValidationError => "One or more validation errors occurred.",
+            ResourceNotFoundError notFound => notFound.Message,
+            ConflictError conflict => conflict.Message,
+            _ => "The request could not be completed."
+        };
+
+        ProblemDetails problemDetails = Create(
+            httpContext,
+            status,
+            status switch
+            {
+                StatusCodes.Status400BadRequest => "Request validation failed.",
+                StatusCodes.Status404NotFound => "Resource not found.",
+                StatusCodes.Status409Conflict => "Resource conflict.",
+                _ => "An unexpected error occurred."
+            },
+            detail,
+            error.Code);
+
+        if (error is ValidationError validationError)
+        {
+            problemDetails.Extensions["errors"] = validationError.Errors;
+        }
+
+        return new ObjectResult(problemDetails)
+        {
+            StatusCode = status,
+            ContentTypes = { "application/problem+json" }
+        };
+    }
+
     /// <summary>
     /// Construye una respuesta de validación para los errores del request.
     /// </summary>
