@@ -11,7 +11,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Logging.AddJsonConsole();
 builder.Services.AddApplication();
 builder.Services.AddInfrastructure(builder.Configuration);
-builder.Services.AddApi();
+builder.Services.AddApi(builder.Configuration);
 builder.Services.AddSwaggerDocumentation();
 builder.Services.AddProblemDetails();
 builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
@@ -41,7 +41,8 @@ if (SwaggerSettings.IsEnabled(builder.Configuration, app.Environment))
 // Redirige las solicitudes HTTP a HTTPS antes de procesar los endpoints.
 app.UseHttpsRedirection();
 
-// La autenticación y autorización se incorporarán al pipeline antes de proteger endpoints.
+// La autenticación debe ejecutarse antes de evaluar las políticas de autorización.
+app.UseAuthentication();
 app.UseAuthorization();
 
 // Descubre y registra los controllers de la API.

@@ -1,6 +1,5 @@
 ```powershell
 
-5. Login, 401, 403 y AdminOnly.
 6. Swagger Bearer y respuestas de error.
 7. Pruebas unitarias e integración con PostgreSQL efímero.
 ```
@@ -939,7 +938,336 @@ El proceso es idempotente, por lo que puede ejecutarse en cada arranque sin dupl
 
 ---
 
-### 5. Login, 401, 403 y AdminOnly.
+### 5. Login, 401, 403 y AdminOnly
+
+Este spec configura la **autenticación JWT y la autorización mediante roles** para proteger los endpoints de la API.
+
+Complementa los specs anteriores:
+
+- **Spec 2:** permite consultar usuarios y verificar contraseñas mediante ASP.NET Core Identity.
+- **Spec 3:** permite generar tokens JWT para usuarios autenticados.
+- **Spec 4:** crea los roles `Admin` y `User`, junto con el administrador inicial.
+- **Spec 5:** configura la validación de tokens JWT, los errores HTTP `401` y `403`, y la política de autorización `AdminOnly`.
+
+Es importante distinguir dos conceptos:
+
+| Concepto          | ¿Qué hace?                            | Ejemplo                             |
+| ----------------- | ------------------------------------- | ----------------------------------- |
+| **Autenticación** | Comprueba quién es el usuario.        | Verificar que el JWT sea válido.    |
+| **Autorización**  | Comprueba qué puede hacer el usuario. | Verificar que tenga el rol `Admin`. |
+
+#### 1. Diagrama de componentes
+
+```mermaid
+flowchart TB
+    Client["Cliente<br/>React / Postman / Swagger"]
+
+    subgraph API["PRESENTATION - API"]
+        Auth["UseAuthentication<br/>Valida el JWT"]
+        Authorization["UseAuthorization<br/>Verifica permisos"]
+        Policy["AdminOnly<br/>Requiere rol Admin"]
+        Controller["Controller<br/>Endpoint protegido"]
+
+        Auth --> Authorization
+        Authorization --> Policy
+        Policy --> Controller
+    end
+
+    subgraph Infrastructure["INFRASTRUCTURE"]
+        Options["JwtOptions<br/>Configuración JWT"]
+    end
+
+    Client -->|"Bearer Token"| Auth
+    Options -.-> Auth
+```
+
+**Idea principal:** La API recibe un JWT, comprueba que sea válido y verifica si el usuario tiene los permisos necesarios antes de ejecutar un endpoint protegido.
+
+Cuando falla alguna comprobación, responde con `401` o `403`, según corresponda.
+
+#### 2. Responsabilidad de cada componente
+
+| Componente                      | Capa           | ¿Para qué sirve?                                                      |
+| ------------------------------- | -------------- | --------------------------------------------------------------------- |
+| `Program.cs`                    | Presentation   | Configura el orden de ejecución de los middlewares.                   |
+| `DependencyInjection`           | Presentation   | Registra la autenticación JWT, autorización y políticas de acceso.    |
+| `JwtBearer`                     | Framework      | Extrae y valida los tokens JWT recibidos por la API.                  |
+| `TokenValidationParameters`     | Framework      | Define las reglas para validar un JWT.                                |
+| `JwtBearerEvents`               | Framework      | Permite personalizar las respuestas de autenticación y autorización.  |
+| `AdminOnly`                     | Presentation   | Política que permite el acceso únicamente a usuarios con rol `Admin`. |
+| `JwtOptions`                    | Infrastructure | Proporciona los valores necesarios para validar el JWT.               |
+| `ProblemDetailsResponseFactory` | Presentation   | Componente propio que construye respuestas de error HTTP uniformes.   |
+
+#### 3. ¿Cómo funciona el proceso?
+
+El proceso completo esperado se divide en dos partes.
+
+**A. Inicio de sesión (Login)**
+
+1. El cliente envía su correo y contraseña.
+2. Application solicita buscar el usuario y comprobar sus credenciales.
+3. Si las credenciales son correctas, se solicita un JWT mediante `ITokenIssuer`.
+4. El cliente recibe el token y lo utiliza en las siguientes solicitudes.
+
+Este flujo depende de los componentes implementados en los specs anteriores y de un endpoint de login que no aparece entre los archivos proporcionados.
+
+**B. Acceso a un endpoint protegido**
+
+1. El cliente envía una solicitud HTTP incluyendo el JWT.
+2. `UseAuthentication()` ejecuta la autenticación configurada y valida el token.
+3. Si el token es válido, ASP.NET Core construye la identidad del usuario a partir de sus claims.
+4. `UseAuthorization()` comprueba los requisitos de acceso del endpoint.
+5. Si el endpoint utiliza `AdminOnly`, se verifica que el usuario tenga el rol `Admin`.
+6. Si cumple los requisitos, se ejecuta el endpoint; de lo contrario, la API devuelve un error HTTP.
+
+#### 4. ¿Qué significan los errores 401 y 403?
+
+Ambos códigos HTTP indican problemas de acceso, pero tienen significados diferentes.
+
+| Código | Nombre       | ¿Cuándo ocurre?                                                  | Ejemplo                                                              |
+| ------ | ------------ | ---------------------------------------------------------------- | -------------------------------------------------------------------- |
+| `401`  | Unauthorized | El usuario no está autenticado correctamente.                    | Token ausente, inválido o expirado.                                  |
+| `403`  | Forbidden    | El usuario está autenticado, pero no tiene permisos suficientes. | Un usuario con rol `User` intenta acceder a un endpoint `AdminOnly`. |
+
+**Ejemplo:**
+
+Supongamos que existe un endpoint protegido con la política `AdminOnly`.
+
+| Solicitud                  | Resultado          |
+| -------------------------- | ------------------ |
+| Sin JWT                    | `401 Unauthorized` |
+| JWT expirado               | `401 Unauthorized` |
+| JWT con firma inválida     | `401 Unauthorized` |
+| JWT válido con rol `User`  | `403 Forbidden`    |
+| JWT válido con rol `Admin` | Acceso permitido   |
+
+Estos resultados corresponden al comportamiento esperado de un endpoint que exige autenticación y aplica la política `AdminOnly`.
+
+#### 5. Métodos y componentes proporcionados por ASP.NET Core
+
+En `DependencyInjection` y `Program.cs` se utilizan métodos y clases del framework de Microsoft.
+
+| Método / Componente         | Origen                                        | ¿Qué hace?                                                                         |
+| --------------------------- | --------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `AddAuthentication()`       | ASP.NET Core                                  | Registra los servicios de autenticación.                                           |
+| `AddJwtBearer()`            | Microsoft.AspNetCore.Authentication.JwtBearer | Configura la autenticación mediante JWT Bearer.                                    |
+| `TokenValidationParameters` | Microsoft.IdentityModel.Tokens                | Define cómo debe validarse un token.                                               |
+| `JwtBearerEvents`           | ASP.NET Core JWT Bearer                       | Permite personalizar eventos de autenticación.                                     |
+| `OnChallenge`               | JWT Bearer                                    | Se ejecuta durante una respuesta de desafío de autenticación, habitualmente `401`. |
+| `OnForbidden`               | JWT Bearer                                    | Se ejecuta cuando el acceso está prohibido, habitualmente `403`.                   |
+| `AddAuthorization()`        | ASP.NET Core                                  | Registra los servicios de autorización.                                            |
+| `AddPolicy()`               | ASP.NET Core                                  | Define una política de autorización.                                               |
+| `RequireRole()`             | ASP.NET Core                                  | Exige que el usuario pertenezca a un rol.                                          |
+| `UseAuthentication()`       | ASP.NET Core                                  | Incorpora el middleware de autenticación a las solicitudes HTTP.                   |
+| `UseAuthorization()`        | ASP.NET Core                                  | Incorpora el middleware que evalúa las políticas de autorización.                  |
+
+**¿Por qué se utilizan estos componentes?**
+
+Porque ASP.NET Core proporciona mecanismos para validar identidades y controlar el acceso a recursos.
+
+No es necesario implementar manualmente la verificación criptográfica del JWT ni las comprobaciones básicas de roles.
+
+#### 6. ¿Qué hace `AddAuthentication().AddJwtBearer()`?
+
+En `DependencyInjection` se configura:
+
+```csharp
+services.AddAuthentication(
+    JwtBearerDefaults.AuthenticationScheme
+)
+.AddJwtBearer(options =>
+{
+    options.TokenValidationParameters =
+        new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidIssuer = jwtOptions.Issuer,
+
+            ValidateAudience = true,
+            ValidAudience = jwtOptions.Audience,
+
+            ValidateIssuerSigningKey = true,
+            IssuerSigningKey = new SymmetricSecurityKey(
+                Encoding.UTF8.GetBytes(jwtOptions.SigningKey)
+            ),
+
+            ValidateLifetime = true,
+            ClockSkew = TimeSpan.Zero,
+
+            NameClaimType = JwtRegisteredClaimNames.Email,
+            RoleClaimType = ClaimTypes.Role
+        };
+});
+```
+
+Este código configura JWT Bearer como mecanismo de autenticación y establece las reglas para validar los tokens.
+
+| Configuración               | ¿Qué verifica?                                                                  |
+| --------------------------- | ------------------------------------------------------------------------------- |
+| `ValidateIssuer`            | Que el emisor del token sea el configurado.                                     |
+| `ValidateAudience`          | Que el token esté destinado a la aplicación correspondiente.                    |
+| `ValidateIssuerSigningKey`  | Que se valide la clave utilizada para verificar la firma del token.             |
+| `ValidateLifetime`          | Que el token se encuentre dentro de su periodo de validez.                      |
+| `ClockSkew = TimeSpan.Zero` | Elimina la tolerancia adicional de tiempo al validar su vigencia.               |
+| `NameClaimType`             | Identifica qué claim representa el nombre del usuario; en este caso, su correo. |
+| `RoleClaimType`             | Identifica qué claims representan los roles del usuario.                        |
+
+**Ejemplo:** Si un cliente modifica el contenido de un JWT firmado, la firma deja de ser válida y la API debe rechazarlo.
+
+#### 7. ¿Qué hacen `OnChallenge` y `OnForbidden`?
+
+La configuración incorpora dos eventos de `JwtBearerEvents` para generar respuestas HTTP uniformes.
+
+**A. `OnChallenge`: error 401**
+
+```csharp
+OnChallenge = context =>
+{
+    context.HandleResponse();
+
+    return WriteAuthenticationErrorAsync(
+        context.HttpContext,
+        StatusCodes.Status401Unauthorized,
+        "Authentication is required.",
+        "authentication_required"
+    );
+};
+```
+
+Se utiliza cuando la API debe responder con un desafío de autenticación.
+
+`context.HandleResponse()` indica que el evento controlará la respuesta, evitando que JWT Bearer escriba su respuesta predeterminada.
+
+Posteriormente, `WriteAuthenticationErrorAsync()` genera el error HTTP con el formato definido por la aplicación.
+
+**B. `OnForbidden`: error 403**
+
+```csharp
+OnForbidden = context =>
+    WriteAuthenticationErrorAsync(
+        context.HttpContext,
+        StatusCodes.Status403Forbidden,
+        "You do not have permission to access this resource.",
+        "forbidden"
+    );
+```
+
+Se utiliza cuando el usuario está autenticado, pero no cumple los requisitos de autorización.
+
+**¿Por qué se personalizan estos eventos?**
+
+Para que la API devuelva errores con una estructura consistente, utilizando `application/problem+json` y los códigos de error definidos por la aplicación.
+
+Esto facilita que React u otros clientes HTTP interpreten y presenten correctamente los errores.
+
+#### 8. ¿Qué es la política `AdminOnly`?
+
+Es una regla de autorización creada por la aplicación que exige que el usuario tenga el rol `Admin`.
+
+Se configura mediante:
+
+```csharp
+services.AddAuthorization(options =>
+{
+    options.AddPolicy(
+        "AdminOnly",
+        policy => policy.RequireRole(IdentitySeeder.AdminRole)
+    );
+});
+```
+
+**Explicación:**
+
+| Elemento                      | ¿Qué hace?                                               |
+| ----------------------------- | -------------------------------------------------------- |
+| `AddAuthorization()`          | Configura los servicios de autorización.                 |
+| `AddPolicy("AdminOnly", ...)` | Registra una política con el nombre `AdminOnly`.         |
+| `RequireRole()`               | Exige que el usuario tenga el rol indicado.              |
+| `IdentitySeeder.AdminRole`    | Constante definida en el Spec 4 cuyo valor es `"Admin"`. |
+
+Esta política puede utilizarse en un controlador:
+
+```csharp
+[Authorize(Policy = "AdminOnly")]
+[HttpGet("admin")]
+public IActionResult GetAdminData()
+{
+    return Ok("Acceso autorizado");
+}
+```
+
+**Nota:** Este controlador es un ejemplo de uso; no forma parte de los dos archivos proporcionados.
+
+En este ejemplo, el endpoint solo permite acceder a usuarios autenticados con el rol `Admin`.
+
+#### 9. ¿Por qué son necesarios `UseAuthentication()` y `UseAuthorization()`?
+
+En `Program.cs` se configuró:
+
+```csharp
+app.UseAuthentication();
+
+app.UseAuthorization();
+
+app.MapControllers();
+```
+
+Estos métodos incorporan middlewares al procesamiento de solicitudes HTTP.
+
+Un **middleware** es un componente que participa en el procesamiento de una solicitud antes de que llegue al controlador.
+
+| Middleware            | Responsabilidad                                                       |
+| --------------------- | --------------------------------------------------------------------- |
+| `UseAuthentication()` | Intenta identificar al usuario utilizando el JWT recibido.            |
+| `UseAuthorization()`  | Comprueba si el usuario cumple los requisitos del recurso solicitado. |
+| `MapControllers()`    | Registra los endpoints definidos en los controladores.                |
+
+**¿Por qué importa el orden?**
+
+Porque primero debe identificarse al usuario y después comprobarse qué permisos tiene.
+
+Por eso:
+
+```text
+UseAuthentication()
+        ↓
+UseAuthorization()
+        ↓
+Controller
+```
+
+Si se ejecutara la autorización antes de establecer la identidad, las políticas podrían evaluarse sin la información necesaria del usuario.
+
+#### 10. ¿Cómo se integra con los specs anteriores?
+
+| Spec       | Componente                  | Integración                                      |
+| ---------- | --------------------------- | ------------------------------------------------ |
+| **Spec 1** | `User`                      | Representa la identidad del usuario en Domain.   |
+| **Spec 2** | `IdentityUserRepository`    | Permite consultar el usuario.                    |
+| **Spec 2** | `IdentityCredentialService` | Permite verificar sus credenciales.              |
+| **Spec 3** | `JwtTokenIssuer`            | Genera el JWT con los datos y roles del usuario. |
+| **Spec 4** | `IdentitySeeder`            | Crea los roles `Admin` y `User`.                 |
+| **Spec 5** | JWT Bearer                  | Valida los tokens recibidos por la API.          |
+| **Spec 5** | `AdminOnly`                 | Restringe el acceso a usuarios administradores.  |
+
+#### 11. Resumen
+
+| Componente                    | Responsabilidad                                                                 |
+| ----------------------------- | ------------------------------------------------------------------------------- |
+| **JWT Bearer**                | Valida los tokens enviados por el cliente.                                      |
+| **TokenValidationParameters** | Define las reglas para aceptar o rechazar un JWT.                               |
+| **UseAuthentication**         | Establece la identidad del usuario autenticado.                                 |
+| **UseAuthorization**          | Comprueba sus permisos.                                                         |
+| **AdminOnly**                 | Restringe el acceso al rol `Admin`.                                             |
+| **OnChallenge**               | Personaliza los errores de autenticación `401`.                                 |
+| **OnForbidden**               | Personaliza los errores de autorización `403`.                                  |
+| **Swagger**                   | Documenta el esquema Bearer para facilitar las pruebas de endpoints protegidos. |
+
+**Conclusión:** El Spec 5 incorpora la autenticación JWT Bearer y la autorización basada en roles.
+
+La API puede validar los tokens recibidos, identificar al usuario, comprobar sus permisos y responder con códigos HTTP apropiados cuando el acceso no está permitido.
+
+**Nota:** La configuración de JWT Bearer no protege automáticamente todos los endpoints. Cada endpoint debe tener los requisitos de autorización correspondientes, mediante `[Authorize]`, políticas como `AdminOnly` o una política global de autorización.
 
 ---
 
