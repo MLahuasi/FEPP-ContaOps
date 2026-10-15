@@ -1,0 +1,26 @@
+using Fepp.ContaOps.Domain.Users;
+
+namespace Fepp.ContaOps.Application.Abstractions;
+
+/// <summary>
+/// Puerto para emitir tokens de acceso.
+/// </summary>
+public interface ITokenIssuer
+{
+    /// <summary>
+    /// Emite un token para un usuario autenticado.
+    /// </summary>
+    /// <param name="user">Usuario autenticado.</param>
+    /// <param name="cancellationToken">Token de cancelación.</param>
+    /// <returns>Resultado de emisión del token.</returns>
+    Task<TokenResult> IssueAsync(
+        User user,
+        CancellationToken cancellationToken = default);
+}
+
+/// <summary>
+/// Resultado independiente de la tecnología de emisión de tokens.
+/// </summary>
+/// <param name="AccessToken">Token de acceso.</param>
+/// <param name="ExpiresIn">Duración del token en segundos.</param>
+public sealed record TokenResult(string AccessToken, long ExpiresIn);

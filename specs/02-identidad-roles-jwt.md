@@ -1,6 +1,6 @@
 # SPEC 02 — Identidad, roles y JWT
 
-> **Estado:** Borrador
+> **Estado:** Implementado parcialmente — validación pendiente
 > **Dependencias:** SPEC 01
 > **Fecha:** 2026-10-13
 > **Objetivo:** Incorporar Identity, roles, administrador inicial e inicio de sesión mediante JWT sin acoplar Application a ASP.NET Core.
@@ -73,17 +73,17 @@ Valores predeterminados de Identity:
 
 ## Criterios de aceptación
 
-- [ ] El seed crea los roles `Admin` y `User` cuando no existen.
+- [x] El seed crea los roles `Admin` y `User` cuando no existen.
 - [ ] El seed crea un administrador desde configuración segura y no sobrescribe su contraseña posteriormente.
 - [ ] La aplicación falla al iniciar si la configuración obligatoria de seed, JWT o Identity es inválida.
-- [ ] Credenciales válidas devuelven un JWT con rol, issuer, audience y expiración.
+- [x] Credenciales válidas devuelven un JWT con rol, issuer, audience y expiración.
 - [ ] Credenciales inválidas, usuario bloqueado o usuario sin contraseña devuelven el mismo 401 seguro.
-- [ ] Un JWT expirado o con firma, issuer o audience incorrectos es rechazado.
-- [ ] Un usuario `Admin` satisface `AdminOnly`.
+- [x] Un JWT expirado o con firma, issuer o audience incorrectos es rechazado.
+- [x] Un usuario `Admin` satisface `AdminOnly`.
 - [ ] Un usuario `User` recibe 403 al acceder a operaciones administrativas.
 - [ ] Los 401 y 403 contienen `code` y `traceId`.
-- [ ] Swagger permite introducir el JWT mediante `Authorize`.
-- [ ] Las pruebas de integración usan PostgreSQL efímero.
+- [x] Swagger permite introducir el JWT mediante `Authorize`.
+- [x] Las pruebas de integración usan PostgreSQL efímero.
 
 ## Decisiones
 

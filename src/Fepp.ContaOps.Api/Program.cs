@@ -3,21 +3,57 @@ using Fepp.ContaOps.Api.Exceptions;
 using Fepp.ContaOps.Api.Swagger;
 using Fepp.ContaOps.Application;
 using Fepp.ContaOps.Infrastructure;
+using Fepp.ContaOps.Infrastructure.Identity;
+using Serilog;
+using Serilog.Events;
 
 var builder = WebApplication.CreateBuilder(args);
 
-builder.Logging.AddJsonConsole();
+// Configuración transversal y composición de las capas de la aplicación.
+builder.Services.AddSerilog((services, loggerConfiguration) =>
+{
+    loggerConfiguration
+        .ReadFrom.Configuration(builder.Configuration)
+        .ReadFrom.Services(services)
+        .Enrich.FromLogContext();
+});
 builder.Services.AddApplication();
 builder.Services.AddInfrastructure(builder.Configuration);
-builder.Services.AddApi();
+builder.Services.AddApi(builder.Configuration);
 builder.Services.AddSwaggerDocumentation();
 builder.Services.AddProblemDetails();
 builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
 
 var app = builder.Build();
 
-app.UseExceptionHandler();
+// El seed valida la configuración segura y crea roles y administrador de forma idempotente.
+using (IServiceScope scope = app.Services.CreateScope())
+{
+    IdentitySeeder seeder = scope.ServiceProvider.GetRequiredService<IdentitySeeder>();
+    await seeder.SeedAsync();
+}
 
+// El handler debe ejecutarse antes de los endpoints para uniformar excepciones no controladas.
+app.UseExceptionHandler();
+app.UseSerilogRequestLogging(options =>
+{
+    options.GetLevel = (httpContext, _, exception) =>
+    {
+        if (exception is not null || httpContext.Response.StatusCode >= StatusCodes.Status500InternalServerError)
+        {
+            return LogEventLevel.Error;
+        }
+
+        if (httpContext.Response.StatusCode >= StatusCodes.Status400BadRequest)
+        {
+            return LogEventLevel.Warning;
+        }
+
+        return LogEventLevel.Debug;
+    };
+});
+
+// Swagger se expone únicamente cuando la configuración y el ambiente lo permiten.
 if (SwaggerSettings.IsEnabled(builder.Configuration, app.Environment))
 {
     app.UseSwagger();
@@ -27,11 +63,33 @@ if (SwaggerSettings.IsEnabled(builder.Configuration, app.Environment))
     });
 }
 
+// Redirige las solicitudes HTTP a HTTPS antes de procesar los endpoints.
 app.UseHttpsRedirection();
 
+// La autenticación debe ejecutarse antes de evaluar las políticas de autorización.
+app.UseAuthentication();
 app.UseAuthorization();
 
+// Descubre y registra los controllers de la API.
 app.MapControllers();
+
+// Muestra únicamente las URLs y rutas principales disponibles al completar el arranque.
+app.Lifetime.ApplicationStarted.Register(() =>
+{
+    Console.WriteLine();
+    Console.WriteLine("FEPP-ContaOps API ejecutándose correctamente.");
+    foreach (string url in app.Urls)
+    {
+        Console.WriteLine($"API: {url}");
+        Console.WriteLine($"Swagger: {url.TrimEnd('/')}/swagger/index.html");
+        Console.WriteLine($"OpenAPI: {url.TrimEnd('/')}/swagger/v1/swagger.json");
+    }
+
+    Console.WriteLine("Rutas disponibles:");
+    Console.WriteLine("POST /api/auth/login");
+    Console.WriteLine("Los logs se guardan en src/Fepp.ContaOps.Api/logs/.");
+    Console.WriteLine();
+});
 
 app.Run();
 

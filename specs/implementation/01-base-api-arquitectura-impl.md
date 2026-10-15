@@ -805,9 +805,19 @@ git commit -m "FEPP-ContaOps - spec-01-base-api-arquitectura - Implemented"
 git push -u origin spec-01-base-api-arquitectura
 ```
 
+- Aprobar pullrequest en GitHub
+
+- Actualizar rama main
+
+```powershell
+git switch main
+git pull
+git branch -d spec-01-base-api-arquitectura
+```
+
 ---
 
-Comandos de verificación:
+**NOTA**: Comandos de verificación:
 
 ```powershell
 dotnet restore FEPP-ContaOps.slnx
