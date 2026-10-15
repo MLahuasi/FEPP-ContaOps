@@ -326,7 +326,297 @@ Esta separación mantiene **Application independiente de las tecnologías utiliz
 
 ---
 
-### 3. Emisión JWT.
+### 3. Emisión JWT
+
+Este spec implementa la **generación de tokens JWT (JSON Web Token)** para usuarios autenticados.
+
+Complementa los specs anteriores:
+
+- **Spec 1:** define el modelo `User` y la interfaz `ITokenIssuer`.
+- **Spec 2:** implementa la búsqueda de usuarios y la validación de contraseñas mediante ASP.NET Core Identity.
+- **Spec 3:** implementa `ITokenIssuer` para generar tokens JWT firmados.
+
+Un JWT permite identificar a un usuario en solicitudes posteriores sin enviar nuevamente su contraseña.
+
+#### 1. Diagrama de componentes
+
+```mermaid
+flowchart TB
+    subgraph Domain["DOMAIN"]
+        User["User<br/>Identificador, email y roles"]
+    end
+
+    subgraph Application["APPLICATION"]
+        Token["ITokenIssuer<br/>Contrato para emitir tokens"]
+        Result["TokenResult<br/>Token y duración"]
+    end
+
+    subgraph Infrastructure["INFRASTRUCTURE"]
+        Issuer["JwtTokenIssuer<br/>Genera el JWT"]
+        Options["JwtOptions<br/>Configuración JWT"]
+        Library["Microsoft.IdentityModel<br/>Firma y generación JWT"]
+        DI["DependencyInjection<br/>Registra servicios"]
+
+        DI -.-> Issuer
+        DI -.-> Options
+        Options --> Issuer
+        Issuer --> Library
+    end
+
+    Issuer -.->|Implementa| Token
+    Token -.-> User
+    Token --> Result
+```
+
+**Idea principal:** Application define cómo solicitar un token mediante `ITokenIssuer`, mientras que Infrastructure implementa su generación utilizando las librerías JWT de Microsoft.
+
+#### 2. Responsabilidad de cada componente
+
+| Componente            | Capa           | ¿Para qué sirve?                                                      |
+| --------------------- | -------------- | --------------------------------------------------------------------- |
+| `User`                | Domain         | Contiene el identificador, correo y roles que se incluirán en el JWT. |
+| `ITokenIssuer`        | Application    | Define el método `IssueAsync` para solicitar un token.                |
+| `TokenResult`         | Application    | Representa el token generado y su duración en segundos.               |
+| `JwtOptions`          | Infrastructure | Contiene la configuración necesaria para generar y firmar tokens.     |
+| `JwtTokenIssuer`      | Infrastructure | Implementa `ITokenIssuer` y genera el JWT.                            |
+| `DependencyInjection` | Infrastructure | Configura, valida y registra los servicios JWT.                       |
+
+#### 3. ¿Cómo se genera un JWT?
+
+El método `IssueAsync` de `JwtTokenIssuer` realiza las siguientes operaciones:
+
+1. Recibe un objeto `User` que representa al usuario autenticado.
+2. Calcula la fecha de emisión y expiración del token.
+3. Crea los **claims**, que contienen la información del usuario.
+4. Obtiene la clave secreta configurada.
+5. Firma el token utilizando el algoritmo `HmacSha256`.
+6. Convierte el JWT en una cadena de texto.
+7. Devuelve el token generado junto con su duración.
+
+**Ejemplo de los claims utilizados:**
+
+```csharp
+List<Claim> claims =
+[
+    new(JwtRegisteredClaimNames.Sub, user.Id.Value),
+    new(JwtRegisteredClaimNames.Email, user.Email),
+    new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString("N"))
+];
+
+claims.AddRange(
+    user.Roles.Select(role => new Claim(ClaimTypes.Role, role))
+);
+```
+
+| Claim   | ¿Qué representa?                |
+| ------- | ------------------------------- |
+| `Sub`   | Identificador del usuario.      |
+| `Email` | Correo electrónico del usuario. |
+| `Jti`   | Identificador único del token.  |
+| `Role`  | Roles asignados al usuario.     |
+
+Los claims permiten que posteriormente la API identifique al usuario y evalúe sus permisos, siempre que el JWT sea validado correctamente.
+
+#### 4. ¿Qué componentes pertenecen a .NET y cuáles son dependencias?
+
+En `JwtTokenIssuer` se utilizan clases del lenguaje C#, de .NET y de paquetes de Microsoft.
+
+| Componente                      | Origen                                    | ¿Para qué sirve?                                               |
+| ------------------------------- | ----------------------------------------- | -------------------------------------------------------------- |
+| `Task<T>`                       | .NET (`System.Threading.Tasks`)           | Representa una operación que devuelve un resultado.            |
+| `Task.FromResult()`             | .NET (`System.Threading.Tasks`)           | Crea un `Task` completado con un resultado disponible.         |
+| `DateTime.UtcNow`               | .NET (`System`)                           | Obtiene la fecha y hora UTC.                                   |
+| `Guid.NewGuid()`                | .NET (`System`)                           | Genera un identificador único.                                 |
+| `Claim`                         | .NET (`System.Security.Claims`)           | Representa un dato de identidad del usuario.                   |
+| `ClaimTypes.Role`               | .NET (`System.Security.Claims`)           | Identifica un claim de rol.                                    |
+| `Encoding.UTF8`                 | .NET (`System.Text`)                      | Convierte la clave secreta en bytes.                           |
+| `JwtSecurityToken`              | Paquete `System.IdentityModel.Tokens.Jwt` | Representa un token JWT.                                       |
+| `JwtSecurityTokenHandler`       | Paquete `System.IdentityModel.Tokens.Jwt` | Permite serializar un JWT a texto.                             |
+| `JwtRegisteredClaimNames`       | Paquete `System.IdentityModel.Tokens.Jwt` | Proporciona los nombres estándar de claims JWT.                |
+| `SymmetricSecurityKey`          | Paquete `Microsoft.IdentityModel.Tokens`  | Representa una clave criptográfica simétrica.                  |
+| `SigningCredentials`            | Paquete `Microsoft.IdentityModel.Tokens`  | Define la clave y el algoritmo de firma.                       |
+| `SecurityAlgorithms.HmacSha256` | Paquete `Microsoft.IdentityModel.Tokens`  | Identifica el algoritmo de firma HMAC-SHA256.                  |
+| `IOptions<T>`                   | Microsoft.Extensions.Options              | Permite acceder a la configuración mediante el patrón Options. |
+
+**Importante:** `System.IdentityModel.Tokens.Jwt` y `Microsoft.IdentityModel.Tokens` son librerías de Microsoft que se utilizan con .NET, pero no son clases creadas en el proyecto.
+
+En cambio, `JwtOptions`, `JwtTokenIssuer`, `ITokenIssuer` y `TokenResult` son componentes propios de la aplicación.
+
+#### 5. ¿Qué hace `Task.FromResult(new TokenResult(accessToken, expiresIn))`?
+
+En `JwtTokenIssuer` encontramos:
+
+```csharp
+return Task.FromResult(
+    new TokenResult(accessToken, expiresIn)
+);
+```
+
+Esta instrucción realiza dos operaciones.
+
+**Primero: crea un objeto `TokenResult`.**
+
+```csharp
+new TokenResult(accessToken, expiresIn)
+```
+
+Por ejemplo:
+
+```csharp
+new TokenResult("eyJhbGciOiJIUzI1NiIs...", 3600);
+```
+
+Donde:
+
+- `AccessToken`: JWT generado.
+- `ExpiresIn`: duración del token en segundos.
+
+**Segundo: devuelve ese objeto dentro de un `Task`.**
+
+```csharp
+Task.FromResult(resultado);
+```
+
+`Task.FromResult<T>()` es un método de .NET que permite devolver un resultado ya calculado mediante un `Task<T>` completado.
+
+Esto es necesario porque `IssueAsync` está definido con el siguiente tipo de retorno:
+
+```csharp
+public Task<TokenResult> IssueAsync(
+    User user,
+    CancellationToken cancellationToken = default)
+```
+
+**¿Por qué no se utiliza `async/await`?**
+
+Porque la generación del JWT se realiza en memoria y no necesita esperar operaciones asíncronas, como consultas a una base de datos o llamadas HTTP.
+
+Por eso se utiliza:
+
+```csharp
+return Task.FromResult(resultado);
+```
+
+En lugar de declarar innecesariamente un método `async`.
+
+La ventaja es que se mantiene el contrato `Task<TokenResult>` de Application, permitiendo que otras implementaciones puedan utilizar operaciones asíncronas si lo necesitan.
+
+#### 6. ¿Qué hace `public sealed record TokenResult(...)`?
+
+En Application se definió:
+
+```csharp
+public sealed record TokenResult(
+    string AccessToken,
+    long ExpiresIn
+);
+```
+
+`record` es una característica de C# que permite definir tipos orientados a almacenar datos con menos código.
+
+Esta declaración crea un tipo llamado `TokenResult` con dos propiedades:
+
+| Elemento      | Significado                                                                      |
+| ------------- | -------------------------------------------------------------------------------- |
+| `public`      | Puede utilizarse desde otras clases y proyectos que tengan acceso al ensamblado. |
+| `sealed`      | Impide que otras clases hereden de `TokenResult`.                                |
+| `record`      | Define un tipo de referencia con igualdad basada en sus valores.                 |
+| `AccessToken` | Propiedad `string` que contiene el JWT.                                          |
+| `ExpiresIn`   | Propiedad `long` que contiene la duración en segundos.                           |
+
+**Ejemplo de uso:**
+
+```csharp
+TokenResult result = new(
+    "eyJhbGciOiJIUzI1NiIs...",
+    3600
+);
+
+Console.WriteLine(result.AccessToken);
+Console.WriteLine(result.ExpiresIn);
+```
+
+El resultado contiene los datos necesarios para entregar el token al cliente.
+
+**¿Por qué se utiliza `record` en lugar de `class`?**
+
+Porque `TokenResult` únicamente necesita transportar información, sin implementar lógica de negocio.
+
+Además, proporciona automáticamente un constructor, propiedades de solo inicialización e igualdad por valor.
+
+Esto reduce código y facilita el mantenimiento.
+
+#### 7. Configuración mediante `JwtOptions`
+
+La clase `JwtOptions` contiene cuatro propiedades:
+
+| Propiedad                    | ¿Para qué sirve?                              |
+| ---------------------------- | --------------------------------------------- |
+| `Issuer`                     | Identifica quién emite el JWT.                |
+| `Audience`                   | Identifica a quién está destinado el JWT.     |
+| `SigningKey`                 | Clave secreta utilizada para firmar el token. |
+| `AccessTokenLifetimeMinutes` | Tiempo de validez del token en minutos.       |
+
+Estas propiedades se obtienen de la sección `Jwt` de la configuración.
+
+En `DependencyInjection` se utiliza:
+
+```csharp
+services.AddOptions<JwtOptions>()
+    .Bind(configuration.GetSection(JwtOptions.SectionName))
+    .ValidateOnStart();
+```
+
+El código real también incluye validaciones para comprobar que:
+
+- `Issuer` no esté vacío.
+- `Audience` no esté vacío.
+- `SigningKey` contenga al menos 32 bytes UTF-8.
+- `AccessTokenLifetimeMinutes` sea mayor que cero.
+
+El método `ValidateOnStart()` permite ejecutar estas validaciones durante el inicio de la aplicación, evitando comenzar con una configuración JWT inválida.
+
+**Nota de seguridad:** La clave `SigningKey` debe mantenerse fuera del código fuente y gestionarse mediante configuración segura, como variables de entorno o un gestor de secretos.
+
+#### 8. Integración con Application
+
+`JwtTokenIssuer` implementa la interfaz `ITokenIssuer` definida en el Spec 1.
+
+```csharp
+public sealed class JwtTokenIssuer : ITokenIssuer
+```
+
+La implementación se registra mediante inyección de dependencias:
+
+```csharp
+services.AddSingleton<ITokenIssuer, JwtTokenIssuer>();
+```
+
+Esto significa que:
+
+- **Application** utiliza la interfaz `ITokenIssuer`.
+- **Infrastructure** proporciona la implementación `JwtTokenIssuer`.
+- **JwtTokenIssuer** genera el token utilizando las librerías JWT.
+- **Application** recibe un `TokenResult`, sin depender de la tecnología utilizada.
+
+`AddSingleton` indica que el contenedor de dependencias utiliza una única instancia del servicio durante la vida de la aplicación.
+
+#### 9. Resumen
+
+| Capa               | Responsabilidad                                                     |
+| ------------------ | ------------------------------------------------------------------- |
+| **Domain**         | Proporciona el modelo `User` con los datos del usuario autenticado. |
+| **Application**    | Define `ITokenIssuer` y `TokenResult`.                              |
+| **Infrastructure** | Implementa `JwtTokenIssuer` y configura `JwtOptions`.               |
+| **Librerías JWT**  | Construyen, firman y serializan los tokens JWT.                     |
+
+**Conclusión:** El Spec 3 implementa la emisión de tokens JWT mediante una clase de Infrastructure que cumple el contrato definido en Application.
+
+La generación del token utiliza los datos del usuario, incorpora sus roles y firma el JWT mediante HMAC-SHA256.
+
+La arquitectura mantiene **Application independiente de las librerías JWT**, siguiendo los principios de Clean Architecture.
+
+**Nota:** Este spec implementa la emisión de JWT, pero no demuestra todavía la configuración del middleware de autenticación JWT Bearer para validar los tokens recibidos por la API. Esa funcionalidad debe configurarse por separado.
 
 ---
 

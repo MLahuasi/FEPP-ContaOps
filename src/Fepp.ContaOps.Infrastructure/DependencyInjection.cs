@@ -1,10 +1,12 @@
 using Fepp.ContaOps.Application.Abstractions;
 using Fepp.ContaOps.Infrastructure.Identity;
 using Fepp.ContaOps.Infrastructure.Persistence;
+using Fepp.ContaOps.Infrastructure.Security;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.EntityFrameworkCore;
+using System.Text;
 
 namespace Fepp.ContaOps.Infrastructure;
 
@@ -46,6 +48,23 @@ public static class DependencyInjection
 
         services.AddScoped<IUserRepository, IdentityUserRepository>();
         services.AddScoped<IUserCredentialService, IdentityCredentialService>();
+        services.AddOptions<JwtOptions>()
+            .Bind(configuration.GetSection(JwtOptions.SectionName))
+            .Validate(
+                options => !string.IsNullOrWhiteSpace(options.Issuer),
+                "Jwt:Issuer must be configured.")
+            .Validate(
+                options => !string.IsNullOrWhiteSpace(options.Audience),
+                "Jwt:Audience must be configured.")
+            .Validate(
+                options => !string.IsNullOrWhiteSpace(options.SigningKey)
+                    && Encoding.UTF8.GetByteCount(options.SigningKey) >= 32,
+                "Jwt:SigningKey must contain at least 32 UTF-8 bytes.")
+            .Validate(
+                options => options.AccessTokenLifetimeMinutes > 0,
+                "Jwt:AccessTokenLifetimeMinutes must be greater than zero.")
+            .ValidateOnStart();
+        services.AddSingleton<ITokenIssuer, JwtTokenIssuer>();
         return services;
     }
 }
