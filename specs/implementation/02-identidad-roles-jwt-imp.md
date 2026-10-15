@@ -1,6 +1,5 @@
 ```powershell
 
-6. Swagger Bearer y respuestas de error.
 7. Pruebas unitarias e integración con PostgreSQL efímero.
 ```
 
@@ -1271,7 +1270,459 @@ La API puede validar los tokens recibidos, identificar al usuario, comprobar sus
 
 ---
 
-### 6. Swagger Bearer y respuestas de error.
+### 6. Swagger Bearer y respuestas de error
+
+Este spec implementa el **endpoint de inicio de sesión y un mecanismo uniforme para devolver errores HTTP**.
+
+Complementa los specs anteriores:
+
+- **Spec 1:** define el modelo `User` y los puertos de Application.
+- **Spec 2:** implementa la consulta de usuarios y verificación de contraseñas.
+- **Spec 3:** implementa la generación de tokens JWT.
+- **Spec 4:** crea los roles y el administrador inicial.
+- **Spec 5:** configura JWT Bearer, autorización y políticas de acceso.
+- **Spec 6:** integra los componentes anteriores para ejecutar el login y devolver respuestas HTTP estandarizadas.
+
+El endpoint implementado es:
+
+`POST /api/auth/login`
+
+#### 1. Diagrama de componentes
+
+```mermaid
+flowchart TB
+    Client["Cliente<br/>React / Swagger / Postman"]
+
+    subgraph API["PRESENTATION - API"]
+        Request["LoginRequest<br/>Email y contraseña"]
+        Controller["AuthController<br/>Endpoint de login"]
+        Response["LoginResponse<br/>JWT y duración"]
+        Errors["ProblemDetailsResponseFactory<br/>Respuestas de error"]
+
+        Request --> Controller
+        Controller --> Response
+        Controller -.-> Errors
+    end
+
+    subgraph Application["APPLICATION"]
+        Login["LoginUser<br/>Caso de uso"]
+        Ports["IUserRepository<br/>IUserCredentialService<br/>ITokenIssuer"]
+
+        Login --> Ports
+    end
+
+    subgraph Infrastructure["INFRASTRUCTURE"]
+        Identity["ASP.NET Core Identity<br/>Usuarios y contraseñas"]
+        JWT["JwtTokenIssuer<br/>Genera JWT"]
+    end
+
+    Client --> Request
+    Controller --> Login
+    Ports --> Identity
+    Ports --> JWT
+```
+
+**Idea principal:** `AuthController` recibe las credenciales, `LoginUser` coordina la autenticación y las implementaciones de Infrastructure verifican el usuario y generan el token.
+
+Si ocurre un error esperado, la API utiliza `ProblemDetails` para devolver una respuesta HTTP uniforme.
+
+#### 2. Responsabilidad de cada componente
+
+| Componente                             | Capa        | ¿Para qué sirve?                                                                      |
+| -------------------------------------- | ----------- | ------------------------------------------------------------------------------------- |
+| `AuthController`                       | API         | Expone el endpoint `POST /api/auth/login`.                                            |
+| `LoginRequest`                         | API         | Representa el correo y la contraseña recibidos.                                       |
+| `LoginRequestValidator`                | API         | Valida los datos enviados por el cliente.                                             |
+| `LoginResponse`                        | API         | Contiene el JWT, el tipo de token y su duración.                                      |
+| `LoginUser`                            | Application | Coordina la búsqueda del usuario, validación de contraseña y emisión del JWT.         |
+| `AuthenticationError`                  | Application | Representa un error de credenciales inválidas o una cuenta que no puede autenticarse. |
+| `ProblemDetailsResponseFactory`        | API         | Construye respuestas de error HTTP estandarizadas.                                    |
+| `ApplicationErrorProblemDetailsMapper` | API         | Traduce errores de Application a respuestas HTTP.                                     |
+| `DependencyInjection`                  | Application | Registra `LoginUser` en el contenedor de dependencias.                                |
+
+#### 3. ¿Cómo funciona el login?
+
+El proceso comienza cuando el cliente envía una solicitud:
+
+```http
+POST /api/auth/login
+Content-Type: application/json
+```
+
+```json
+{
+  "email": "admin@example.com",
+  "password": "************"
+}
+```
+
+El flujo es el siguiente:
+
+1. **AuthController** recibe las credenciales mediante `LoginRequest`.
+2. **LoginRequestValidator** verifica el formato del correo y que los campos obligatorios estén presentes.
+3. **AuthController** invoca el caso de uso `LoginUser`.
+4. **LoginUser** utiliza `IUserRepository` para buscar al usuario.
+5. Si existe, utiliza `IUserCredentialService` para verificar la contraseña.
+6. Si las credenciales son correctas, utiliza `ITokenIssuer` para generar el JWT.
+7. **AuthController** devuelve un `LoginResponse` con el token generado.
+8. Si las credenciales no son válidas, devuelve un error HTTP `401`.
+
+**Ejemplo de respuesta exitosa:**
+
+```json
+{
+  "accessToken": "eyJhbGciOiJIUzI1NiIs...",
+  "tokenType": "Bearer",
+  "expiresIn": 3600
+}
+```
+
+| Campo         | Descripción                                                 |
+| ------------- | ----------------------------------------------------------- |
+| `accessToken` | JWT que utilizará el cliente en las siguientes solicitudes. |
+| `tokenType`   | Tipo de autenticación; en este caso, `Bearer`.              |
+| `expiresIn`   | Duración del token en segundos.                             |
+
+#### 4. ¿Qué hace `LoginUser`?
+
+`LoginUser` es un **caso de uso de Application** que coordina el proceso de autenticación.
+
+Su constructor recibe tres interfaces:
+
+```csharp
+public LoginUser(
+    IUserRepository userRepository,
+    IUserCredentialService credentialService,
+    ITokenIssuer tokenIssuer)
+```
+
+Cada una tiene una responsabilidad específica:
+
+| Interfaz                 | Responsabilidad               |
+| ------------------------ | ----------------------------- |
+| `IUserRepository`        | Buscar al usuario por correo. |
+| `IUserCredentialService` | Verificar la contraseña.      |
+| `ITokenIssuer`           | Generar el JWT.               |
+
+El método principal es:
+
+```csharp
+public async Task<Result<TokenResult>> ExecuteAsync(
+    string email,
+    string password,
+    CancellationToken cancellationToken = default)
+```
+
+**¿Qué significa `Task<Result<TokenResult>>`?**
+
+Es un tipo de retorno compuesto por tres elementos:
+
+| Elemento      | Significado                                                              |
+| ------------- | ------------------------------------------------------------------------ |
+| `Task<T>`     | Representa una operación asíncrona.                                      |
+| `Result<T>`   | Representa el resultado de una operación que puede tener éxito o fallar. |
+| `TokenResult` | Contiene el token generado y su duración.                                |
+
+Por tanto:
+
+`Task<Result<TokenResult>>`
+
+Significa que el método ejecuta una operación asíncrona cuyo resultado puede contener un `TokenResult` exitoso o un error.
+
+**Ejemplo de resultado exitoso:**
+
+```csharp
+TokenResult token = await _tokenIssuer.IssueAsync(
+    user,
+    cancellationToken
+);
+
+return Result<TokenResult>.Success(token);
+```
+
+**Ejemplo de resultado fallido:**
+
+```csharp
+if (user is null)
+{
+    return Result<TokenResult>.Failure(
+        AuthenticationError.Instance
+    );
+}
+```
+
+`Success()` y `Failure()` son métodos propios del patrón `Result` utilizado en Application, no métodos de ASP.NET Core.
+
+Este patrón permite representar errores esperados sin utilizar excepciones como mecanismo habitual de control de flujo.
+
+#### 5. ¿Qué hace `AuthenticationError`?
+
+Es un tipo de error definido en Application:
+
+```csharp
+public sealed record AuthenticationError : ApplicationError
+{
+    public static AuthenticationError Instance { get; } = new();
+
+    public override string Code => "invalid_credentials";
+
+    public override string Message =>
+        "The supplied credentials are invalid.";
+}
+```
+
+Se utiliza cuando:
+
+- El usuario no existe.
+- La contraseña es incorrecta.
+- La verificación de credenciales no permite autenticar al usuario.
+
+**¿Por qué se utiliza el mismo error?**
+
+Para evitar revelar información sobre la existencia de cuentas.
+
+Por ejemplo, la API no necesita indicar si el correo existe o si únicamente falló la contraseña.
+
+Ambas situaciones producen un error genérico de autenticación.
+
+**¿Qué hace `Instance`?**
+
+```csharp
+public static AuthenticationError Instance { get; } = new();
+```
+
+Define una instancia compartida e inmutable del error.
+
+Esto permite reutilizarla:
+
+```csharp
+AuthenticationError.Instance
+```
+
+En lugar de crear un nuevo objeto cada vez que falla una autenticación.
+
+#### 6. Validación de LoginRequest mediante FluentValidation
+
+`LoginRequestValidator` utiliza **FluentValidation**, una librería externa para definir reglas de validación mediante expresiones.
+
+```csharp
+public sealed class LoginRequestValidator
+    : AbstractValidator<LoginRequest>
+{
+    public LoginRequestValidator()
+    {
+        RuleFor(request => request.Email)
+            .NotEmpty()
+            .EmailAddress()
+            .MaximumLength(256);
+
+        RuleFor(request => request.Password)
+            .NotEmpty();
+    }
+}
+```
+
+**Explicación de los métodos:**
+
+| Método                 | Origen           | ¿Qué hace?                                            |
+| ---------------------- | ---------------- | ----------------------------------------------------- |
+| `AbstractValidator<T>` | FluentValidation | Clase base para definir validadores.                  |
+| `RuleFor()`            | FluentValidation | Selecciona una propiedad que será validada.           |
+| `NotEmpty()`           | FluentValidation | Comprueba que el valor no esté vacío.                 |
+| `EmailAddress()`       | FluentValidation | Comprueba el formato básico de un correo electrónico. |
+| `MaximumLength()`      | FluentValidation | Establece la longitud máxima permitida.               |
+
+**¿Por qué se utiliza FluentValidation?**
+
+Porque permite separar las reglas de validación de los controladores.
+
+De esta forma, `AuthController` se concentra en recibir solicitudes y ejecutar casos de uso.
+
+**Importante:** El validador comprueba la estructura de los datos recibidos, pero no verifica que el usuario exista ni que la contraseña sea correcta. Esa responsabilidad corresponde a `LoginUser`.
+
+#### 7. ¿Qué es ProblemDetails?
+
+`ProblemDetails` es una clase de ASP.NET Core utilizada para representar errores HTTP de forma estructurada.
+
+Su formato está basado en el estándar RFC 7807, actualizado por RFC 9457.
+
+En lugar de devolver mensajes diferentes para cada error, la API utiliza un formato común.
+
+**Ejemplo de error de autenticación:**
+
+```json
+{
+  "type": "https://httpstatuses.com/401",
+  "title": "Authentication failed.",
+  "status": 401,
+  "detail": "The supplied credentials are invalid.",
+  "instance": "/api/auth/login",
+  "code": "invalid_credentials",
+  "traceId": "..."
+}
+```
+
+| Campo      | ¿Para qué sirve?                                                          |
+| ---------- | ------------------------------------------------------------------------- |
+| `type`     | Identifica el tipo de problema.                                           |
+| `title`    | Describe brevemente el error.                                             |
+| `status`   | Código HTTP correspondiente.                                              |
+| `detail`   | Explica el problema.                                                      |
+| `instance` | Identifica la ruta donde ocurrió.                                         |
+| `code`     | Código de error definido por la aplicación.                               |
+| `traceId`  | Identificador para relacionar el error con los registros de la solicitud. |
+
+Los campos `code` y `traceId` son extensiones agregadas por el proyecto.
+
+#### 8. ¿Qué hace `ProblemDetailsResponseFactory`?
+
+Es una clase propia de la API que centraliza la construcción de respuestas de error.
+
+Proporciona tres métodos principales:
+
+| Método                           | Responsabilidad                                               |
+| -------------------------------- | ------------------------------------------------------------- |
+| `CreateApplicationErrorResult()` | Convierte errores de Application en respuestas HTTP.          |
+| `CreateValidationResult()`       | Convierte errores de FluentValidation en respuestas HTTP 400. |
+| `Create()`                       | Construye un objeto `ProblemDetails` con los campos comunes.  |
+
+**Ejemplo: Conversión de errores de Application**
+
+```csharp
+int status = error switch
+{
+    ValidationError => StatusCodes.Status400BadRequest,
+    AuthenticationError => StatusCodes.Status401Unauthorized,
+    ResourceNotFoundError => StatusCodes.Status404NotFound,
+    ConflictError => StatusCodes.Status409Conflict,
+    _ => StatusCodes.Status500InternalServerError
+};
+```
+
+Este código utiliza una **switch expression de C#** para determinar el código HTTP según el tipo de error.
+
+| Error de Application     | HTTP | Significado                          |
+| ------------------------ | ---- | ------------------------------------ |
+| `ValidationError`        | 400  | Datos inválidos.                     |
+| `AuthenticationError`    | 401  | Credenciales inválidas.              |
+| `ResourceNotFoundError`  | 404  | Recurso no encontrado.               |
+| `ConflictError`          | 409  | Conflicto con el estado del recurso. |
+| Otro error no reconocido | 500  | Error del servidor.                  |
+
+**¿Por qué se utiliza esta clase?**
+
+Para que todos los controladores puedan devolver errores con la misma estructura, sin repetir la lógica de construcción de respuestas HTTP.
+
+#### 9. ¿Cómo funciona AuthController?
+
+`AuthController` es el adaptador HTTP encargado de recibir las solicitudes de autenticación.
+
+```csharp
+[ApiController]
+[Route("api/auth")]
+public sealed class AuthController : ControllerBase
+```
+
+El endpoint se define mediante:
+
+```csharp
+[AllowAnonymous]
+[HttpPost("login")]
+public async Task<IActionResult> Login(
+    LoginRequest request,
+    CancellationToken cancellationToken)
+```
+
+**Componentes utilizados:**
+
+| Elemento                 | Origen                     | ¿Qué hace?                                                   |
+| ------------------------ | -------------------------- | ------------------------------------------------------------ |
+| `ApiController`          | ASP.NET Core MVC           | Habilita comportamientos propios de controladores API.       |
+| `Route()`                | ASP.NET Core MVC           | Define la ruta base del controlador.                         |
+| `ControllerBase`         | ASP.NET Core MVC           | Clase base para controladores HTTP sin vistas.               |
+| `AllowAnonymous`         | ASP.NET Core Authorization | Permite ejecutar el endpoint sin autenticación previa.       |
+| `HttpPost()`             | ASP.NET Core MVC           | Define un endpoint HTTP POST.                                |
+| `IActionResult`          | ASP.NET Core MVC           | Representa una respuesta HTTP.                               |
+| `Ok()`                   | ASP.NET Core MVC           | Devuelve una respuesta HTTP 200.                             |
+| `ProducesResponseType()` | ASP.NET Core MVC           | Declara posibles respuestas para la documentación de la API. |
+
+**¿Por qué se utiliza `[AllowAnonymous]`?**
+
+Porque un usuario debe poder iniciar sesión antes de tener un JWT.
+
+Sin este atributo, una política global que exigiera autenticación podría impedir acceder al endpoint de login.
+
+**¿Qué hace el controlador con el resultado?**
+
+```csharp
+Result<TokenResult> result = await _loginUser.ExecuteAsync(
+    request.Email,
+    request.Password,
+    cancellationToken
+);
+
+if (!result.IsSuccess)
+{
+    return _errorMapper.Map(
+        HttpContext,
+        result.Error!
+    );
+}
+
+TokenResult token = result.Value!;
+
+return Ok(
+    new LoginResponse(
+        token.AccessToken,
+        "Bearer",
+        token.ExpiresIn
+    )
+);
+```
+
+Si la autenticación falla, el error se convierte en una respuesta HTTP.
+
+Si tiene éxito, devuelve el token mediante `LoginResponse`.
+
+**Importante:** El controlador no consulta directamente PostgreSQL ni genera el JWT. Estas responsabilidades permanecen separadas en Application e Infrastructure.
+
+#### 10. Swagger Bearer
+
+Swagger permite documentar y probar los endpoints de la API.
+
+La configuración JWT Bearer incorporada en el Spec 5 permite indicar a Swagger que la API acepta tokens de autenticación.
+
+El flujo esperado es:
+
+1. Ejecutar `POST /api/auth/login`.
+2. Obtener el valor `accessToken`.
+3. Abrir la opción **Authorize** de Swagger.
+4. Introducir el JWT según el esquema Bearer configurado.
+5. Ejecutar los endpoints protegidos.
+
+Swagger utilizará el token para enviar solicitudes autenticadas.
+
+**Nota:** La configuración de Swagger Bearer ya estaba presente en el archivo `DependencyInjection` del Spec 5. El aporte visible de este spec es incorporar el endpoint que permite obtener el token y documentar sus respuestas `200`, `400` y `401`.
+
+#### 11. Resumen
+
+| Componente                        | Responsabilidad                                       |
+| --------------------------------- | ----------------------------------------------------- |
+| **AuthController**                | Recibe solicitudes HTTP de autenticación.             |
+| **LoginRequest**                  | Contiene las credenciales del usuario.                |
+| **LoginRequestValidator**         | Valida los datos recibidos.                           |
+| **LoginUser**                     | Coordina el proceso de autenticación.                 |
+| **AuthenticationError**           | Representa credenciales inválidas.                    |
+| **ITokenIssuer**                  | Permite solicitar la generación del JWT.              |
+| **LoginResponse**                 | Devuelve el token generado.                           |
+| **ProblemDetailsResponseFactory** | Construye errores HTTP uniformes.                     |
+| **Swagger Bearer**                | Permite documentar y probar solicitudes autenticadas. |
+
+**Conclusión:** El Spec 6 incorpora el flujo de inicio de sesión mediante un controlador HTTP y un caso de uso de Application.
+
+La autenticación reutiliza los contratos e implementaciones de los specs anteriores, mientras que los errores se devuelven mediante una estructura común basada en `ProblemDetails`.
+
+Esta organización mantiene separadas las responsabilidades de Presentation, Application e Infrastructure, siguiendo los principios de Clean Architecture.
 
 ---
 

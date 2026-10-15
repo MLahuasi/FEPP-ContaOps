@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Fepp.ContaOps.Application.Users;
 
 namespace Fepp.ContaOps.Application;
 
@@ -14,6 +15,7 @@ public static class DependencyInjection
     /// <returns>El mismo contenedor para permitir encadenar configuraciones.</returns>
     public static IServiceCollection AddApplication(this IServiceCollection services)
     {
+        services.AddScoped<LoginUser>();
         return services;
     }
 }

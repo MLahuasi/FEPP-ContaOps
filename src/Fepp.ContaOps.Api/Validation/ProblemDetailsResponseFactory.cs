@@ -23,6 +23,7 @@ public static class ProblemDetailsResponseFactory
         int status = error switch
         {
             ValidationError => StatusCodes.Status400BadRequest,
+            AuthenticationError => StatusCodes.Status401Unauthorized,
             ResourceNotFoundError => StatusCodes.Status404NotFound,
             ConflictError => StatusCodes.Status409Conflict,
             _ => StatusCodes.Status500InternalServerError
@@ -31,6 +32,7 @@ public static class ProblemDetailsResponseFactory
         string detail = error switch
         {
             ValidationError => "One or more validation errors occurred.",
+            AuthenticationError => "The supplied credentials are invalid.",
             ResourceNotFoundError notFound => notFound.Message,
             ConflictError conflict => conflict.Message,
             _ => "The request could not be completed."
@@ -42,6 +44,7 @@ public static class ProblemDetailsResponseFactory
             status switch
             {
                 StatusCodes.Status400BadRequest => "Request validation failed.",
+                StatusCodes.Status401Unauthorized => "Authentication failed.",
                 StatusCodes.Status404NotFound => "Resource not found.",
                 StatusCodes.Status409Conflict => "Resource conflict.",
                 _ => "An unexpected error occurred."
