@@ -5,14 +5,32 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.DependencyInjection;
+using Testcontainers.PostgreSql;
 
 namespace Fepp.ContaOps.IntegrationTests;
 
 /// <summary>
 /// Verifica el pipeline HTTP de manejo global de excepciones.
 /// </summary>
-public sealed class ExceptionPipelineTests
+public sealed class ExceptionPipelineTests : IAsyncLifetime
 {
+    private readonly PostgreSqlContainer _database = new PostgreSqlBuilder("postgres:16-alpine").Build();
+
+    /// <summary>
+    /// Inicia el contenedor PostgreSQL antes de ejecutar la prueba.
+    /// </summary>
+    public Task InitializeAsync()
+    {
+        return _database.StartAsync();
+    }
+
+    /// <summary>
+    /// Libera el contenedor PostgreSQL después de ejecutar la prueba.
+    /// </summary>
+    public Task DisposeAsync()
+    {
+        return _database.DisposeAsync().AsTask();
+    }
     /// <summary>
     /// Comprueba que una excepción inesperada produce ProblemDetails seguro.
     /// </summary>
@@ -20,7 +38,7 @@ public sealed class ExceptionPipelineTests
     public async Task UnexpectedException_ReturnsSafeProblemDetails()
     {
         ConcurrentBag<string> logs = [];
-        await using TestApiFactory factory = new(logs);
+        await using TestApiFactory factory = new(logs, _database.GetConnectionString());
         using HttpClient client = factory.CreateClient();
 
         HttpResponseMessage response = await client.GetAsync("/test-pipeline/unexpected-error");
@@ -44,14 +62,16 @@ public sealed class ExceptionPipelineTests
     private sealed class TestApiFactory : WebApplicationFactory<Program>
     {
         private readonly ConcurrentBag<string> _logs;
+        private readonly string _connectionString;
 
         /// <summary>
         /// Inicializa la fábrica de pruebas con el almacenamiento de logs.
         /// </summary>
         /// <param name="logs">Almacenamiento donde se capturan mensajes estructurados.</param>
-        public TestApiFactory(ConcurrentBag<string> logs)
+        public TestApiFactory(ConcurrentBag<string> logs, string connectionString)
         {
             _logs = logs;
+            _connectionString = connectionString;
         }
 
         /// <summary>
@@ -61,6 +81,13 @@ public sealed class ExceptionPipelineTests
         /// <returns>Constructor configurado con la aplicación de controllers de prueba.</returns>
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
+            builder.UseSetting("ConnectionStrings:Default", _connectionString);
+            builder.UseSetting("Jwt:Issuer", "FEPP-ContaOps.Tests");
+            builder.UseSetting("Jwt:Audience", "FEPP-ContaOps.Tests");
+            builder.UseSetting("Jwt:SigningKey", "test-signing-key-with-at-least-32-bytes");
+            builder.UseSetting("Jwt:AccessTokenLifetimeMinutes", "15");
+            builder.UseSetting("BootstrapAdmin:Email", "admin@example.com");
+            builder.UseSetting("BootstrapAdmin:Password", "AdminPassword123!");
             builder.ConfigureLogging(logging => logging.AddProvider(new TestLoggerProvider(_logs)));
             builder.ConfigureServices(services =>
             {

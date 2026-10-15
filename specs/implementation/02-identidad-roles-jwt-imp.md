@@ -1,8 +1,3 @@
-```powershell
-
-7. Pruebas unitarias e integración con PostgreSQL efímero.
-```
-
 # Implementar 01-base-api-arquitectura
 
 ## PASOS
@@ -1726,7 +1721,434 @@ Esta organización mantiene separadas las responsabilidades de Presentation, App
 
 ---
 
-### 7. Pruebas unitarias e integración con PostgreSQL efímero.
+### 7. Pruebas unitarias e integración con PostgreSQL efímero
+
+Este spec implementa **pruebas automatizadas para comprobar el inicio de sesión, la emisión de tokens y el manejo de errores HTTP**.
+
+Se utilizan dos tipos de pruebas:
+
+- **Pruebas unitarias:** verifican el funcionamiento de `LoginUser` sin utilizar una base de datos ni ASP.NET Core Identity.
+- **Pruebas de integración:** ejecutan la API utilizando PostgreSQL temporal para comprobar el funcionamiento de los componentes integrados.
+
+La principal ventaja es que las pruebas pueden ejecutarse sin utilizar la base de datos de desarrollo o producción.
+
+#### 1. Diagrama de componentes
+
+```mermaid
+flowchart TB
+    subgraph UnitTests["UNIT TESTS"]
+        UT["LoginUserTests<br/>Pruebas unitarias"]
+        Fake["Fake Services<br/>Simulan las dependencias"]
+        Login["LoginUser<br/>Caso de uso"]
+
+        UT --> Login
+        Login --> Fake
+    end
+
+    subgraph IntegrationTests["INTEGRATION TESTS"]
+        IT["AuthIntegrationTests<br/>ExceptionPipelineTests"]
+        Factory["WebApplicationFactory<br/>Ejecuta la API"]
+        API["API<br/>Endpoints y middleware"]
+        Container["Testcontainers<br/>PostgreSQL temporal"]
+
+        IT --> Factory
+        Factory --> API
+        API --> Container
+    end
+```
+
+**Idea principal:** Las pruebas unitarias comprueban la lógica de Application de manera aislada, mientras que las pruebas de integración verifican el comportamiento de la API utilizando una base de datos PostgreSQL real y temporal.
+
+#### 2. Responsabilidad de cada componente
+
+| Componente                       | Tipo                       | ¿Para qué sirve?                                                      |
+| -------------------------------- | -------------------------- | --------------------------------------------------------------------- |
+| `LoginUserTests`                 | Prueba unitaria            | Comprueba el comportamiento del caso de uso `LoginUser`.              |
+| `FakeUserRepository`             | Simulación                 | Simula la búsqueda de usuarios sin consultar PostgreSQL.              |
+| `FakeCredentialService`          | Simulación                 | Simula la verificación de contraseñas.                                |
+| `FakeTokenIssuer`                | Simulación                 | Devuelve un token ficticio sin generar un JWT real.                   |
+| `AuthIntegrationTests`           | Integración                | Comprueba el endpoint de login utilizando PostgreSQL temporal.        |
+| `ExceptionPipelineTests`         | Integración                | Comprueba el manejo global de excepciones y los registros de errores. |
+| `WebApplicationFactory<Program>` | Infraestructura de pruebas | Permite ejecutar la aplicación ASP.NET Core en un entorno de pruebas. |
+| `TestApiFactory`                 | Configuración de pruebas   | Personaliza la conexión a PostgreSQL y la configuración de la API.    |
+| `PostgreSqlContainer`            | Infraestructura de pruebas | Representa un contenedor PostgreSQL temporal.                         |
+
+#### 3. ¿Qué son las pruebas unitarias?
+
+Las pruebas unitarias comprueban el funcionamiento de una clase o componente sin depender de recursos externos.
+
+En este spec, `LoginUserTests` verifica el caso de uso `LoginUser`.
+
+Se implementaron tres escenarios:
+
+| Prueba                                      | ¿Qué verifica?                           | Resultado esperado              |
+| ------------------------------------------- | ---------------------------------------- | ------------------------------- |
+| `ValidCredentials_ReturnsToken`             | Usuario existente y contraseña correcta. | Devuelve un token.              |
+| `UnknownUser_ReturnsInvalidCredentials`     | El usuario no existe.                    | Devuelve `invalid_credentials`. |
+| `InvalidPassword_ReturnsInvalidCredentials` | La contraseña es incorrecta.             | Devuelve `invalid_credentials`. |
+
+**Ejemplo: Prueba de credenciales válidas**
+
+```csharp
+[Fact]
+public async Task ValidCredentials_ReturnsToken()
+{
+    FakeUserRepository repository = new(
+        new User(
+            new UserId("user-1"),
+            "user@example.com",
+            ["User"]
+        )
+    );
+
+    FakeCredentialService credentials = new(true);
+    FakeTokenIssuer issuer = new();
+
+    LoginUser login = new(
+        repository,
+        credentials,
+        issuer
+    );
+
+    var result = await login.ExecuteAsync(
+        "user@example.com",
+        "Password123!"
+    );
+
+    Assert.True(result.IsSuccess);
+    Assert.Equal("token", result.Value!.AccessToken);
+    Assert.Equal(900, result.Value.ExpiresIn);
+}
+```
+
+**¿Qué ocurre?**
+
+1. Se crea un usuario ficticio.
+2. Se configura un servicio que simula credenciales válidas.
+3. Se configura un emisor de tokens ficticio.
+4. Se ejecuta `LoginUser`.
+5. Se comprueba que la operación sea exitosa y devuelva los valores esperados.
+
+No se utiliza PostgreSQL, ASP.NET Core Identity ni la implementación real de JWT.
+
+#### 4. ¿Qué son los servicios Fake?
+
+Los **Fake Services** son implementaciones sencillas de las interfaces utilizadas por Application.
+
+Permiten controlar los resultados de las dependencias durante una prueba.
+
+Por ejemplo:
+
+```csharp
+private sealed class FakeCredentialService
+    : IUserCredentialService
+{
+    private readonly bool _isValid;
+
+    public FakeCredentialService(bool isValid)
+    {
+        _isValid = isValid;
+    }
+
+    public Task<bool> VerifyPasswordAsync(
+        User user,
+        string password,
+        CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult(_isValid);
+    }
+}
+```
+
+**¿Qué hace?**
+
+En lugar de verificar una contraseña mediante ASP.NET Core Identity, devuelve el valor configurado:
+
+- `true`: simula una contraseña correcta.
+- `false`: simula una contraseña incorrecta.
+
+Se utiliza `Task.FromResult()` porque la interfaz requiere devolver `Task<bool>`, aunque el resultado ficticio ya está disponible.
+
+**¿Por qué utilizar Fakes?**
+
+Porque permiten probar la lógica de Application independientemente de las implementaciones de Infrastructure.
+
+Esta separación es posible gracias a las interfaces definidas en el Spec 1.
+
+#### 5. ¿Qué son las pruebas de integración?
+
+Las pruebas de integración comprueban que varios componentes funcionen correctamente cuando trabajan juntos.
+
+En este spec se utiliza:
+
+- La API ASP.NET Core.
+- Los casos de uso de Application.
+- ASP.NET Core Identity.
+- Entity Framework Core.
+- PostgreSQL temporal.
+- Los componentes de autenticación y manejo de errores.
+
+A diferencia de las pruebas unitarias, aquí se ejecutan las implementaciones reales de la aplicación.
+
+#### 6. ¿Qué es PostgreSQL efímero y Testcontainers?
+
+**PostgreSQL efímero** significa que se utiliza una instancia temporal de PostgreSQL para ejecutar las pruebas.
+
+La instancia se crea para las pruebas y posteriormente se elimina.
+
+Para implementarlo se utiliza **Testcontainers**, una librería externa que permite administrar contenedores Docker desde .NET.
+
+En `AuthIntegrationTests` se define:
+
+```csharp
+private readonly PostgreSqlContainer _database =
+    new PostgreSqlBuilder("postgres:16-alpine")
+        .Build();
+```
+
+**Explicación:**
+
+| Componente            | ¿Qué hace?                                             |
+| --------------------- | ------------------------------------------------------ |
+| `PostgreSqlBuilder`   | Configura el contenedor PostgreSQL.                    |
+| `postgres:16-alpine`  | Imagen Docker de PostgreSQL 16 basada en Alpine Linux. |
+| `Build()`             | Construye la definición del contenedor.                |
+| `PostgreSqlContainer` | Representa el contenedor que utilizarán las pruebas.   |
+
+**¿Por qué utilizar PostgreSQL real?**
+
+Porque permite verificar que la aplicación funciona con el mismo motor de base de datos utilizado en el proyecto.
+
+Esto ayuda a detectar errores que podrían no aparecer utilizando una base de datos simulada.
+
+**Requisito:** Docker, o un entorno de contenedores compatible con Testcontainers, debe estar disponible para ejecutar estas pruebas.
+
+#### 7. ¿Qué hacen `InitializeAsync()` y `DisposeAsync()`?
+
+Las pruebas de integración implementan la interfaz `IAsyncLifetime`, proporcionada por xUnit.
+
+```csharp
+public sealed class AuthIntegrationTests : IAsyncLifetime
+```
+
+Esta interfaz permite ejecutar operaciones asíncronas antes y después de las pruebas.
+
+**Inicialización:**
+
+```csharp
+public Task InitializeAsync()
+{
+    return _database.StartAsync();
+}
+```
+
+`StartAsync()` inicia el contenedor PostgreSQL.
+
+**Liberación de recursos:**
+
+```csharp
+public Task DisposeAsync()
+{
+    return _database.DisposeAsync().AsTask();
+}
+```
+
+`DisposeAsync()` libera los recursos del contenedor al finalizar las pruebas.
+
+`AsTask()` convierte el `ValueTask` devuelto por la operación en un `Task`, para cumplir el contrato de `IAsyncLifetime` utilizado.
+
+**¿Por qué se utilizan?**
+
+Para automatizar el ciclo de vida de la base de datos de pruebas:
+
+```text
+Iniciar PostgreSQL
+        ↓
+Ejecutar las pruebas
+        ↓
+Liberar PostgreSQL
+```
+
+Así no es necesario iniciar y eliminar manualmente la base de datos.
+
+#### 8. ¿Qué hace `WebApplicationFactory<Program>`?
+
+`WebApplicationFactory<Program>` pertenece al paquete `Microsoft.AspNetCore.Mvc.Testing`.
+
+Permite iniciar la aplicación ASP.NET Core en un entorno de pruebas, sin necesidad de publicarla en un servidor HTTP externo.
+
+En el proyecto se implementa mediante:
+
+```csharp
+private sealed class TestApiFactory
+    : WebApplicationFactory<Program>
+{
+    private readonly string _connectionString;
+
+    public TestApiFactory(string connectionString)
+    {
+        _connectionString = connectionString;
+    }
+
+    protected override void ConfigureWebHost(
+        IWebHostBuilder builder)
+    {
+        builder.UseSetting(
+            "ConnectionStrings:Default",
+            _connectionString
+        );
+
+        // Configuración JWT y administrador de prueba.
+    }
+}
+```
+
+**¿Qué hace `ConfigureWebHost()`?**
+
+Permite modificar la configuración de la aplicación exclusivamente para las pruebas.
+
+Por ejemplo:
+
+```csharp
+builder.UseSetting(
+    "ConnectionStrings:Default",
+    _connectionString
+);
+```
+
+Esta instrucción configura la conexión a la instancia temporal de PostgreSQL.
+
+También se proporcionan valores de prueba para:
+
+- `Jwt:Issuer`
+- `Jwt:Audience`
+- `Jwt:SigningKey`
+- `Jwt:AccessTokenLifetimeMinutes`
+- `BootstrapAdmin:Email`
+- `BootstrapAdmin:Password`
+
+De esta manera, las pruebas utilizan una configuración independiente de la aplicación real.
+
+#### 9. Pruebas de integración del login
+
+`AuthIntegrationTests` implementa dos escenarios:
+
+| Prueba                                                          | ¿Qué verifica?                                                         |
+| --------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `LoginWithBootstrapAdmin_ReturnsBearerToken`                    | El administrador inicial puede autenticarse y obtener un token Bearer. |
+| `LoginWithInvalidCredentials_ReturnsUnauthorizedProblemDetails` | Las credenciales incorrectas devuelven HTTP 401 con un error uniforme. |
+
+**Ejemplo: Login exitoso**
+
+```csharp
+[Fact]
+public async Task LoginWithBootstrapAdmin_ReturnsBearerToken()
+{
+    await using TestApiFactory factory =
+        new(_database.GetConnectionString());
+
+    using HttpClient client = factory.CreateClient();
+
+    HttpResponseMessage response =
+        await client.PostAsJsonAsync(
+            "/api/auth/login",
+            new
+            {
+                Email = "admin@example.com",
+                Password = "AdminPassword123!"
+            }
+        );
+
+    Assert.Equal(
+        HttpStatusCode.OK,
+        response.StatusCode
+    );
+}
+```
+
+**¿Qué ocurre?**
+
+1. Se inicia la API mediante `WebApplicationFactory`.
+2. Se configura la conexión al PostgreSQL temporal.
+3. La inicialización de la aplicación ejecuta el seed del administrador.
+4. Se envía una solicitud HTTP al endpoint de login.
+5. Se comprueba que la API responda correctamente.
+
+La prueba original también verifica que la respuesta contenga `tokenType = "Bearer"`, un `accessToken` no vacío y un `expiresIn` positivo.
+
+#### 10. Pruebas del manejo global de excepciones
+
+`ExceptionPipelineTests` verifica que una excepción inesperada produzca una respuesta HTTP segura.
+
+El escenario implementado es:
+
+`UnexpectedException_ReturnsSafeProblemDetails`
+
+La prueba ejecuta una solicitud contra un endpoint preparado para provocar una excepción.
+
+Posteriormente comprueba:
+
+| Validación        | Resultado esperado                                               |
+| ----------------- | ---------------------------------------------------------------- |
+| Código HTTP       | `500 Internal Server Error`                                      |
+| Content-Type      | `application/problem+json`                                       |
+| Código de error   | `unexpected_error`                                               |
+| `traceId`         | Presente                                                         |
+| Detalles internos | No deben aparecer en la respuesta                                |
+| Stack trace       | No debe aparecer en la respuesta                                 |
+| Logs              | Deben contener el error y permitir correlacionarlo con `traceId` |
+
+**¿Por qué es importante?**
+
+Porque los errores inesperados deben registrarse para facilitar su diagnóstico, pero no deben revelar información interna al cliente.
+
+Por ejemplo, la respuesta HTTP no debería mostrar rutas del servidor, detalles internos de operaciones ni trazas de ejecución.
+
+#### 11. Métodos y componentes utilizados
+
+| Componente                 | Origen                           | ¿Qué hace?                                                               |
+| -------------------------- | -------------------------------- | ------------------------------------------------------------------------ |
+| `[Fact]`                   | xUnit                            | Identifica un método de prueba.                                          |
+| `Assert.True()`            | xUnit                            | Comprueba que una condición sea verdadera.                               |
+| `Assert.False()`           | xUnit                            | Comprueba que una condición sea falsa.                                   |
+| `Assert.Equal()`           | xUnit                            | Compara el resultado obtenido con el esperado.                           |
+| `Assert.Contains()`        | xUnit                            | Comprueba que un elemento o texto esté presente.                         |
+| `Assert.DoesNotContain()`  | xUnit                            | Comprueba que un elemento o texto no esté presente.                      |
+| `IAsyncLifetime`           | xUnit                            | Permite preparar y liberar recursos de forma asíncrona.                  |
+| `PostgreSqlBuilder`        | Testcontainers.PostgreSql        | Configura un contenedor PostgreSQL.                                      |
+| `StartAsync()`             | Testcontainers                   | Inicia el contenedor.                                                    |
+| `DisposeAsync()`           | .NET / Testcontainers            | Libera recursos asíncronamente.                                          |
+| `WebApplicationFactory<T>` | Microsoft.AspNetCore.Mvc.Testing | Inicia la API para pruebas de integración.                               |
+| `CreateClient()`           | Microsoft.AspNetCore.Mvc.Testing | Crea un cliente HTTP para ejecutar solicitudes contra la API de pruebas. |
+| `HttpClient`               | .NET                             | Permite realizar solicitudes HTTP.                                       |
+| `PostAsJsonAsync()`        | .NET (`System.Net.Http.Json`)    | Envía una solicitud POST con contenido JSON.                             |
+| `JsonDocument`             | .NET (`System.Text.Json`)        | Permite analizar una respuesta JSON.                                     |
+| `Task.FromResult()`        | .NET                             | Devuelve un `Task` completado con un resultado disponible.               |
+
+**¿Por qué utilizar estas dependencias?**
+
+- **xUnit:** permite definir y ejecutar pruebas automatizadas.
+- **Testcontainers:** permite utilizar PostgreSQL temporal sin administrar manualmente su instalación.
+- **WebApplicationFactory:** permite probar la API y su configuración HTTP.
+- **Fakes:** permiten probar Application sin depender de Infrastructure.
+
+#### 12. Resumen
+
+| Componente                 | Responsabilidad                                           |
+| -------------------------- | --------------------------------------------------------- |
+| **LoginUserTests**         | Verifica la lógica de autenticación de Application.       |
+| **Fake Services**          | Simulan repositorios, credenciales y emisión de tokens.   |
+| **AuthIntegrationTests**   | Comprueba el login utilizando la API y PostgreSQL real.   |
+| **ExceptionPipelineTests** | Verifica las respuestas HTTP y los logs ante excepciones. |
+| **WebApplicationFactory**  | Ejecuta la aplicación en un entorno de pruebas.           |
+| **Testcontainers**         | Administra PostgreSQL temporal mediante Docker.           |
+| **xUnit**                  | Ejecuta las pruebas y comprueba los resultados.           |
+
+**Conclusión:** El Spec 7 incorpora pruebas unitarias y de integración para verificar los componentes de autenticación y manejo de errores.
+
+Las pruebas unitarias permiten validar la lógica de Application de forma independiente, mientras que las pruebas de integración comprueban el funcionamiento conjunto de la API, ASP.NET Core Identity y PostgreSQL.
+
+La combinación permite detectar errores tanto en la lógica de aplicación como en la integración entre componentes.
 
 ---
 
