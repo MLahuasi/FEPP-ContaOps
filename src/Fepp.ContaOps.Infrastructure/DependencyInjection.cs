@@ -64,7 +64,14 @@ public static class DependencyInjection
                 options => options.AccessTokenLifetimeMinutes > 0,
                 "Jwt:AccessTokenLifetimeMinutes must be greater than zero.")
             .ValidateOnStart();
+        services.AddOptions<BootstrapAdminOptions>()
+            .Bind(configuration.GetSection(BootstrapAdminOptions.SectionName))
+            .Validate(
+                options => options.IsValid(),
+                "BootstrapAdmin:Email and BootstrapAdmin:Password must be configured with valid values.")
+            .ValidateOnStart();
         services.AddSingleton<ITokenIssuer, JwtTokenIssuer>();
+        services.AddScoped<IdentitySeeder>();
         return services;
     }
 }

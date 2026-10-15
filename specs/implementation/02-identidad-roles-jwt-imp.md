@@ -1,8 +1,5 @@
 ```powershell
-1.
-2. Identity y persistencia PostgreSQL.
-3. Emisión JWT.
-4. Seed de roles y administrador.
+
 5. Login, 401, 403 y AdminOnly.
 6. Swagger Bearer y respuestas de error.
 7. Pruebas unitarias e integración con PostgreSQL efímero.
@@ -620,7 +617,325 @@ La arquitectura mantiene **Application independiente de las librerías JWT**, si
 
 ---
 
-### 4. Seed de roles y administrador.
+### 4. Seed de roles y administrador
+
+Este spec implementa la **creación automática de los roles `Admin` y `User`, y de un usuario administrador inicial**.
+
+El proceso se ejecuta al iniciar la API y utiliza ASP.NET Core Identity para administrar los usuarios y roles almacenados en PostgreSQL.
+
+Se utiliza un mecanismo llamado **Seed**, que consiste en insertar los datos iniciales necesarios para que una aplicación pueda funcionar.
+
+La implementación es **idempotente**: puede ejecutarse varias veces sin crear duplicados de los roles o del administrador identificado por su correo electrónico.
+
+#### 1. Diagrama de componentes
+
+```mermaid
+flowchart TB
+    subgraph Presentation["API"]
+        Program["Program.cs<br/>Inicia el Seed"]
+    end
+
+    subgraph Infrastructure["INFRASTRUCTURE"]
+        Seeder["IdentitySeeder<br/>Crea roles y administrador"]
+        Options["BootstrapAdminOptions<br/>Email y contraseña"]
+        Identity["ASP.NET Core Identity<br/>UserManager / RoleManager"]
+        DbContext["AppDbContext<br/>Entity Framework Core"]
+
+        Options --> Seeder
+        Seeder --> Identity
+        Identity --> DbContext
+    end
+
+    PostgreSQL[("PostgreSQL")]
+
+    Program --> Seeder
+    DbContext --> PostgreSQL
+```
+
+**Idea principal:** Cuando arranca la API, `Program.cs` ejecuta `IdentitySeeder`, que utiliza ASP.NET Core Identity para crear los roles y el administrador inicial en PostgreSQL.
+
+#### 2. Responsabilidad de cada componente
+
+| Componente                | Capa           | ¿Para qué sirve?                                                   |
+| ------------------------- | -------------- | ------------------------------------------------------------------ |
+| `BootstrapAdminOptions`   | Infrastructure | Contiene el correo y la contraseña del administrador inicial.      |
+| `IdentitySeeder`          | Infrastructure | Comprueba y crea los roles y el administrador cuando es necesario. |
+| `ApplicationIdentityUser` | Infrastructure | Representa al usuario que administra ASP.NET Core Identity.        |
+| `UserManager`             | Identity       | Permite buscar y crear usuarios, además de asignarles roles.       |
+| `RoleManager`             | Identity       | Permite consultar y crear roles.                                   |
+| `AppDbContext`            | Infrastructure | Gestiona el acceso a PostgreSQL mediante Entity Framework Core.    |
+| `DependencyInjection`     | Infrastructure | Registra `IdentitySeeder` y configura `BootstrapAdminOptions`.     |
+| `Program.cs`              | API            | Ejecuta el proceso de inicialización al arrancar la aplicación.    |
+
+#### 3. ¿Cómo funciona el proceso?
+
+Cuando la API inicia, se ejecuta el siguiente proceso:
+
+1. **Program.cs** obtiene una instancia de `IdentitySeeder`.
+2. **IdentitySeeder** comprueba que existe el esquema de base de datos necesario.
+3. Verifica si existe el rol `Admin`; si no existe, lo crea.
+4. Verifica si existe el rol `User`; si no existe, lo crea.
+5. Busca al administrador mediante el correo configurado.
+6. Si el administrador no existe, lo crea utilizando `UserManager`.
+7. Comprueba si el administrador tiene asignado el rol `Admin`.
+8. Si no tiene el rol, se lo asigna.
+
+**¿Qué ocurre si se reinicia la API?**
+
+El proceso vuelve a ejecutarse, pero comprueba previamente la existencia de los roles y del usuario.
+
+De esta manera, evita crear registros duplicados.
+
+**Importante:** Si el administrador ya existe, no se modifica su contraseña. Únicamente se comprueba que tenga asignado el rol `Admin`.
+
+#### 4. Métodos proporcionados por ASP.NET Core Identity y Entity Framework Core
+
+`IdentitySeeder` utiliza métodos de Microsoft para gestionar usuarios, roles y persistencia.
+
+| Método                        | Clase / Framework          | ¿Qué hace?                                                        |
+| ----------------------------- | -------------------------- | ----------------------------------------------------------------- |
+| `EnsureCreatedAsync()`        | EF Core (`DatabaseFacade`) | Crea la base de datos y su esquema si todavía no existen.         |
+| `RoleExistsAsync(role)`       | Identity (`RoleManager`)   | Comprueba si existe un rol.                                       |
+| `CreateAsync(role)`           | Identity (`RoleManager`)   | Crea un rol nuevo.                                                |
+| `FindByEmailAsync(email)`     | Identity (`UserManager`)   | Busca un usuario por su correo electrónico.                       |
+| `CreateAsync(user, password)` | Identity (`UserManager`)   | Crea un usuario y almacena su contraseña mediante un hash seguro. |
+| `IsInRoleAsync(user, role)`   | Identity (`UserManager`)   | Comprueba si un usuario tiene asignado un rol.                    |
+| `AddToRoleAsync(user, role)`  | Identity (`UserManager`)   | Asigna un rol a un usuario.                                       |
+
+**Ejemplo 1: Comprobar y crear un rol**
+
+```csharp
+if (!await _roleManager.RoleExistsAsync("Admin"))
+{
+    await _roleManager.CreateAsync(
+        new IdentityRole("Admin")
+    );
+}
+```
+
+`RoleExistsAsync` comprueba si el rol existe.
+
+Si no existe, `CreateAsync` lo registra mediante ASP.NET Core Identity.
+
+**Ejemplo 2: Crear el administrador**
+
+```csharp
+ApplicationIdentityUser? admin =
+    await _userManager.FindByEmailAsync(_options.Email);
+
+if (admin is null)
+{
+    admin = new ApplicationIdentityUser
+    {
+        UserName = _options.Email,
+        Email = _options.Email,
+        EmailConfirmed = true
+    };
+
+    await _userManager.CreateAsync(
+        admin,
+        _options.Password
+    );
+}
+```
+
+`FindByEmailAsync` busca al usuario.
+
+Si no existe, `CreateAsync` lo crea y procesa su contraseña utilizando las reglas de ASP.NET Core Identity.
+
+**Ejemplo 3: Asignar el rol de administrador**
+
+```csharp
+if (!await _userManager.IsInRoleAsync(admin, "Admin"))
+{
+    await _userManager.AddToRoleAsync(
+        admin,
+        "Admin"
+    );
+}
+```
+
+Primero se comprueba si el usuario pertenece al rol `Admin`.
+
+Si no pertenece, se le asigna.
+
+**¿Por qué se utilizan estos métodos?**
+
+Porque ASP.NET Core Identity ya proporciona mecanismos para administrar usuarios, contraseñas y roles.
+
+Esto evita implementar manualmente consultas SQL, almacenamiento de contraseñas y relaciones entre usuarios y roles.
+
+#### 5. ¿Qué hace `BootstrapAdminOptions`?
+
+Esta clase representa la configuración del administrador inicial.
+
+```csharp
+public sealed class BootstrapAdminOptions
+{
+    public const string SectionName = "BootstrapAdmin";
+
+    public string Email { get; set; } = string.Empty;
+
+    public string Password { get; set; } = string.Empty;
+}
+```
+
+| Propiedad     | Descripción                                              |
+| ------------- | -------------------------------------------------------- |
+| `SectionName` | Identifica la sección `BootstrapAdmin` de configuración. |
+| `Email`       | Correo electrónico del administrador inicial.            |
+| `Password`    | Contraseña inicial del administrador.                    |
+
+También incorpora el método `IsValid()`:
+
+```csharp
+public bool IsValid()
+{
+    return new EmailAddressAttribute().IsValid(Email)
+        && !string.IsNullOrWhiteSpace(Password);
+}
+```
+
+Este método utiliza `EmailAddressAttribute`, proporcionado por .NET, para comprobar el formato del correo electrónico.
+
+Además, verifica que la contraseña no esté vacía.
+
+**Importante:** `IsValid()` no comprueba todas las reglas de seguridad de la contraseña. Esas reglas se aplican posteriormente mediante ASP.NET Core Identity cuando se crea el administrador.
+
+#### 6. ¿Qué hace `SeedAsync()`?
+
+Es el método principal de `IdentitySeeder`.
+
+```csharp
+public async Task SeedAsync(
+    CancellationToken cancellationToken = default)
+{
+    await _dbContext.Database.EnsureCreatedAsync(
+        cancellationToken
+    );
+
+    await EnsureRoleAsync(AdminRole);
+    await EnsureRoleAsync(UserRole);
+
+    // Buscar o crear administrador.
+    // Asignarle el rol Admin cuando sea necesario.
+}
+```
+
+**Elementos importantes:**
+
+| Elemento               | ¿Qué significa?                                                                       |
+| ---------------------- | ------------------------------------------------------------------------------------- |
+| `async`                | Permite utilizar operaciones asíncronas mediante `await`.                             |
+| `Task`                 | Representa una operación asíncrona sin valor de retorno.                              |
+| `await`                | Espera la finalización de una operación sin bloquear el hilo mientras está pendiente. |
+| `CancellationToken`    | Permite comunicar una solicitud de cancelación a las operaciones que lo admiten.      |
+| `EnsureCreatedAsync()` | Comprueba la existencia de la base de datos y, cuando corresponde, crea el esquema.   |
+| `EnsureRoleAsync()`    | Método propio del proyecto que comprueba y crea un rol si es necesario.               |
+
+A diferencia del `JwtTokenIssuer` del Spec 3, **aquí sí se realizan operaciones asíncronas de acceso a datos**, por lo que utilizar `async/await` está justificado.
+
+#### 7. ¿Cómo se ejecuta al iniciar la API?
+
+En `Program.cs` se agregó:
+
+```csharp
+using (IServiceScope scope = app.Services.CreateScope())
+{
+    IdentitySeeder seeder =
+        scope.ServiceProvider
+            .GetRequiredService<IdentitySeeder>();
+
+    await seeder.SeedAsync();
+}
+```
+
+Este código utiliza el sistema de inyección de dependencias de .NET.
+
+| Método / Componente       | ¿Qué hace?                                                                        |
+| ------------------------- | --------------------------------------------------------------------------------- |
+| `CreateScope()`           | Crea un ámbito para resolver servicios registrados como `Scoped`.                 |
+| `IServiceScope`           | Representa el ámbito y permite liberar sus recursos al finalizar.                 |
+| `GetRequiredService<T>()` | Obtiene una instancia del servicio registrado; genera una excepción si no existe. |
+| `SeedAsync()`             | Ejecuta la inicialización de los roles y del administrador.                       |
+
+**¿Por qué se utiliza `CreateScope()`?**
+
+Porque `IdentitySeeder` depende de servicios como `AppDbContext` y `UserManager`, que utilizan un ciclo de vida `Scoped`.
+
+`CreateScope()` permite utilizarlos correctamente durante el inicio de la aplicación y liberar sus recursos al terminar.
+
+El proceso se ejecuta antes de que la API comience a atender solicitudes HTTP.
+
+#### 8. Integración mediante DependencyInjection
+
+En `DependencyInjection` se agregaron dos configuraciones.
+
+**Configuración del administrador:**
+
+```csharp
+services.AddOptions<BootstrapAdminOptions>()
+    .Bind(
+        configuration.GetSection(
+            BootstrapAdminOptions.SectionName
+        )
+    )
+    .Validate(
+        options => options.IsValid(),
+        "BootstrapAdmin configuration is invalid."
+    )
+    .ValidateOnStart();
+```
+
+Esta configuración:
+
+1. Obtiene los valores de la sección `BootstrapAdmin`.
+2. Los asigna a `BootstrapAdminOptions`.
+3. Comprueba que sean válidos.
+4. Configura su validación durante el inicio de la aplicación.
+
+**Registro del servicio:**
+
+```csharp
+services.AddScoped<IdentitySeeder>();
+```
+
+`AddScoped` registra `IdentitySeeder` para que el contenedor de dependencias pueda crear una instancia dentro de un ámbito.
+
+#### 9. ¿Qué componentes pertenecen a .NET y cuáles son propios?
+
+| Componente                | Origen                                   | Responsabilidad                                        |
+| ------------------------- | ---------------------------------------- | ------------------------------------------------------ |
+| `Task`, `async`, `await`  | .NET / C#                                | Permiten implementar operaciones asíncronas.           |
+| `CancellationToken`       | .NET                                     | Permite solicitar la cancelación de operaciones.       |
+| `EmailAddressAttribute`   | .NET                                     | Valida el formato de una dirección de correo.          |
+| `UserManager<T>`          | ASP.NET Core Identity                    | Administra usuarios.                                   |
+| `RoleManager<T>`          | ASP.NET Core Identity                    | Administra roles.                                      |
+| `IdentityRole`            | ASP.NET Core Identity                    | Representa un rol del sistema.                         |
+| `IdentityResult`          | ASP.NET Core Identity                    | Contiene el resultado de una operación de Identity.    |
+| `EnsureCreatedAsync()`    | Entity Framework Core                    | Crea la base de datos y el esquema cuando corresponde. |
+| `IOptions<T>`             | Microsoft.Extensions.Options             | Proporciona acceso a configuración tipada.             |
+| `CreateScope()`           | Microsoft.Extensions.DependencyInjection | Crea un ámbito de servicios.                           |
+| `GetRequiredService<T>()` | Microsoft.Extensions.DependencyInjection | Obtiene un servicio registrado.                        |
+| `IdentitySeeder`          | Proyecto                                 | Inicializa roles y administrador.                      |
+| `BootstrapAdminOptions`   | Proyecto                                 | Define la configuración del administrador inicial.     |
+
+#### 10. Resumen
+
+| Componente                | Responsabilidad                                             |
+| ------------------------- | ----------------------------------------------------------- |
+| **Program.cs**            | Ejecuta el proceso de inicialización.                       |
+| **IdentitySeeder**        | Comprueba y crea los roles y el administrador.              |
+| **BootstrapAdminOptions** | Proporciona las credenciales iniciales.                     |
+| **ASP.NET Core Identity** | Administra la creación de usuarios, roles y sus relaciones. |
+| **Entity Framework Core** | Gestiona la persistencia.                                   |
+| **PostgreSQL**            | Almacena los registros creados.                             |
+
+**Conclusión:** El Spec 4 automatiza la configuración inicial de seguridad de la aplicación mediante la creación de los roles `Admin` y `User`, junto con un administrador inicial.
+
+La implementación utiliza ASP.NET Core Identity y Entity Framework Core, evitando desarrollar manualmente la gestión de usuarios y roles.
+
+El proceso es idempotente, por lo que puede ejecutarse en cada arranque sin duplicar los registros existentes.
 
 ---
 
