@@ -1,6 +1,8 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Testcontainers.PostgreSql;
@@ -47,8 +49,14 @@ public sealed class AuthIntegrationTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         using JsonDocument document = JsonDocument.Parse(body);
         Assert.Equal("Bearer", document.RootElement.GetProperty("tokenType").GetString());
-        Assert.False(string.IsNullOrWhiteSpace(document.RootElement.GetProperty("accessToken").GetString()));
+        string accessToken = document.RootElement.GetProperty("accessToken").GetString()!;
+        Assert.False(string.IsNullOrWhiteSpace(accessToken));
         Assert.True(document.RootElement.GetProperty("expiresIn").GetInt64() > 0);
+        JwtSecurityToken jwt = new JwtSecurityTokenHandler().ReadJwtToken(accessToken);
+        Assert.Contains(jwt.Claims, claim => claim.Type == ClaimTypes.Role && claim.Value == "Admin");
+        Assert.Equal("FEPP-ContaOps.Tests", jwt.Issuer);
+        Assert.Contains("FEPP-ContaOps.Tests", jwt.Audiences);
+        Assert.True(jwt.ValidTo > DateTime.UtcNow);
     }
 
     /// <summary>

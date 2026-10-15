@@ -1,4 +1,4 @@
-namespace Fepp.ContaOps.Api.Auth;
+namespace Fepp.ContaOps.Api.Contracts.Requests;
 
 /// <summary>
 /// Datos de credenciales enviados al endpoint de inicio de sesión.

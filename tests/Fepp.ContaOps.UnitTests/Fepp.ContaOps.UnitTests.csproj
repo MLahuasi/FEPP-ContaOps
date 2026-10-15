@@ -21,6 +21,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Fepp.ContaOps.Application\Fepp.ContaOps.Application.csproj" />
     <ProjectReference Include="..\..\src\Fepp.ContaOps.Api\Fepp.ContaOps.Api.csproj" />
+    <ProjectReference Include="..\..\src\Fepp.ContaOps.Infrastructure\Fepp.ContaOps.Infrastructure.csproj" />
   </ItemGroup>
 
 </Project>

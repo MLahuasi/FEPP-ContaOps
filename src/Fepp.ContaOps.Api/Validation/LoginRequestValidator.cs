@@ -1,6 +1,8 @@
 using FluentValidation;
 
-namespace Fepp.ContaOps.Api.Auth;
+using Fepp.ContaOps.Api.Contracts.Requests;
+
+namespace Fepp.ContaOps.Api.Validation;
 
 /// <summary>
 /// Valida los datos HTTP del inicio de sesión.

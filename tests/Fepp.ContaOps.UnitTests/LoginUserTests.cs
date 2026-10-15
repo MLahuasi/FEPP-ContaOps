@@ -1,5 +1,5 @@
 using Fepp.ContaOps.Application.Abstractions;
-using Fepp.ContaOps.Application.Users;
+using Fepp.ContaOps.Application.Users.LoginUser;
 using Fepp.ContaOps.Domain.Users;
 
 namespace Fepp.ContaOps.UnitTests;
@@ -20,7 +20,8 @@ public sealed class LoginUserTests
         FakeTokenIssuer issuer = new();
         LoginUser login = new(repository, credentials, issuer);
 
-        var result = await login.ExecuteAsync("user@example.com", "Password123!");
+        var result = await login.ExecuteAsync(
+            new LoginUserInput("user@example.com", "Password123!"));
 
         Assert.True(result.IsSuccess);
         Assert.Equal("token", result.Value!.AccessToken);
@@ -35,7 +36,8 @@ public sealed class LoginUserTests
     {
         LoginUser login = new(new FakeUserRepository(null), new FakeCredentialService(true), new FakeTokenIssuer());
 
-        var result = await login.ExecuteAsync("unknown@example.com", "Password123!");
+        var result = await login.ExecuteAsync(
+            new LoginUserInput("unknown@example.com", "Password123!"));
 
         Assert.False(result.IsSuccess);
         Assert.Equal("invalid_credentials", result.Error!.Code);
@@ -50,7 +52,7 @@ public sealed class LoginUserTests
         User user = new(new UserId("user-1"), "user@example.com", ["User"]);
         LoginUser login = new(new FakeUserRepository(user), new FakeCredentialService(false), new FakeTokenIssuer());
 
-        var result = await login.ExecuteAsync(user.Email, "wrong");
+        var result = await login.ExecuteAsync(new LoginUserInput(user.Email, "wrong"));
 
         Assert.False(result.IsSuccess);
         Assert.Equal("invalid_credentials", result.Error!.Code);

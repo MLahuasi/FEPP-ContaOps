@@ -1,4 +1,4 @@
-namespace Fepp.ContaOps.Api.Auth;
+namespace Fepp.ContaOps.Api.Contracts.Responses;
 
 /// <summary>
 /// Respuesta de un inicio de sesión exitoso.

@@ -2,7 +2,7 @@ using Fepp.ContaOps.Application.Abstractions;
 using Fepp.ContaOps.Application.Results;
 using Fepp.ContaOps.Domain.Users;
 
-namespace Fepp.ContaOps.Application.Users;
+namespace Fepp.ContaOps.Application.Users.LoginUser;
 
 /// <summary>
 /// Coordina la autenticación de un usuario y la emisión de su token de acceso.
@@ -43,16 +43,14 @@ public sealed class LoginUser
     /// <summary>
     /// Autentica las credenciales y emite un token cuando son válidas.
     /// </summary>
-    /// <param name="email">Correo electrónico proporcionado.</param>
-    /// <param name="password">Contraseña proporcionada.</param>
+    /// <param name="input">Datos de credenciales proporcionados.</param>
     /// <param name="cancellationToken">Token de cancelación de la operación.</param>
     /// <returns>Token emitido o un error de credenciales inválidas.</returns>
     public async Task<Result<TokenResult>> ExecuteAsync(
-        string email,
-        string password,
+        LoginUserInput input,
         CancellationToken cancellationToken = default)
     {
-        User? user = await _userRepository.FindByEmailAsync(email, cancellationToken);
+        User? user = await _userRepository.FindByEmailAsync(input.Email, cancellationToken);
         if (user is null)
         {
             return Result<TokenResult>.Failure(AuthenticationError.Instance);
@@ -60,7 +58,7 @@ public sealed class LoginUser
 
         bool passwordIsValid = await _credentialService.VerifyPasswordAsync(
             user,
-            password,
+            input.Password,
             cancellationToken);
         if (!passwordIsValid)
         {

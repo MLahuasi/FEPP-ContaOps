@@ -1,11 +1,13 @@
 using Fepp.ContaOps.Api.Validation;
+using Fepp.ContaOps.Api.Contracts.Requests;
+using Fepp.ContaOps.Api.Contracts.Responses;
 using Fepp.ContaOps.Application.Abstractions;
 using Fepp.ContaOps.Application.Results;
-using Fepp.ContaOps.Application.Users;
+using Fepp.ContaOps.Application.Users.LoginUser;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
-namespace Fepp.ContaOps.Api.Auth;
+namespace Fepp.ContaOps.Api.Controllers;
 
 /// <summary>
 /// Expone las operaciones de autenticación de usuarios.
@@ -53,8 +55,7 @@ public sealed class AuthController : ControllerBase
         CancellationToken cancellationToken)
     {
         Result<TokenResult> result = await _loginUser.ExecuteAsync(
-            request.Email,
-            request.Password,
+            new LoginUserInput(request.Email, request.Password),
             cancellationToken);
         if (!result.IsSuccess)
         {

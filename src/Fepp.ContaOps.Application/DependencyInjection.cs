@@ -1,5 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
-using Fepp.ContaOps.Application.Users;
+using Fepp.ContaOps.Application.Users.LoginUser;
 
 namespace Fepp.ContaOps.Application;
 
