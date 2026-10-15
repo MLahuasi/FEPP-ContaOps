@@ -121,7 +121,208 @@ Esto aplica el principio de inversión de dependencias (**DIP**) y permite cambi
 
 ---
 
-### 2. Identity y persistencia PostgreSQL.
+### 2. Identity y persistencia PostgreSQL
+
+Este spec implementa los componentes necesarios para **almacenar usuarios en PostgreSQL y verificar sus credenciales mediante ASP.NET Core Identity**.
+
+Complementa el Spec 1, donde se definieron el modelo `User` y las interfaces de Application.
+
+#### 1. Diagrama de componentes
+
+```mermaid
+flowchart TB
+    subgraph Domain["DOMAIN"]
+        User["User / UserId<br/>Modelo de usuario"]
+    end
+
+    subgraph Application["APPLICATION"]
+        Repo["IUserRepository<br/>Buscar usuarios"]
+        Cred["IUserCredentialService<br/>Verificar contraseñas"]
+    end
+
+    subgraph Infrastructure["INFRASTRUCTURE"]
+        UserRepo["IdentityUserRepository<br/>Consulta usuarios"]
+        CredentialService["IdentityCredentialService<br/>Valida contraseñas"]
+        Identity["ASP.NET Core Identity<br/>UserManager / SignInManager"]
+        DbContext["AppDbContext<br/>Entity Framework Core"]
+
+        UserRepo --> Identity
+        CredentialService --> Identity
+        Identity --> DbContext
+    end
+
+    PostgreSQL[("PostgreSQL")]
+
+    UserRepo -.->|Implementa| Repo
+    CredentialService -.->|Implementa| Cred
+
+    Repo -.-> User
+    Cred -.-> User
+
+    DbContext --> PostgreSQL
+```
+
+**Idea principal:** Application define las operaciones mediante interfaces, mientras que Infrastructure las implementa utilizando ASP.NET Core Identity y PostgreSQL.
+
+#### 2. Responsabilidad de cada componente
+
+| Componente                  | ¿Para qué sirve?                                                               |
+| --------------------------- | ------------------------------------------------------------------------------ |
+| `ApplicationIdentityUser`   | Representa al usuario de ASP.NET Core Identity. Hereda de `IdentityUser`.      |
+| `IdentityUserRepository`    | Busca usuarios mediante Identity y los convierte al modelo `User` de Domain.   |
+| `IdentityCredentialService` | Verifica contraseñas y aplica las reglas de bloqueo configuradas.              |
+| `UserManager`               | Servicio de Identity para administrar usuarios, contraseñas y roles.           |
+| `SignInManager`             | Servicio de Identity para gestionar la autenticación y verificar credenciales. |
+| `AppDbContext`              | Gestiona el acceso a los datos mediante Entity Framework Core.                 |
+| `DependencyInjection`       | Configura PostgreSQL, Identity y registra los servicios de Infrastructure.     |
+| `PostgreSQL`                | Almacena usuarios, roles y datos de autenticación.                             |
+
+#### 3. Métodos proporcionados por ASP.NET Core Identity
+
+**ASP.NET Core Identity** es un framework de Microsoft para gestionar usuarios, contraseñas, roles y autenticación.
+
+Proporciona clases como `UserManager<TUser>` y `SignInManager<TUser>`, que incluyen métodos para realizar estas operaciones sin tener que implementarlas manualmente.
+
+Los métodos utilizados en este spec son:
+
+| Método                                           | Clase de .NET   | ¿Qué hace?                                                                                   | ¿Dónde se utiliza?          |
+| ------------------------------------------------ | --------------- | -------------------------------------------------------------------------------------------- | --------------------------- |
+| `FindByEmailAsync(email)`                        | `UserManager`   | Busca un usuario por su correo electrónico.                                                  | `IdentityUserRepository`    |
+| `GetRolesAsync(user)`                            | `UserManager`   | Obtiene los roles asignados a un usuario.                                                    | `IdentityUserRepository`    |
+| `FindByIdAsync(id)`                              | `UserManager`   | Busca un usuario mediante su identificador.                                                  | `IdentityCredentialService` |
+| `CheckPasswordSignInAsync(user, password, true)` | `SignInManager` | Comprueba la contraseña y registra los intentos fallidos para aplicar las reglas de bloqueo. | `IdentityCredentialService` |
+
+**Ejemplo 1: Buscar un usuario**
+
+```csharp
+ApplicationIdentityUser? identityUser =
+    await _userManager.FindByEmailAsync(email);
+```
+
+`FindByEmailAsync` es un método de `UserManager` que consulta el usuario utilizando el almacenamiento configurado para Identity.
+
+Si existe, devuelve un objeto `ApplicationIdentityUser`; caso contrario, devuelve `null`.
+
+**Ejemplo 2: Obtener los roles**
+
+```csharp
+IList<string> roles =
+    await _userManager.GetRolesAsync(identityUser);
+```
+
+`GetRolesAsync` obtiene los nombres de los roles asignados al usuario, por ejemplo: `Admin`, `Contador` o `Asistente`.
+
+Estos roles pueden utilizarse posteriormente para implementar reglas de autorización.
+
+**Ejemplo 3: Verificar una contraseña**
+
+```csharp
+SignInResult result =
+    await _signInManager.CheckPasswordSignInAsync(
+        identityUser,
+        password,
+        lockoutOnFailure: true);
+```
+
+`CheckPasswordSignInAsync` comprueba si la contraseña proporcionada es válida.
+
+El parámetro `lockoutOnFailure: true` permite contabilizar los intentos fallidos para aplicar las reglas de bloqueo configuradas.
+
+El resultado se consulta mediante:
+
+```csharp
+return result.Succeeded;
+```
+
+Devuelve `true` si la verificación fue satisfactoria y `false` en caso contrario.
+
+**¿Por qué se utilizan estos métodos?**
+
+Porque ASP.NET Core Identity proporciona funcionalidades de seguridad ya implementadas y probadas, como:
+
+- Almacenamiento y verificación de hashes de contraseñas.
+- Administración de usuarios y roles.
+- Control de intentos fallidos y bloqueo de cuentas.
+- Integración con Entity Framework Core.
+
+De esta manera, no es necesario desarrollar manualmente estos mecanismos de seguridad.
+
+#### 4. ¿Cómo trabajan juntos?
+
+Cuando un usuario intenta iniciar sesión, el proceso esperado es:
+
+1. **Application** solicita buscar al usuario mediante `IUserRepository`.
+2. **IdentityUserRepository** utiliza `FindByEmailAsync` y `GetRolesAsync` para recuperar sus datos.
+3. El repositorio convierte `ApplicationIdentityUser` en `User`, el modelo de Domain.
+4. **Application** solicita verificar la contraseña mediante `IUserCredentialService`.
+5. **IdentityCredentialService** utiliza `FindByIdAsync` para localizar al usuario y `CheckPasswordSignInAsync` para verificar la contraseña.
+6. Finalmente, devuelve `true` o `false` según el resultado.
+
+Las operaciones de persistencia se realizan a través de Identity, Entity Framework Core y PostgreSQL.
+
+Este flujo será coordinado por el caso de uso de autenticación correspondiente.
+
+#### 5. Configuración de seguridad
+
+En `DependencyInjection` se establecieron las siguientes reglas:
+
+| Configuración                 | Valor         |
+| ----------------------------- | ------------- |
+| Longitud mínima de contraseña | 12 caracteres |
+| Mayúsculas y minúsculas       | Obligatorias  |
+| Números                       | Obligatorios  |
+| Caracteres especiales         | Obligatorios  |
+| Caracteres distintos          | Mínimo 6      |
+| Intentos fallidos permitidos  | 5             |
+| Duración del bloqueo          | 15 minutos    |
+| Correo electrónico único      | Obligatorio   |
+
+Estas reglas son administradas por ASP.NET Core Identity.
+
+#### 6. Integración con Application
+
+Las clases `IdentityUserRepository` e `IdentityCredentialService` implementan las interfaces definidas en el Spec 1.
+
+Su vinculación se realiza mediante **inyección de dependencias**:
+
+```csharp
+services.AddScoped<IUserRepository, IdentityUserRepository>();
+
+services.AddScoped<IUserCredentialService, IdentityCredentialService>();
+```
+
+Esto significa que:
+
+- **Application** utiliza `IUserRepository` e `IUserCredentialService`.
+- **Infrastructure** proporciona sus implementaciones concretas.
+- **ASP.NET Core Identity** realiza las operaciones de autenticación.
+- **Entity Framework Core** permite acceder a PostgreSQL.
+
+La configuración de PostgreSQL se realiza mediante:
+
+```csharp
+services.AddDbContext<AppDbContext>(
+    options => options.UseNpgsql(connectionString));
+```
+
+`UseNpgsql` configura Entity Framework Core para utilizar PostgreSQL como proveedor de base de datos.
+
+**Ventaja:** Application no necesita conocer ASP.NET Core Identity ni PostgreSQL. Si cambia la tecnología, se pueden sustituir las implementaciones sin modificar los contratos.
+
+#### 7. Resumen
+
+| Capa               | Responsabilidad                                                                     |
+| ------------------ | ----------------------------------------------------------------------------------- |
+| **Domain**         | Define el modelo `User` y su identificador `UserId`.                                |
+| **Application**    | Define las interfaces para buscar usuarios y verificar contraseñas.                 |
+| **Infrastructure** | Implementa las interfaces utilizando ASP.NET Core Identity y Entity Framework Core. |
+| **PostgreSQL**     | Almacena los usuarios, roles y datos de autenticación.                              |
+
+**Conclusión:** El Spec 2 implementa los contratos del Spec 1 utilizando ASP.NET Core Identity para gestionar usuarios y verificar contraseñas, y PostgreSQL para almacenar su información.
+
+Esta separación mantiene **Application independiente de las tecnologías utilizadas en Infrastructure**, siguiendo los principios de Clean Architecture.
+
+**Nota:** La generación de tokens JWT mediante `ITokenIssuer` todavía no está implementada en este spec.
 
 ---
 
