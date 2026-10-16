@@ -102,7 +102,115 @@ flowchart TD
 
 #### Las implementaciones de Infrastructure se muestran como componentes previstos; no forman parte de los cambios de este paso.
 
+---
+
 ### 2. Implementar adaptador Identity para cuentas pendientes, tokens y activación.
+
+#### Componentes implementados
+
+| Componente                      | Acción | Tipo           | Capa           | Responsabilidad                                                                              |
+| ------------------------------- | ------ | -------------- | -------------- | -------------------------------------------------------------------------------------------- |
+| `InvalidActivationTokenError`   | Create | `record`       | Application    | Representa un error de token de activación inválido o expirado.                              |
+| `IdentityUserInvitationService` | Create | `class`        | Infrastructure | Implementa el registro, activación y reenvío de invitaciones mediante ASP.NET Core Identity. |
+| `ApplicationIdentityUser`       | Update | `class`        | Infrastructure | Incorpora `Status` para almacenar el estado funcional de la cuenta.                          |
+| `IdentityCredentialService`     | Update | `class`        | Infrastructure | Impide autenticar usuarios que no tengan estado `Active`.                                    |
+| `IdentityUserRepository`        | Update | `class`        | Infrastructure | Incluye el estado del usuario al convertirlo al modelo de Domain.                            |
+| `IdentitySeeder`                | Update | `class`        | Infrastructure | Crea usuarios iniciales con estado `Active`.                                                 |
+| `DependencyInjection`           | Update | `static class` | Infrastructure | Registra el adaptador de invitaciones y configura su proveedor de tokens.                    |
+
+#### Métodos y funciones principales
+
+| Clase                           | Método                       | Responsabilidad                                                                                         |
+| ------------------------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `IdentityUserInvitationService` | `RegisterPendingAsync()`     | Crea un usuario sin contraseña, con estado `PendingActivation`, asigna el rol `User` y genera su token. |
+| `IdentityUserInvitationService` | `ActivateAsync()`            | Valida el token, establece la contraseña, confirma el correo y cambia el estado a `Active`.             |
+| `IdentityUserInvitationService` | `ResendAsync()`              | Invalida tokens anteriores mediante el cambio del `SecurityStamp` y genera una nueva invitación.        |
+| `IdentityUserInvitationService` | `ToInvitation()`             | Convierte un usuario técnico y su token en `UserInvitationResult`.                                      |
+| `IdentityUserInvitationService` | `ToDomainUserAsync()`        | Convierte el usuario de Identity a `User`, incluyendo sus roles efectivos.                              |
+| `IdentityUserInvitationService` | `EnsureSuccess()`            | Comprueba el resultado de Identity y lanza una excepción si la operación falla.                         |
+| `IdentityCredentialService`     | `VerifyPasswordAsync()`      | Comprueba el estado `Active` antes de validar las credenciales.                                         |
+| `IdentityUserRepository`        | `FindByEmailAsync()`         | Obtiene el usuario y transforma sus datos al modelo de Domain.                                          |
+| `IdentitySeeder`                | `SeedAsync()`                | Inicializa los roles y el administrador activo.                                                         |
+| `IdentitySeeder`                | `EnsureBootstrapUserAsync()` | Crea el usuario regular inicial con estado `Active`, cuando está configurado.                           |
+| `DependencyInjection`           | `AddInfrastructure()`        | Registra `IUserInvitationService` y configura el proveedor de tokens de invitación.                     |
+
+#### Configuración de tokens
+
+La clase `IdentityUserInvitationService` define dos constantes para identificar los tokens de activación.
+
+| Constante           | Valor            | Descripción                                                                                  |
+| ------------------- | ---------------- | -------------------------------------------------------------------------------------------- |
+| `TokenProviderName` | `UserInvitation` | Nombre del proveedor dedicado a generar y validar tokens de invitación.                      |
+| `TokenPurpose`      | `UserActivation` | Propósito criptográfico que diferencia los tokens de activación de otros tokens de Identity. |
+
+El proveedor se registra en `DependencyInjection` mediante `AddTokenProvider<DataProtectorTokenProvider<ApplicationIdentityUser>>()`.
+
+#### Componentes de .NET y proveedores externos
+
+| Componente                              | Origen                    | Función                                                                                                |
+| --------------------------------------- | ------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `UserManager<TUser>`                    | ASP.NET Core Identity     | Administra usuarios, contraseñas, roles y tokens.                                                      |
+| `SignInManager<TUser>`                  | ASP.NET Core Identity     | Valida contraseñas y aplica las reglas de bloqueo.                                                     |
+| `IdentityResult`                        | ASP.NET Core Identity     | Informa si una operación de identidad tuvo éxito o presentó errores.                                   |
+| `DataProtectorTokenProvider<TUser>`     | ASP.NET Core Identity     | Genera y valida tokens protegidos criptográficamente.                                                  |
+| `GenerateUserTokenAsync()`              | `UserManager<TUser>`      | Genera un token utilizando un proveedor y propósito específicos.                                       |
+| `VerifyUserTokenAsync()`                | `UserManager<TUser>`      | Verifica la validez de un token de usuario.                                                            |
+| `UpdateSecurityStampAsync()`            | `UserManager<TUser>`      | Actualiza el identificador de seguridad para invalidar tokens anteriores asociados a su estado previo. |
+| `AddPasswordAsync()`                    | `UserManager<TUser>`      | Establece la contraseña inicial del usuario.                                                           |
+| `IDbContextTransaction`                 | Entity Framework Core     | Representa una transacción de base de datos.                                                           |
+| `BeginTransactionAsync()`               | Entity Framework Core     | Inicia una transacción para agrupar operaciones de persistencia.                                       |
+| `CommitAsync()` / `RollbackAsync()`     | Entity Framework Core     | Confirman o revierten los cambios de una transacción.                                                  |
+| `AddScoped<TService,TImplementation>()` | .NET Dependency Injection | Registra una implementación con ciclo de vida Scoped.                                                  |
+
+#### Flujo de registro y activación
+
+| Operación         | Proceso                                                                                                            |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------ |
+| **Registro**      | Verifica que el correo no exista, crea una cuenta pendiente, asigna el rol `User` y genera un token de activación. |
+| **Activación**    | Comprueba que la cuenta esté pendiente, valida el token, establece la contraseña y cambia el estado a `Active`.    |
+| **Reenvío**       | Verifica que la cuenta siga pendiente, actualiza el `SecurityStamp` y genera un nuevo token.                       |
+| **Autenticación** | Permite comprobar la contraseña únicamente cuando el usuario tiene estado `Active`.                                |
+
+#### Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    subgraph Application
+        I["IUserInvitationService"]
+        R["UserInvitationResult"]
+        E["InvalidActivationTokenError"]
+    end
+
+    subgraph Infrastructure
+        S["IdentityUserInvitationService"]
+        M["UserManager"]
+        DB["AppDbContext"]
+        T["TokenProvider"]
+    end
+
+    subgraph Domain
+        U["User"]
+        ST["UserStatus"]
+    end
+
+    S -.->|Implementa| I
+    S --> M
+    S --> DB
+    M --> T
+    S --> R
+    S --> E
+    R --> U
+    U --> ST
+```
+
+**Interpretación:**
+
+- **Domain:** representa al usuario y su estado funcional.
+- **Application:** define el contrato de invitaciones y los resultados o errores esperados.
+- **Infrastructure:** implementa las operaciones utilizando ASP.NET Core Identity y Entity Framework Core.
+- **Seguridad:** los tokens se generan mediante un proveedor dedicado y las operaciones de persistencia se agrupan mediante transacciones.
+
+#### **Resultado:** se implementa el adaptador de Identity que permite crear usuarios pendientes, generar y validar tokens, activar cuentas y reenviar invitaciones, manteniendo la lógica de Application independiente de ASP.NET Core Identity.
 
 ---
 

@@ -45,6 +45,7 @@ public sealed class IdentityUserRepository : IUserRepository
         return new User(
             new UserId(identityUser.Id),
             identityUser.Email ?? email,
-            roles);
+            roles,
+            identityUser.Status);
     }
 }

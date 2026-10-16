@@ -47,6 +47,11 @@ public sealed class IdentityCredentialService : IUserCredentialService
         string password,
         CancellationToken cancellationToken = default)
     {
+        if (user.Status != UserStatus.Active)
+        {
+            return false;
+        }
+
         ApplicationIdentityUser? identityUser = await _userManager.FindByIdAsync(user.Id.Value);
         if (identityUser is null)
         {

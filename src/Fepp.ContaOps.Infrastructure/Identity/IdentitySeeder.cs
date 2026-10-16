@@ -2,6 +2,7 @@ using Fepp.ContaOps.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
+using Fepp.ContaOps.Domain.Users;
 
 namespace Fepp.ContaOps.Infrastructure.Identity;
 
@@ -86,7 +87,8 @@ public sealed class IdentitySeeder
             {
                 UserName = _options.Email,
                 Email = _options.Email,
-                EmailConfirmed = true
+                EmailConfirmed = true,
+                Status = UserStatus.Active
             };
 
             IdentityResult creationResult = await _userManager.CreateAsync(admin, _options.Password);
@@ -134,7 +136,8 @@ public sealed class IdentitySeeder
             {
                 UserName = _userOptions.Email,
                 Email = _userOptions.Email,
-                EmailConfirmed = true
+                EmailConfirmed = true,
+                Status = UserStatus.Active
             };
 
             IdentityResult creationResult = await _userManager.CreateAsync(user, _userOptions.Password);

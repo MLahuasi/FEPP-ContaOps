@@ -44,10 +44,13 @@ public static class DependencyInjection
                 options.User.RequireUniqueEmail = true;
             })
             .AddEntityFrameworkStores<AppDbContext>()
+            .AddTokenProvider<DataProtectorTokenProvider<ApplicationIdentityUser>>(
+                IdentityUserInvitationService.TokenProviderName)
             .AddDefaultTokenProviders();
 
         services.AddScoped<IUserRepository, IdentityUserRepository>();
         services.AddScoped<IUserCredentialService, IdentityCredentialService>();
+        services.AddScoped<IUserInvitationService, IdentityUserInvitationService>();
         services.AddOptions<JwtOptions>()
             .Bind(configuration.GetSection(JwtOptions.SectionName))
             .Validate(
