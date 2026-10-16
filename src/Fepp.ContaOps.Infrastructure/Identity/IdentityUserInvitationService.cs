@@ -94,13 +94,18 @@ public sealed class IdentityUserInvitationService : IUserInvitationService
 
     /// <inheritdoc />
     public async Task<Result<User>> ActivateAsync(
-        string email,
+        UserId userId,
         string token,
         string newPassword,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        ApplicationIdentityUser? identityUser = await _userManager.FindByEmailAsync(email);
+        if (!userId.IsValid())
+        {
+            return Result<User>.Failure(InvalidActivationTokenError.Instance);
+        }
+
+        ApplicationIdentityUser? identityUser = await _userManager.FindByIdAsync(userId.Value);
         if (identityUser is null || identityUser.Status != UserStatus.PendingActivation)
         {
             return Result<User>.Failure(InvalidActivationTokenError.Instance);

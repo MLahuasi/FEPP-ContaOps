@@ -21,13 +21,13 @@ public interface IUserInvitationService
     /// <summary>
     /// Activa una cuenta pendiente estableciendo su primera contraseña.
     /// </summary>
-    /// <param name="email">Correo de la cuenta que se activa.</param>
+    /// <param name="userId">Identificador de la cuenta que se activa.</param>
     /// <param name="token">Token dedicado de activación.</param>
     /// <param name="newPassword">Primera contraseña de la cuenta.</param>
     /// <param name="cancellationToken">Token de cancelación de la operación.</param>
     /// <returns>Usuario activo o el error neutral de token inválido.</returns>
     Task<Result<User>> ActivateAsync(
-        string email,
+        UserId userId,
         string token,
         string newPassword,
         CancellationToken cancellationToken = default);

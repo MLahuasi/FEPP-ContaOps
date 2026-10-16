@@ -1194,7 +1194,144 @@ flowchart TD
 
 ---
 
-### 10. Preparar contratos para SPEC 04.
+### 10. Preparar contratos para SPEC 04
+
+#### Componentes implementados
+
+| Componente                      | Acción | Tipo        | Capa           | Responsabilidad                                                                                                     |
+| ------------------------------- | ------ | ----------- | -------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `IUserInvitationService`        | Update | `interface` | Application    | Modifica el contrato de activación para identificar al usuario mediante `UserId` en lugar de su correo electrónico. |
+| `IdentityUserInvitationService` | Update | `class`     | Infrastructure | Adapta la activación de cuentas al nuevo contrato y valida el identificador recibido.                               |
+
+**Arquitectura:** se ajusta el contrato de Application y su implementación en Infrastructure para preparar el proceso de activación que utilizará SPEC 04.
+
+#### Métodos y funciones principales
+
+| Clase / Interfaz                | Método                   | Acción      | Responsabilidad                                                                               |
+| ------------------------------- | ------------------------ | ----------- | --------------------------------------------------------------------------------------------- |
+| `IUserInvitationService`        | `ActivateAsync()`        | Update      | Sustituye el parámetro `email` por `UserId userId`.                                           |
+| `IdentityUserInvitationService` | `ActivateAsync()`        | Update      | Busca la cuenta mediante su identificador, valida el token y establece la primera contraseña. |
+| `IdentityUserInvitationService` | `RegisterPendingAsync()` | Sin cambios | Registra una cuenta pendiente y genera su invitación.                                         |
+| `IdentityUserInvitationService` | `ResendAsync()`          | Sin cambios | Genera una nueva invitación para una cuenta pendiente.                                        |
+
+#### Modificación del contrato de activación
+
+**Contrato anterior:**
+
+```csharp
+Task<Result<User>> ActivateAsync(
+    string email,
+    string token,
+    string newPassword,
+    CancellationToken cancellationToken = default);
+```
+
+**Contrato actualizado:**
+
+```csharp
+Task<Result<User>> ActivateAsync(
+    UserId userId,
+    string token,
+    string newPassword,
+    CancellationToken cancellationToken = default);
+```
+
+| Elemento      | Antes                | Ahora           | Propósito                                                   |
+| ------------- | -------------------- | --------------- | ----------------------------------------------------------- |
+| Identificador | `string email`       | `UserId userId` | Identificar la cuenta mediante su identificador de dominio. |
+| Token         | `string token`       | Sin cambios     | Validar la invitación de activación.                        |
+| Contraseña    | `string newPassword` | Sin cambios     | Establecer la primera contraseña.                           |
+| Resultado     | `Result<User>`       | Sin cambios     | Devolver el usuario activado o un error esperado.           |
+
+Este cambio permite utilizar directamente el `userId` incluido en el enlace de activación generado durante la invitación.
+
+#### Validaciones de activación
+
+La implementación `IdentityUserInvitationService.ActivateAsync()` incorpora la validación del identificador antes de consultar Identity.
+
+| Validación             | Método / Componente                  | Responsabilidad                                                    |
+| ---------------------- | ------------------------------------ | ------------------------------------------------------------------ |
+| Identificador válido   | `UserId.IsValid()`                   | Comprueba que el identificador recibido sea válido.                |
+| Usuario existente      | `UserManager.FindByIdAsync()`        | Busca la cuenta mediante su identificador.                         |
+| Estado pendiente       | `UserStatus.PendingActivation`       | Impide activar cuentas que no estén pendientes.                    |
+| Token válido           | `UserManager.VerifyUserTokenAsync()` | Comprueba el token mediante el proveedor dedicado.                 |
+| Contraseña inicial     | `UserManager.AddPasswordAsync()`     | Establece la contraseña de la cuenta.                              |
+| Confirmación de correo | `EmailConfirmed = true`              | Marca el correo como confirmado.                                   |
+| Activación             | `Status = UserStatus.Active`         | Cambia el estado funcional de la cuenta.                           |
+| Invalidación del token | `UpdateSecurityStampAsync()`         | Actualiza el estado de seguridad para invalidar tokens anteriores. |
+
+Cuando el identificador, el usuario, su estado o el token no son válidos, se devuelve `InvalidActivationTokenError.Instance`.
+
+#### Componentes de .NET utilizados
+
+| Componente                          | Origen                | Función                                              |
+| ----------------------------------- | --------------------- | ---------------------------------------------------- |
+| `UserManager<TUser>`                | ASP.NET Core Identity | Administra usuarios, contraseñas y tokens.           |
+| `FindByIdAsync()`                   | ASP.NET Core Identity | Busca un usuario mediante su identificador.          |
+| `VerifyUserTokenAsync()`            | ASP.NET Core Identity | Comprueba la validez del token de activación.        |
+| `AddPasswordAsync()`                | ASP.NET Core Identity | Establece la contraseña inicial.                     |
+| `UpdateSecurityStampAsync()`        | ASP.NET Core Identity | Actualiza el identificador de seguridad del usuario. |
+| `BeginTransactionAsync()`           | Entity Framework Core | Inicia una transacción de base de datos.             |
+| `CommitAsync()` / `RollbackAsync()` | Entity Framework Core | Confirman o revierten la transacción.                |
+| `CancellationToken`                 | .NET                  | Permite solicitar la cancelación de operaciones.     |
+
+**Componentes propios:** `UserId`, `UserStatus`, `Result<User>` e `InvalidActivationTokenError`.
+
+#### Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    subgraph Application
+        I["IUserInvitationService"]
+        R["Result de User"]
+        E["InvalidActivationTokenError"]
+    end
+
+    subgraph Infrastructure
+        S["IdentityUserInvitationService"]
+        M["UserManager"]
+        DB["AppDbContext"]
+    end
+
+    subgraph Domain
+        ID["UserId"]
+        U["User"]
+        ST["UserStatus"]
+    end
+
+    S -.->|Implementa| I
+    I -->|Recibe| ID
+
+    S -->|Busca por ID| M
+    S -->|Transacción| DB
+    S -->|Valida y activa| U
+
+    U --> ST
+    S -->|Éxito| R
+    S -->|Error esperado| E
+```
+
+**Interpretación:**
+
+- **Domain:** proporciona `UserId` para identificar la cuenta y `UserStatus` para representar su estado.
+- **Application:** define el contrato de activación utilizando tipos del dominio.
+- **Infrastructure:** implementa la búsqueda por identificador y la validación mediante ASP.NET Core Identity.
+- **Seguridad:** las condiciones inválidas de identificación, estado o token se representan mediante un error neutral.
+
+#### Preparación para SPEC 04
+
+| Aspecto                                   | Estado                    |
+| ----------------------------------------- | ------------------------- |
+| Activación mediante `UserId`              | Implementado              |
+| Validación del identificador              | Implementado              |
+| Verificación del token                    | Implementado              |
+| Establecimiento de contraseña             | Implementado              |
+| Cambio de estado a `Active`               | Implementado              |
+| Contrato actualizado en Application       | Implementado              |
+| Implementación adaptada en Infrastructure | Implementado              |
+| Endpoints HTTP de activación              | No incluidos en este paso |
+
+**Resultado:** se actualiza el contrato de activación para trabajar con `UserId` en lugar del correo electrónico y se adapta su implementación en Identity. Esto permite que SPEC 04 utilice el identificador y el token incluidos en el enlace de invitación para completar la activación de cuentas.
 
 ---
 
