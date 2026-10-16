@@ -745,7 +745,158 @@ flowchart TD
 
 ---
 
-### 7. Implementar MailKitSmtpEmailSender.
+### 7. Implementar MailKitSmtpEmailSender
+
+#### Componentes implementados
+
+| Componente                            | Acción | Tipo                | Capa           | Responsabilidad                                                                |
+| ------------------------------------- | ------ | ------------------- | -------------- | ------------------------------------------------------------------------------ |
+| `MailKitSmtpEmailSender`              | Create | `class`             | Infrastructure | Implementa el envío de correos electrónicos mediante SMTP utilizando MailKit.  |
+| `EmailDeliveryUnavailableException`   | Create | `class`             | Application    | Representa errores de entrega de correo sin exponer información del proveedor. |
+| `Fepp.ContaOps.Infrastructure.csproj` | Update | Archivo de proyecto | Infrastructure | Incorpora la dependencia externa `MailKit` versión `4.18.1`.                   |
+
+**Arquitectura:** `MailKitSmtpEmailSender` implementa `IEmailSender`, definido en Application, manteniendo el transporte SMTP independiente de la lógica de negocio.
+
+#### Métodos y funciones principales
+
+| Clase                               | Método                                | Responsabilidad                                                                          |
+| ----------------------------------- | ------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `MailKitSmtpEmailSender`            | `MailKitSmtpEmailSender()`            | Recibe la configuración SMTP mediante `IOptions<EmailSmtpOptions>`.                      |
+| `MailKitSmtpEmailSender`            | `SendAsync()`                         | Establece la conexión SMTP, autentica al usuario, envía el mensaje y cierra la conexión. |
+| `MailKitSmtpEmailSender`            | `BuildMimeMessage()`                  | Convierte `EmailMessage` en un mensaje MIME con contenido HTML y texto plano.            |
+| `MailKitSmtpEmailSender`            | `ToSecureSocketOptions()`             | Convierte `SmtpSecurityMode` al modo de seguridad utilizado por MailKit.                 |
+| `MailKitSmtpEmailSender`            | `IsDeliveryFailure()`                 | Identifica excepciones de transporte que deben convertirse en un error neutral.          |
+| `EmailDeliveryUnavailableException` | `EmailDeliveryUnavailableException()` | Construye una excepción con un mensaje seguro y un código de error estable.              |
+
+#### Modelos y dependencias
+
+**MailKitSmtpEmailSender**
+
+| Dependencia    | Tipo               | Origen         | Responsabilidad                                              |
+| -------------- | ------------------ | -------------- | ------------------------------------------------------------ |
+| `_options`     | `EmailSmtpOptions` | Infrastructure | Contiene servidor, puerto, credenciales, TLS y timeout.      |
+| `IEmailSender` | `interface`        | Application    | Contrato implementado por el adaptador SMTP.                 |
+| `EmailMessage` | `record`           | Application    | Proporciona destinatario, asunto y contenido HTML/TXT.       |
+| `SmtpClient`   | `class`            | MailKit        | Gestiona la comunicación con el servidor SMTP.               |
+| `MimeMessage`  | `class`            | MimeKit        | Representa el mensaje de correo en formato MIME.             |
+| `BodyBuilder`  | `class`            | MimeKit        | Construye el cuerpo del correo con sus variantes HTML y TXT. |
+
+**EmailDeliveryUnavailableException**
+
+| Elemento    | Tipo                             | Descripción                                                             |
+| ----------- | -------------------------------- | ----------------------------------------------------------------------- |
+| `ErrorCode` | `const string`                   | Código estable `email_delivery_unavailable`.                            |
+| `Message`   | `string` heredado de `Exception` | Mensaje genérico que no revela datos del proveedor ni del destinatario. |
+
+La excepción hereda de `System.Exception`, componente nativo de .NET.
+
+#### Componentes de MailKit y .NET utilizados
+
+| Componente / Método           | Origen                 | Función                                                       |
+| ----------------------------- | ---------------------- | ------------------------------------------------------------- |
+| `SmtpClient`                  | MailKit                | Cliente encargado de la comunicación SMTP.                    |
+| `ConnectAsync()`              | MailKit / `SmtpClient` | Establece una conexión con el servidor SMTP utilizando TLS.   |
+| `AuthenticateAsync()`         | MailKit / `SmtpClient` | Autentica las credenciales configuradas.                      |
+| `SendAsync()`                 | MailKit / `SmtpClient` | Envía el mensaje MIME al servidor SMTP.                       |
+| `DisconnectAsync()`           | MailKit / `SmtpClient` | Cierra correctamente la conexión SMTP.                        |
+| `SecureSocketOptions`         | MailKit                | Define el modo de seguridad de la conexión.                   |
+| `MimeMessage`                 | MimeKit                | Representa el mensaje MIME.                                   |
+| `MailboxAddress`              | MimeKit                | Representa direcciones de correo y nombres de remitentes.     |
+| `BodyBuilder.ToMessageBody()` | MimeKit                | Construye el cuerpo MIME con las variantes HTML y TXT.        |
+| `CancellationTokenSource`     | .NET                   | Permite controlar la cancelación y el timeout del envío.      |
+| `CreateLinkedTokenSource()`   | .NET                   | Combina la cancelación solicitada con el timeout configurado. |
+| `TimeSpan.FromSeconds()`      | .NET                   | Convierte los segundos configurados a un intervalo de tiempo. |
+| `IOptions<T>`                 | .NET Options           | Proporciona acceso a la configuración SMTP.                   |
+
+#### Seguridad y manejo de errores
+
+| Mecanismo              | Implementación                                  | Propósito                                                                    |
+| ---------------------- | ----------------------------------------------- | ---------------------------------------------------------------------------- |
+| Conexión cifrada       | `SecureSocketOptions.StartTls` / `SslOnConnect` | Utiliza TLS para proteger la comunicación SMTP.                              |
+| Timeout                | `CancellationTokenSource`                       | Limita el tiempo total de las operaciones de envío.                          |
+| Cancelación            | `CreateLinkedTokenSource()`                     | Combina el timeout con la cancelación solicitada por la aplicación.          |
+| Errores neutrales      | `EmailDeliveryUnavailableException`             | Evita propagar detalles técnicos de los errores de transporte identificados. |
+| Autenticación          | `AuthenticateAsync()`                           | Utiliza las credenciales configuradas para acceder al servidor SMTP.         |
+| Liberación de recursos | `using`                                         | Libera el cliente SMTP y los recursos de cancelación.                        |
+
+**Tratamiento de excepciones:**
+
+`IsDeliveryFailure()` identifica los siguientes errores:
+
+| Excepción                 | Origen  | Descripción                                               |
+| ------------------------- | ------- | --------------------------------------------------------- |
+| `AuthenticationException` | .NET    | Error de autenticación.                                   |
+| `IOException`             | .NET    | Error de entrada/salida.                                  |
+| `SocketException`         | .NET    | Error de comunicación de red.                             |
+| `SmtpCommandException`    | MailKit | El servidor rechaza un comando SMTP.                      |
+| `SmtpProtocolException`   | MailKit | Error durante la comunicación mediante el protocolo SMTP. |
+| `SslHandshakeException`   | MailKit | Error al establecer una conexión TLS segura.              |
+| `TimeoutException`        | .NET    | Se supera un límite de tiempo.                            |
+| `FormatException`         | .NET    | Error de formato de datos.                                |
+| `ParseException`          | MimeKit | Error al interpretar datos del mensaje.                   |
+
+Los errores identificados se convierten en `EmailDeliveryUnavailableException`.
+
+La cancelación solicitada expresamente por el consumidor se mantiene como `OperationCanceledException`.
+
+#### Flujo de envío SMTP
+
+| Paso | Operación             | Descripción                                                                 |
+| ---- | --------------------- | --------------------------------------------------------------------------- |
+| 1    | `SendAsync()`         | Recibe el mensaje neutral `EmailMessage`.                                   |
+| 2    | `BuildMimeMessage()`  | Construye el mensaje MIME con asunto, destinatario, HTML y TXT.             |
+| 3    | `ConnectAsync()`      | Establece la conexión SMTP cifrada.                                         |
+| 4    | `AuthenticateAsync()` | Autentica las credenciales del remitente.                                   |
+| 5    | `SendAsync()`         | Entrega el mensaje al servidor SMTP.                                        |
+| 6    | `DisconnectAsync()`   | Cierra la conexión.                                                         |
+| 7    | Manejo de excepciones | Convierte los errores de transporte identificados en una excepción neutral. |
+
+**Importante:** la ejecución satisfactoria de `SendAsync()` confirma la aceptación del mensaje por el transporte SMTP, no necesariamente su entrega final en la bandeja del destinatario.
+
+#### Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    subgraph Application
+        I["IEmailSender"]
+        M["EmailMessage"]
+        E["EmailDeliveryUnavailableException"]
+    end
+
+    subgraph Infrastructure
+        S["MailKitSmtpEmailSender"]
+        O["EmailSmtpOptions"]
+    end
+
+    subgraph EXTERNAL["MailKit / MimeKit"]
+        MIME["MimeMessage / BodyBuilder"]
+        SMTP["SmtpClient"]
+    end
+
+    SERVER["Servidor SMTP"]
+
+    S -.->|Implementa| I
+    I -->|Recibe| M
+
+    S -->|Configuración| O
+    S -->|Construye| MIME
+    S -->|Utiliza| SMTP
+
+    SMTP -->|TLS + Autenticación + Envío| SERVER
+    S -.->|Errores de transporte| E
+```
+
+**Interpretación:**
+
+- **Application:** define el contrato neutral de correo y la excepción utilizada para informar fallos de entrega.
+- **Infrastructure:** implementa el adaptador SMTP y utiliza su configuración.
+- **MimeKit:** construye el mensaje con contenido HTML y texto plano.
+- **MailKit:** establece la conexión segura, autentica y envía el correo al servidor SMTP.
+- **Manejo de errores:** transforma los fallos de transporte identificados en una excepción propia de Application.
+
+**Resultado:** se implementa el adaptador SMTP mediante MailKit, incorporando envío de mensajes HTML/TXT, conexiones TLS, autenticación, timeout y manejo neutral de errores.
+
+**Observación:** en el código proporcionado todavía no se muestra el registro de `MailKitSmtpEmailSender` como implementación de `IEmailSender` en `DependencyInjection`.
 
 ---
 
