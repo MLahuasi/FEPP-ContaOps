@@ -1057,7 +1057,140 @@ flowchart TD
 
 ---
 
-### 9. Probar transporte SMTP y errores de entrega.
+### 9. Probar transporte SMTP y errores de entrega
+
+#### Componentes implementados
+
+| Componente                    | Acción | Tipo            | Capa              | Responsabilidad                                                                                           |
+| ----------------------------- | ------ | --------------- | ----------------- | --------------------------------------------------------------------------------------------------------- |
+| `MailKitSmtpEmailSenderTests` | Create | `class`         | Tests (UnitTests) | Verifica la configuración SMTP y el tratamiento de errores de transporte sin utilizar proveedores reales. |
+| `InProcessSmtpFailureServer`  | Create | `class` anidada | Tests (UnitTests) | Simula un servidor SMTP local que provoca un fallo de conexión controlado.                                |
+
+**Objetivo:** comprobar que la configuración SMTP exige conexiones cifradas y que los errores de transporte se convierten en `EmailDeliveryUnavailableException`.
+
+#### Pruebas implementadas
+
+| Prueba                                                      | Tipo     | Responsabilidad                                                                                |
+| ----------------------------------------------------------- | -------- | ---------------------------------------------------------------------------------------------- |
+| `SmtpOptions_RejectsUnencryptedOrIncompatibleConnections()` | `[Fact]` | Comprueba que `EmailSmtpOptions` rechace combinaciones inválidas de puerto y modo TLS.         |
+| `InProcessSmtpFailure_IsTranslatedToUnavailableError()`     | `[Fact]` | Comprueba que un fallo de comunicación SMTP se traduzca a `EmailDeliveryUnavailableException`. |
+
+**Validación de configuración SMTP**
+
+| Puerto | Modo de seguridad | Resultado esperado |
+| ------ | ----------------- | ------------------ |
+| `25`   | `StartTls`        | Inválido           |
+| `465`  | `StartTls`        | Inválido           |
+| `465`  | `TlsOnConnect`    | Válido             |
+
+Estas pruebas utilizan `EmailSmtpOptions.IsValid()` para verificar las restricciones configuradas.
+
+#### Métodos y funciones principales
+
+| Clase                         | Método                                                      | Responsabilidad                                                         |
+| ----------------------------- | ----------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `MailKitSmtpEmailSenderTests` | `SmtpOptions_RejectsUnencryptedOrIncompatibleConnections()` | Verifica las reglas de seguridad SMTP.                                  |
+| `MailKitSmtpEmailSenderTests` | `InProcessSmtpFailure_IsTranslatedToUnavailableError()`     | Ejecuta el adaptador SMTP contra un servidor local que simula un fallo. |
+| `InProcessSmtpFailureServer`  | `InProcessSmtpFailureServer()`                              | Inicializa un servidor TCP local utilizando un puerto efímero.          |
+| `InProcessSmtpFailureServer`  | `Port`                                                      | Obtiene el puerto asignado al servidor de prueba.                       |
+| `InProcessSmtpFailureServer`  | `AcceptAndCloseAsync()`                                     | Acepta una conexión, envía un saludo SMTP y cierra la comunicación.     |
+| `InProcessSmtpFailureServer`  | `DisposeAsync()`                                            | Detiene el servidor local y libera sus recursos.                        |
+
+#### Funcionamiento del servidor SMTP simulado
+
+`InProcessSmtpFailureServer` es una clase privada anidada dentro de `MailKitSmtpEmailSenderTests`.
+
+Implementa `IAsyncDisposable` para permitir la liberación de recursos mediante `await using`.
+
+| Componente      | Tipo          | Responsabilidad                          |
+| --------------- | ------------- | ---------------------------------------- |
+| `_listener`     | `TcpListener` | Escucha conexiones TCP locales.          |
+| `Port`          | `int`         | Expone el puerto asignado dinámicamente. |
+| `TcpClient`     | .NET          | Representa la conexión aceptada.         |
+| `NetworkStream` | .NET          | Permite escribir el saludo SMTP.         |
+
+**Secuencia de la prueba:**
+
+1. Se inicia un servidor TCP en `127.0.0.1` con un puerto disponible.
+2. Se configura `MailKitSmtpEmailSender` para conectarse a ese servidor.
+3. Se construye un `EmailMessage` de prueba.
+4. El servidor acepta la conexión y envía el saludo SMTP `220`.
+5. El servidor cierra la conexión sin completar el protocolo SMTP.
+6. MailKit detecta el fallo de comunicación.
+7. El adaptador convierte el error en `EmailDeliveryUnavailableException`.
+8. xUnit comprueba que se produzca la excepción esperada.
+
+#### Componentes de .NET y bibliotecas externas
+
+| Componente                         | Origen                    | Función                                                                                |
+| ---------------------------------- | ------------------------- | -------------------------------------------------------------------------------------- |
+| `[Fact]`                           | xUnit                     | Identifica un método como prueba ejecutable.                                           |
+| `Assert.True()` / `Assert.False()` | xUnit                     | Verifican condiciones booleanas.                                                       |
+| `Assert.ThrowsAsync<T>()`          | xUnit                     | Comprueba que una operación asíncrona lance una excepción específica.                  |
+| `TcpListener`                      | .NET — System.Net.Sockets | Implementa un servidor TCP local.                                                      |
+| `TcpClient`                        | .NET — System.Net.Sockets | Representa una conexión TCP.                                                           |
+| `NetworkStream`                    | .NET — System.Net.Sockets | Permite leer y escribir datos mediante una conexión TCP.                               |
+| `IPAddress.Loopback`               | .NET — System.Net         | Representa la dirección local `127.0.0.1`.                                             |
+| `IPEndPoint`                       | .NET — System.Net         | Permite obtener el puerto asignado al servidor.                                        |
+| `IAsyncDisposable`                 | .NET                      | Define la liberación asíncrona de recursos.                                            |
+| `Options.Create<T>()`              | .NET Options              | Construye un objeto `IOptions<T>` para proporcionar configuración durante las pruebas. |
+| `Task` / `ValueTask`               | .NET                      | Representan operaciones asíncronas.                                                    |
+| `MailKitSmtpEmailSender`           | Infrastructure / MailKit  | Adaptador real de correo que se somete a prueba.                                       |
+
+#### Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    subgraph Tests["UnitTests"]
+        T["MailKitSmtpEmailSenderTests"]
+        S["InProcessSmtpFailureServer"]
+        X["xUnit Assert"]
+    end
+
+    subgraph Infrastructure
+        O["EmailSmtpOptions"]
+        M["MailKitSmtpEmailSender"]
+    end
+
+    subgraph Application
+        E["EmailMessage"]
+        ERR["EmailDeliveryUnavailableException"]
+    end
+
+    T -->|Valida configuración| O
+    T -->|Ejecuta envío| M
+    T -->|Inicia| S
+
+    M -->|Utiliza| E
+    M -->|Conexión TCP local| S
+    S -->|Cierra conexión| M
+
+    M -.->|Traduce fallo| ERR
+    T -->|Verifica excepción| X
+    ERR --> X
+```
+
+**Interpretación:**
+
+- **Tests:** ejecuta las pruebas y simula un servidor SMTP local.
+- **Infrastructure:** utiliza el adaptador real `MailKitSmtpEmailSender` para comprobar su comportamiento.
+- **Application:** proporciona el mensaje neutral y la excepción esperada.
+- **xUnit:** verifica las reglas de configuración y el tratamiento de errores.
+
+#### Consideraciones técnicas
+
+| Aspecto               | Descripción                                                                                |
+| --------------------- | ------------------------------------------------------------------------------------------ |
+| Independencia externa | Las pruebas no requieren Gmail ni otro proveedor SMTP real.                                |
+| Servidor local        | Utiliza `IPAddress.Loopback` para evitar conexiones a servicios externos.                  |
+| Puerto efímero        | El sistema operativo asigna un puerto disponible mediante `TcpListener(..., 0)`.           |
+| Seguridad             | Comprueba que se rechacen configuraciones SMTP incompatibles con los modos TLS permitidos. |
+| Manejo de errores     | Verifica que los fallos de transporte identificados se traduzcan a una excepción neutral.  |
+| Alcance               | No comprueba un envío exitoso, la autenticación SMTP ni la entrega final de correos.       |
+
+**Observación:** la segunda prueba utiliza directamente un puerto efímero que puede ser distinto de `587` o `465`. Por ello, comprueba el comportamiento del adaptador frente a un fallo de transporte, pero no valida la configuración mediante `EmailSmtpOptions.IsValid()`.
+
+**Resultado:** se incorporan pruebas automatizadas para las restricciones de seguridad SMTP y la traducción de fallos de comunicación a `EmailDeliveryUnavailableException`, sin depender de proveedores externos.
 
 ---
 
