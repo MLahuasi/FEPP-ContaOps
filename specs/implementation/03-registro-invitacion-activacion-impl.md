@@ -568,7 +568,180 @@ flowchart TD
 
 ---
 
-### 6. Implementar renderer y InvitationEmailNotifier.
+### 6. Implementar renderer y InvitationEmailNotifier
+
+#### Componentes implementados
+
+| Componente                   | Acción | Tipo           | Capa           | Responsabilidad                                                                        |
+| ---------------------------- | ------ | -------------- | -------------- | -------------------------------------------------------------------------------------- |
+| `InvitationTemplateCatalog`  | Create | `class`        | Infrastructure | Carga y valida el manifest y los archivos de plantillas.                               |
+| `EmailTemplateDefinition`    | Create | `class`        | Infrastructure | Representa la configuración de una plantilla definida en `templates.json`.             |
+| `InvitationTemplateRenderer` | Create | `class`        | Infrastructure | Sustituye los parámetros de las plantillas HTML/TXT por valores reales.                |
+| `RenderedEmailTemplate`      | Create | `record`       | Infrastructure | Contiene el asunto y los cuerpos HTML/TXT procesados.                                  |
+| `InvitationEmailNotifier`    | Create | `class`        | Infrastructure | Construye el enlace de activación, genera el mensaje y solicita su envío.              |
+| `DependencyInjection`        | Update | `static class` | Infrastructure | Registra el catálogo, el renderer y el notificador mediante inyección de dependencias. |
+
+#### Métodos y funciones principales
+
+| Clase                        | Método                  | Responsabilidad                                                                    |
+| ---------------------------- | ----------------------- | ---------------------------------------------------------------------------------- |
+| `InvitationTemplateCatalog`  | `Get()`                 | Obtiene la definición de una plantilla por su identificador.                       |
+| `InvitationTemplateCatalog`  | `Read()`                | Lee el archivo HTML o TXT correspondiente.                                         |
+| `InvitationTemplateCatalog`  | `ResolveRootPath()`     | Determina el directorio donde se encuentran las plantillas.                        |
+| `InvitationTemplateCatalog`  | `LoadDefinitions()`     | Carga y deserializa el manifest `templates.json`.                                  |
+| `InvitationTemplateCatalog`  | `ValidateDefinition()`  | Verifica archivos, asunto y parámetros declarados.                                 |
+| `InvitationTemplateCatalog`  | `GetSafePath()`         | Comprueba que las rutas referenciadas permanezcan dentro del directorio permitido. |
+| `InvitationTemplateRenderer` | `Render()`              | Genera el asunto y los contenidos HTML/TXT con los parámetros proporcionados.      |
+| `InvitationTemplateRenderer` | `ReplaceParameters()`   | Sustituye los marcadores `{{parametro}}` y codifica los valores HTML.              |
+| `InvitationEmailNotifier`    | `NotifyAsync()`         | Construye el correo de invitación y delega su envío a `IEmailSender`.              |
+| `InvitationEmailNotifier`    | `BuildActivationLink()` | Construye el enlace de activación incluyendo el identificador y el token.          |
+| `DependencyInjection`        | `AddInfrastructure()`   | Registra los componentes necesarios para procesar y notificar invitaciones.        |
+
+#### Modelos de datos
+
+**EmailTemplateDefinition**
+
+Representa una plantilla declarada en el manifest.
+
+| Propiedad    | Tipo       | Descripción                             |
+| ------------ | ---------- | --------------------------------------- |
+| `HtmlFile`   | `string`   | Nombre del archivo HTML.                |
+| `TextFile`   | `string`   | Nombre del archivo de texto plano.      |
+| `Subject`    | `string`   | Asunto del correo.                      |
+| `Parameters` | `string[]` | Parámetros requeridos por la plantilla. |
+
+**RenderedEmailTemplate**
+
+Contiene el resultado del procesamiento de una plantilla.
+
+| Propiedad  | Tipo     | Descripción                                              |
+| ---------- | -------- | -------------------------------------------------------- |
+| `Subject`  | `string` | Asunto del correo.                                       |
+| `HtmlBody` | `string` | Contenido HTML con los parámetros sustituidos.           |
+| `TextBody` | `string` | Contenido de texto plano con los parámetros sustituidos. |
+
+#### Funcionamiento de InvitationEmailNotifier
+
+La clase `InvitationEmailNotifier` implementa la interfaz `IInvitationNotifier` definida en Application.
+
+| Dependencia    | Tipo                         | Responsabilidad                                   |
+| -------------- | ---------------------------- | ------------------------------------------------- |
+| `_emailSender` | `IEmailSender`               | Transporte neutral encargado de enviar el correo. |
+| `_renderer`    | `InvitationTemplateRenderer` | Procesa las plantillas de invitación.             |
+| `_options`     | `UserInvitationOptions`      | Proporciona la URL base de activación.            |
+
+**Proceso de `NotifyAsync()`:**
+
+1. Recibe `UserInvitationResult` con el usuario y su token.
+2. Construye el enlace de activación mediante `BuildActivationLink()`.
+3. Solicita al renderer la plantilla `invitation`, proporcionando `userId` y `activationLink`.
+4. Construye un `EmailMessage` con destinatario, asunto, HTML, TXT e identificador del intento.
+5. Delega el envío mediante `IEmailSender.SendAsync()`.
+
+**Enlace de activación**
+
+`BuildActivationLink()` genera una URL con la siguiente estructura:
+
+```text
+https://cliente.example/activar#userId=IDENTIFICADOR&token=TOKEN
+```
+
+Los parámetros se incorporan en el fragmento (`#`) y se codifican mediante `Uri.EscapeDataString()`.
+
+El fragmento no se envía al servidor como parte de una solicitud HTTP convencional, aunque permanece visible en el navegador y debe tratarse como información sensible.
+
+#### Validación y procesamiento de plantillas
+
+| Componente                   | Validación / Proceso      | Propósito                                                             |
+| ---------------------------- | ------------------------- | --------------------------------------------------------------------- |
+| `InvitationTemplateCatalog`  | Existencia del manifest   | Comprueba que `templates.json` exista.                                |
+| `InvitationTemplateCatalog`  | Definiciones obligatorias | Verifica que exista al menos una plantilla.                           |
+| `InvitationTemplateCatalog`  | Archivos HTML/TXT         | Comprueba que los archivos declarados existan.                        |
+| `InvitationTemplateCatalog`  | Parámetros                | Verifica que los parámetros declarados aparezcan en ambas plantillas. |
+| `InvitationTemplateCatalog`  | Rutas permitidas          | Evita referencias a archivos fuera del directorio de plantillas.      |
+| `InvitationTemplateRenderer` | Parámetros requeridos     | Comprueba que se proporcionen todos los parámetros declarados.        |
+| `InvitationTemplateRenderer` | Codificación HTML         | Codifica los valores antes de insertarlos en la plantilla HTML.       |
+
+#### Componentes de .NET utilizados
+
+| Componente                              | Origen                    | Función                                                             |
+| --------------------------------------- | ------------------------- | ------------------------------------------------------------------- |
+| `JsonSerializer.Deserialize<T>()`       | .NET — System.Text.Json   | Deserializa el manifest JSON a objetos C#.                          |
+| `File.ReadAllText()`                    | .NET — System.IO          | Lee el contenido de las plantillas.                                 |
+| `File.Exists()`                         | .NET — System.IO          | Comprueba la existencia de archivos.                                |
+| `Path.Combine()`                        | .NET — System.IO          | Construye rutas de archivos.                                        |
+| `Path.GetFullPath()`                    | .NET — System.IO          | Obtiene rutas absolutas para validarlas.                            |
+| `WebUtility.HtmlEncode()`               | .NET — System.Net         | Codifica caracteres especiales para contenido HTML.                 |
+| `Uri.EscapeDataString()`                | .NET — System             | Codifica parámetros para incorporarlos a una URL.                   |
+| `Guid.NewGuid()`                        | .NET — System             | Genera un identificador único para el intento de envío.             |
+| `IOptions<T>`                           | .NET Options              | Proporciona acceso a la configuración de invitaciones y plantillas. |
+| `AddSingleton<T>()`                     | .NET Dependency Injection | Registra una única instancia del componente.                        |
+| `AddScoped<TService,TImplementation>()` | .NET Dependency Injection | Registra una implementación por ámbito de dependencias.             |
+
+#### Registro de dependencias
+
+En `DependencyInjection.AddInfrastructure()` se incorporan los siguientes registros:
+
+```csharp
+services.AddSingleton<InvitationTemplateCatalog>();
+services.AddSingleton<InvitationTemplateRenderer>();
+services.AddScoped<IInvitationNotifier, InvitationEmailNotifier>();
+```
+
+| Componente                   | Ciclo de vida | Descripción                                                        |
+| ---------------------------- | ------------- | ------------------------------------------------------------------ |
+| `InvitationTemplateCatalog`  | Singleton     | Mantiene el catálogo de definiciones cargado durante la ejecución. |
+| `InvitationTemplateRenderer` | Singleton     | Reutiliza el catálogo para procesar las plantillas.                |
+| `InvitationEmailNotifier`    | Scoped        | Construye y solicita el envío de las notificaciones.               |
+
+#### Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    subgraph Application
+        I["IInvitationNotifier"]
+        R["UserInvitationResult"]
+        E["IEmailSender"]
+        M["EmailMessage"]
+    end
+
+    subgraph Infrastructure
+        N["InvitationEmailNotifier"]
+        REN["InvitationTemplateRenderer"]
+        CAT["InvitationTemplateCatalog"]
+        DEF["EmailTemplateDefinition"]
+    end
+
+    subgraph Plantillas
+        JSON["templates.json"]
+        HTML["invitation.html"]
+        TXT["invitation.txt"]
+    end
+
+    N -.->|Implementa| I
+    N -->|Recibe| R
+    N -->|Renderiza| REN
+    REN --> CAT
+    CAT --> DEF
+
+    CAT --> JSON
+    CAT --> HTML
+    CAT --> TXT
+
+    N -->|Construye| M
+    N -->|Solicita envío| E
+    E -->|Recibe| M
+```
+
+**Interpretación:**
+
+- **Application:** define los contratos de notificación, envío de correo y los modelos neutrales.
+- **Infrastructure:** implementa el notificador y el procesamiento de plantillas.
+- **InvitationTemplateCatalog:** carga y valida los archivos definidos en el manifest.
+- **InvitationTemplateRenderer:** sustituye los parámetros y genera los contenidos HTML/TXT.
+- **InvitationEmailNotifier:** construye el mensaje final y delega su entrega a `IEmailSender`.
+
+**Resultado:** se implementa el procesamiento de plantillas y la construcción de correos de invitación, incluyendo el enlace de activación y la codificación de parámetros. El envío efectivo queda delegado a una implementación de `IEmailSender`.
 
 ---
 

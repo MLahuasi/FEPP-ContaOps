@@ -1,5 +1,6 @@
 using Fepp.ContaOps.Application.Abstractions;
 using Fepp.ContaOps.Infrastructure.Email;
+using Fepp.ContaOps.Infrastructure.Email.Templates;
 using Fepp.ContaOps.Infrastructure.Identity;
 using Fepp.ContaOps.Infrastructure.Persistence;
 using Fepp.ContaOps.Infrastructure.Security;
@@ -68,6 +69,9 @@ public static class DependencyInjection
             .ValidateOnStart();
         services.AddOptions<EmailTemplatesOptions>()
             .Bind(configuration.GetSection(EmailTemplatesOptions.SectionName));
+        services.AddSingleton<InvitationTemplateCatalog>();
+        services.AddSingleton<InvitationTemplateRenderer>();
+        services.AddScoped<IInvitationNotifier, InvitationEmailNotifier>();
         services.AddIdentity<ApplicationIdentityUser, IdentityRole>(options =>
             {
                 options.Password.RequiredLength = 12;
