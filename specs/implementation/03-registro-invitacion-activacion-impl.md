@@ -462,7 +462,109 @@ flowchart TD
 
 ---
 
-### 5. Crear manifest y plantillas HTML/TXT.
+### 5. Crear manifest y plantillas HTML/TXT
+
+#### Componentes implementados
+
+| Componente                            | Acción | Tipo                | Capa           | Responsabilidad                                                              |
+| ------------------------------------- | ------ | ------------------- | -------------- | ---------------------------------------------------------------------------- |
+| `templates.json`                      | Create | JSON / Manifest     | Infrastructure | Define el catálogo de plantillas, sus archivos, asuntos y parámetros.        |
+| `invitation.html`                     | Create | Plantilla HTML      | Infrastructure | Define el contenido HTML del correo de invitación.                           |
+| `invitation.txt`                      | Create | Plantilla TXT       | Infrastructure | Define la versión de texto plano del correo de invitación.                   |
+| `Fepp.ContaOps.Infrastructure.csproj` | Update | Archivo de proyecto | Infrastructure | Configura la copia de las plantillas al directorio de salida de compilación. |
+
+#### Estructura de archivos
+
+```text
+Fepp.ContaOps.Infrastructure/
+├── Fepp.ContaOps.Infrastructure.csproj
+└── Email/
+    └── Templates/
+        ├── templates.json
+        ├── invitation.html
+        └── invitation.txt
+```
+
+#### Manifest de plantillas
+
+El archivo `templates.json` define qué archivos y parámetros deben utilizarse para construir cada tipo de correo.
+
+| Propiedad    | Valor                               | Descripción                                     |
+| ------------ | ----------------------------------- | ----------------------------------------------- |
+| `invitation` | Objeto JSON                         | Identificador de la plantilla de invitación.    |
+| `htmlFile`   | `invitation.html`                   | Archivo que contiene la versión HTML.           |
+| `textFile`   | `invitation.txt`                    | Archivo que contiene la versión de texto plano. |
+| `subject`    | `Activa tu cuenta de FEPP ContaOps` | Asunto del correo electrónico.                  |
+| `parameters` | `userId`, `activationLink`          | Variables requeridas para generar el mensaje.   |
+
+#### Plantillas de correo
+
+| Archivo           | Formato     | Responsabilidad                                                                          |
+| ----------------- | ----------- | ---------------------------------------------------------------------------------------- |
+| `invitation.html` | HTML        | Presenta el mensaje de invitación con un enlace de activación clicable.                  |
+| `invitation.txt`  | Texto plano | Presenta el mismo mensaje sin formato HTML, mostrando directamente la URL de activación. |
+
+Ambas plantillas incluyen los mismos datos:
+
+- Notificación de creación de la cuenta.
+- Instrucciones para establecer la primera contraseña.
+- Enlace de activación.
+- Identificador del usuario.
+- Indicación de ignorar el mensaje si la invitación no era esperada.
+
+#### Parámetros de las plantillas
+
+| Parámetro        | Sintaxis             | Responsabilidad                                   |
+| ---------------- | -------------------- | ------------------------------------------------- |
+| `userId`         | `{{userId}}`         | Identificador del usuario invitado.               |
+| `activationLink` | `{{activationLink}}` | URL que permite acceder al proceso de activación. |
+
+Los parámetros funcionan como marcadores que deberán sustituirse por valores reales cuando se construya el correo.
+
+#### Configuración del proyecto .NET
+
+El archivo `Fepp.ContaOps.Infrastructure.csproj` incorpora las plantillas como contenido del proyecto.
+
+| Componente                | Origen             | Función                                                     |
+| ------------------------- | ------------------ | ----------------------------------------------------------- |
+| `<Content Include="...">` | MSBuild / .NET SDK | Declara los archivos de plantillas como contenido.          |
+| `<CopyToOutputDirectory>` | MSBuild / .NET SDK | Configura la copia de los archivos al directorio de salida. |
+| `PreserveNewest`          | MSBuild / .NET SDK | Copia los archivos cuando es necesario actualizarlos.       |
+
+Esta configuración permite distribuir el manifest y las plantillas junto con los archivos compilados de Infrastructure.
+
+#### Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    subgraph Infrastructure
+        M["templates.json"]
+        H["invitation.html"]
+        T["invitation.txt"]
+    end
+
+    subgraph MENSAJE["Correo de invitación"]
+        C["Asunto + HTML + Texto plano"]
+        P["Parámetros: userId, activationLink"]
+    end
+
+    M -->|Define archivos y parámetros| H
+    M -->|Define archivos y parámetros| T
+
+    H -.->|Contenido HTML| C
+    T -.->|Contenido TXT| C
+    M -.->|Asunto| C
+    P -.->|Sustitución futura| C
+```
+
+**Interpretación:**
+
+- **Manifest:** identifica las plantillas, el asunto y los parámetros requeridos.
+- **HTML/TXT:** contienen dos representaciones del mismo correo de invitación.
+- **Parámetros:** permiten personalizar el mensaje con el usuario y su enlace de activación.
+- **Infrastructure:** almacenará y procesará las plantillas mediante componentes que se implementen posteriormente.
+
+**Resultado:** se crean las plantillas HTML/TXT y su manifest, separando el contenido del correo de la lógica de aplicación. Los archivos quedan preparados para su lectura, procesamiento y posterior envío mediante el servicio de notificaciones.
 
 ---
 
@@ -490,7 +592,7 @@ flowchart TD
 
 ---
 
-#### 6. Validación, ejecución local y Git
+### 12. Validación, ejecución local y Git
 
 **Prerrequisitos:** Docker disponible; crear un archivo `.env` local a partir de `.env.example` y sustituir todos los valores de ejemplo por credenciales y secretos propios. **No subir `.env` a Git.**
 
