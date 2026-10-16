@@ -1467,7 +1467,144 @@ flowchart TD
 
 ---
 
-### 12. Validación, ejecución local y Git
+### 13. Ajustes por pruebas manuales
+
+#### Componentes implementados
+
+| Componente                            | Acción | Tipo                | Capa           | Responsabilidad                                                                                        |
+| ------------------------------------- | ------ | ------------------- | -------------- | ------------------------------------------------------------------------------------------------------ |
+| `Fepp.ContaOps.Infrastructure.csproj` | Update | Archivo de proyecto | Infrastructure | Incorpora una referencia explícita a `System.Security.Cryptography.Pkcs` versión `10.0.13`.            |
+| `IdentitySeeder`                      | Update | `class`             | Infrastructure | Actualiza el esquema de bases de datos existentes para incorporar el estado funcional de los usuarios. |
+
+#### Métodos y funciones principales
+
+| Clase            | Método                          | Acción | Responsabilidad                                                             |
+| ---------------- | ------------------------------- | ------ | --------------------------------------------------------------------------- |
+| `IdentitySeeder` | `SeedAsync()`                   | Update | Ejecuta la actualización del esquema antes de inicializar roles y usuarios. |
+| `IdentitySeeder` | `EnsureUserStatusColumnAsync()` | Create | Incorpora la columna `Status` en `AspNetUsers` cuando todavía no existe.    |
+
+#### Actualización del esquema de PostgreSQL
+
+Se incorpora el método privado `EnsureUserStatusColumnAsync()` en la clase `IdentitySeeder`.
+
+```csharp
+private async Task EnsureUserStatusColumnAsync(
+    CancellationToken cancellationToken)
+{
+    await _dbContext.Database.ExecuteSqlRawAsync(
+        "ALTER TABLE \"AspNetUsers\" ADD COLUMN IF NOT EXISTS \"Status\" integer NOT NULL DEFAULT 1;",
+        cancellationToken);
+}
+```
+
+**Modificación de la tabla `AspNetUsers`:**
+
+| Elemento             | Valor           | Descripción                                     |
+| -------------------- | --------------- | ----------------------------------------------- |
+| Tabla                | `AspNetUsers`   | Almacena los usuarios de ASP.NET Core Identity. |
+| Columna              | `Status`        | Estado funcional de la cuenta.                  |
+| Tipo                 | `integer`       | Almacena el valor numérico de `UserStatus`.     |
+| Restricción          | `NOT NULL`      | Impide almacenar estados nulos.                 |
+| Valor predeterminado | `1`             | Representa `UserStatus.Active`.                 |
+| Condición            | `IF NOT EXISTS` | Evita intentar crear una columna que ya existe. |
+
+**Correspondencia con `UserStatus`:**
+
+| Valor | Estado              | Descripción                      |
+| ----- | ------------------- | -------------------------------- |
+| `0`   | `PendingActivation` | Usuario pendiente de activación. |
+| `1`   | `Active`            | Usuario activo.                  |
+
+La actualización se ejecuta desde `SeedAsync()`:
+
+```csharp
+await _dbContext.Database.EnsureCreatedAsync(cancellationToken);
+await EnsureUserStatusColumnAsync(cancellationToken);
+```
+
+Esto permite incorporar la columna en bases de datos existentes creadas antes de introducir `UserStatus`.
+
+**Importante:** este ajuste es específico de PostgreSQL y no sustituye un sistema formal de migraciones de Entity Framework Core.
+
+#### Actualización de dependencias
+
+Se incorpora una referencia explícita en `Fepp.ContaOps.Infrastructure.csproj`:
+
+```xml
+<PackageReference Include="System.Security.Cryptography.Pkcs"
+                  Version="10.0.13" />
+```
+
+| Dependencia                         | Versión                           | Origen            | Responsabilidad                                                        |
+| ----------------------------------- | --------------------------------- | ----------------- | ---------------------------------------------------------------------- |
+| `System.Security.Cryptography.Pkcs` | `10.0.13`                         | Microsoft / NuGet | Proporciona funcionalidades criptográficas basadas en estándares PKCS. |
+| `MimeKit`                           | Dependencia transitiva de MailKit | Externo           | Proporciona el procesamiento de mensajes MIME.                         |
+| `MailKit`                           | `4.18.1`                          | Externo           | Implementa el transporte SMTP.                                         |
+
+La referencia explícita se incorpora para sustituir la versión transitiva `10.0.0` de `System.Security.Cryptography.Pkcs`, identificada como vulnerable en el comentario del proyecto.
+
+#### Componentes de .NET utilizados
+
+| Componente                 | Origen                | Función                                                          |
+| -------------------------- | --------------------- | ---------------------------------------------------------------- |
+| `EnsureCreatedAsync()`     | Entity Framework Core | Crea el esquema de base de datos cuando todavía no existe.       |
+| `ExecuteSqlRawAsync()`     | Entity Framework Core | Ejecuta una instrucción SQL directamente sobre la base de datos. |
+| `CancellationToken`        | .NET                  | Permite solicitar la cancelación de operaciones asíncronas.      |
+| `PackageReference`         | .NET SDK / NuGet      | Declara dependencias y versiones de paquetes.                    |
+| `ALTER TABLE`              | PostgreSQL            | Modifica la estructura de una tabla existente.                   |
+| `ADD COLUMN IF NOT EXISTS` | PostgreSQL            | Agrega una columna únicamente cuando no existe.                  |
+
+#### Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    subgraph Infrastructure
+        S["IdentitySeeder"]
+        M["EnsureUserStatusColumnAsync"]
+        DB["AppDbContext"]
+        PKG["Infrastructure.csproj"]
+    end
+
+    subgraph PostgreSQL
+        USERS[("AspNetUsers")]
+        STATUS["Status integer DEFAULT 1"]
+    end
+
+    subgraph NuGet
+        CRYPTO["System.Security.Cryptography.Pkcs 10.0.13"]
+    end
+
+    S -->|Ejecuta| M
+    M -->|Utiliza| DB
+    DB -->|ALTER TABLE| USERS
+    USERS --> STATUS
+
+    PKG -->|Referencia explícita| CRYPTO
+```
+
+**Interpretación:**
+
+- **Infrastructure:** incorpora la actualización del esquema dentro de `IdentitySeeder`.
+- **Entity Framework Core:** ejecuta la instrucción SQL mediante `AppDbContext`.
+- **PostgreSQL:** agrega la columna `Status` sin intentar duplicarla.
+- **NuGet:** incorpora una versión explícita del paquete criptográfico para sustituir la dependencia transitiva anterior.
+
+#### Consideraciones técnicas
+
+| Aspecto             | Descripción                                                                                                |
+| ------------------- | ---------------------------------------------------------------------------------------------------------- |
+| Compatibilidad      | Permite incorporar `Status` a bases de datos existentes.                                                   |
+| Idempotencia        | La instrucción SQL puede ejecutarse varias veces sin duplicar la columna.                                  |
+| Usuarios existentes | Reciben `Status = 1`, equivalente a `Active`, cuando se agrega la columna.                                 |
+| Persistencia        | El estado funcional queda almacenado en `AspNetUsers`.                                                     |
+| Seguridad           | Se incorpora una versión explícita de la dependencia criptográfica.                                        |
+| Limitación          | La actualización SQL no contempla cambios adicionales en el esquema ni reemplaza las migraciones formales. |
+
+**Resultado:** se incorporan ajustes derivados de pruebas manuales para mantener la compatibilidad con bases de datos existentes y actualizar una dependencia criptográfica utilizada indirectamente por el sistema de correo.
+
+---
+
+### 14. Validación, ejecución local y Git
 
 **Prerrequisitos:** Docker disponible; crear un archivo `.env` local a partir de `.env.example` y sustituir todos los valores de ejemplo por credenciales y secretos propios. **No subir `.env` a Git.**
 
@@ -1491,7 +1628,9 @@ dotnet test FEPP-ContaOps.slnx
 .\run-local.ps1
 ```
 
-**Validación del spec (flujo de trabajo existente):**
+---
+
+### 15. Validación del spec (flujo de trabajo existente):
 
 ```powershell
 /spec-acceptance-validator @specs/03-registro-invitacion-activacion.md
@@ -1499,7 +1638,289 @@ dotnet test FEPP-ContaOps.slnx
 
 Revisar el spec: [`03-registro-invitacion-activacion.md`](../03-registro-invitacion-activacion.md).
 
-**Comandos Git / PR** (una vez validada la implementación y revisados los cambios):
+### 15. Validación del spec (flujo de trabajo existente)
+
+#### Componentes implementados
+
+| Componente                            | Acción      | Tipo                | Capa                     | Responsabilidad                                                                      |
+| ------------------------------------- | ----------- | ------------------- | ------------------------ | ------------------------------------------------------------------------------------ |
+| `AuthIntegrationTests`                | Update      | `class`             | Tests (IntegrationTests) | Adapta las pruebas de autenticación a la nueva configuración de invitaciones y SMTP. |
+| `ExceptionPipelineTests`              | Update      | `class`             | Tests (IntegrationTests) | Adapta las pruebas del manejo global de excepciones a la nueva configuración.        |
+| `TestApiFactory`                      | Update      | `class` anidada     | Tests (IntegrationTests) | Proporciona la configuración necesaria para iniciar la API durante las pruebas.      |
+| `IdentitySeeder`                      | Sin cambios | `class`             | Infrastructure           | Mantiene la inicialización de usuarios, roles y esquema de Identity.                 |
+| `Fepp.ContaOps.Infrastructure.csproj` | Sin cambios | Archivo de proyecto | Infrastructure           | Conserva las dependencias y plantillas incorporadas anteriormente.                   |
+
+**Objetivo:** mantener funcionando las pruebas de integración existentes después de incorporar las nuevas configuraciones obligatorias de invitaciones y correo electrónico.
+
+#### Pruebas de integración
+
+| Clase                    | Prueba                                                            | Responsabilidad                                                                               |
+| ------------------------ | ----------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `AuthIntegrationTests`   | `LoginWithBootstrapAdmin_ReturnsBearerToken()`                    | Verifica que el administrador inicial pueda autenticarse y obtener un JWT válido.             |
+| `AuthIntegrationTests`   | `LoginWithInvalidCredentials_ReturnsUnauthorizedProblemDetails()` | Comprueba que las credenciales incorrectas devuelvan HTTP 401 y un error seguro.              |
+| `ExceptionPipelineTests` | `UnexpectedException_ReturnsSafeProblemDetails()`                 | Comprueba que las excepciones inesperadas devuelvan HTTP 500 sin exponer información interna. |
+
+Estas pruebas utilizan PostgreSQL temporal mediante Testcontainers y ejecutan la API utilizando `WebApplicationFactory<Program>`.
+
+#### Métodos y funciones principales
+
+| Clase                                   | Método               | Responsabilidad                                                                  |
+| --------------------------------------- | -------------------- | -------------------------------------------------------------------------------- |
+| `AuthIntegrationTests`                  | `InitializeAsync()`  | Inicia el contenedor PostgreSQL antes de ejecutar las pruebas.                   |
+| `AuthIntegrationTests`                  | `DisposeAsync()`     | Libera el contenedor PostgreSQL al finalizar.                                    |
+| `AuthIntegrationTests.TestApiFactory`   | `ConfigureWebHost()` | Configura la conexión, JWT, administrador inicial, invitaciones y SMTP.          |
+| `ExceptionPipelineTests`                | `InitializeAsync()`  | Inicia PostgreSQL para las pruebas del pipeline HTTP.                            |
+| `ExceptionPipelineTests`                | `DisposeAsync()`     | Libera el contenedor utilizado durante las pruebas.                              |
+| `ExceptionPipelineTests.TestApiFactory` | `ConfigureWebHost()` | Configura el host e incorpora el controller utilizado para provocar excepciones. |
+| `IdentitySeeder`                        | `SeedAsync()`        | Inicializa el esquema, roles y usuarios durante el arranque de la API.           |
+
+#### Configuración incorporada a las pruebas
+
+Ambas clases `TestApiFactory` incorporan las siguientes configuraciones:
+
+| Configuración                       | Valor                          | Responsabilidad                                      |
+| ----------------------------------- | ------------------------------ | ---------------------------------------------------- |
+| `UserInvitation:TokenLifetimeHours` | `24`                           | Define la vigencia de los tokens de invitación.      |
+| `UserInvitation:ActivationBaseUrl`  | `https://client.test/activate` | Proporciona una URL HTTPS válida para la activación. |
+| `Email:Smtp:Host`                   | `localhost`                    | Configura un servidor SMTP local de prueba.          |
+| `Email:Smtp:Port`                   | `587`                          | Puerto compatible con STARTTLS.                      |
+| `Email:Smtp:SecurityMode`           | `StartTls`                     | Define el modo de conexión cifrada.                  |
+| `Email:Smtp:Username`               | `test@example.com`             | Usuario SMTP ficticio.                               |
+| `Email:Smtp:Password`               | `test-provider-secret`         | Contraseña SMTP ficticia.                            |
+| `Email:Smtp:FromAddress`            | `test@example.com`             | Remitente utilizado durante las pruebas.             |
+| `Email:Smtp:TimeoutSeconds`         | `5`                            | Tiempo máximo de espera del transporte.              |
+
+**Importante:** estos valores permiten superar las validaciones de configuración durante el arranque. Las pruebas presentadas no realizan envíos SMTP.
+
+#### Componentes de .NET y bibliotecas externas
+
+| Componente                       | Origen                  | Función                                                                |
+| -------------------------------- | ----------------------- | ---------------------------------------------------------------------- |
+| `[Fact]`                         | xUnit                   | Identifica métodos de prueba.                                          |
+| `Assert`                         | xUnit                   | Comprueba los resultados esperados.                                    |
+| `IAsyncLifetime`                 | xUnit                   | Define la inicialización y liberación asíncrona de recursos de prueba. |
+| `PostgreSqlContainer`            | Testcontainers          | Representa un contenedor PostgreSQL para pruebas.                      |
+| `PostgreSqlBuilder`              | Testcontainers          | Configura y construye el contenedor PostgreSQL.                        |
+| `WebApplicationFactory<Program>` | ASP.NET Core Testing    | Inicia la aplicación en un entorno de pruebas de integración.          |
+| `ConfigureWebHost()`             | ASP.NET Core Testing    | Personaliza la configuración del host de pruebas.                      |
+| `UseSetting()`                   | ASP.NET Core            | Define valores de configuración para el host.                          |
+| `CreateClient()`                 | ASP.NET Core Testing    | Crea un cliente HTTP para ejecutar solicitudes contra la API.          |
+| `PostAsJsonAsync()`              | .NET Http.Json          | Envía solicitudes HTTP POST con contenido JSON.                        |
+| `JsonDocument`                   | .NET System.Text.Json   | Permite analizar respuestas JSON.                                      |
+| `JwtSecurityTokenHandler`        | Microsoft IdentityModel | Lee y analiza tokens JWT.                                              |
+| `AddApplicationPart()`           | ASP.NET Core MVC        | Incorpora controllers adicionales al entorno de pruebas.               |
+
+#### Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    subgraph Tests["IntegrationTests"]
+        AUTH["AuthIntegrationTests"]
+        EX["ExceptionPipelineTests"]
+        FACTORY["TestApiFactory"]
+    end
+
+    subgraph API["Presentation - API"]
+        APP["WebApplicationFactory"]
+        LOGIN["AuthController"]
+        HANDLER["GlobalExceptionHandler"]
+    end
+
+    subgraph Infrastructure
+        SEED["IdentitySeeder"]
+        DB[("PostgreSQL")]
+        CONFIG["Configuración de pruebas"]
+    end
+
+    AUTH --> FACTORY
+    EX --> FACTORY
+
+    FACTORY --> APP
+    FACTORY --> CONFIG
+
+    APP --> LOGIN
+    APP --> HANDLER
+    APP --> SEED
+
+    SEED --> DB
+    LOGIN --> DB
+```
+
+**Interpretación:**
+
+- **Tests:** ejecuta las pruebas de autenticación y manejo de excepciones.
+- **TestApiFactory:** configura e inicia una instancia de la API utilizando valores específicos de prueba.
+- **Presentation:** procesa solicitudes HTTP y transforma los errores en respuestas seguras.
+- **Infrastructure:** inicializa Identity y utiliza PostgreSQL temporal.
+- **Configuración:** incorpora los parámetros obligatorios de invitaciones y SMTP sin utilizar proveedores externos reales de correo.
+
+#### Validaciones del flujo existente
+
+| Funcionalidad              | Validación                            | Resultado esperado                                       |
+| -------------------------- | ------------------------------------- | -------------------------------------------------------- |
+| Inicio de la API           | Configuración de invitaciones y SMTP  | El host puede inicializarse con valores válidos.         |
+| Inicialización de Identity | `IdentitySeeder.SeedAsync()`          | Se crean los roles y el administrador cuando no existen. |
+| Login correcto             | Credenciales del administrador        | HTTP 200 y token JWT Bearer.                             |
+| Login incorrecto           | Contraseña inválida                   | HTTP 401 y código `invalid_credentials`.                 |
+| Excepción inesperada       | Error provocado durante una solicitud | HTTP 500 y código `unexpected_error`.                    |
+| Seguridad de respuestas    | Manejo global de excepciones          | No se exponen detalles internos ni stack traces.         |
+| Persistencia               | PostgreSQL efímero                    | Las pruebas utilizan una base de datos temporal.         |
+
+**Resultado:** se adaptan las pruebas de integración existentes para incorporar las configuraciones obligatorias de invitaciones y SMTP, manteniendo la cobertura del login JWT y del manejo global de excepciones.
+
+#### **Alcance:** el código contiene las pruebas y sus resultados esperados, pero no incluye registros de ejecución que permitan confirmar que todas finalizaron correctamente.
+
+---
+
+### 16. Diagrama Final: Arquitectura del spec 03-registro-invitacion-activacion
+
+#### Arquitectura general
+
+El siguiente diagrama integra los componentes implementados para gestionar el registro de usuarios pendientes, la generación y validación de tokens, la activación de cuentas y el envío de invitaciones por correo electrónico.
+
+```mermaid
+flowchart TD
+    subgraph Presentation["Presentation - API"]
+        API["Program.cs<br/>Composition Root"]
+    end
+
+    subgraph Application["Application - Contratos"]
+        UIS["IUserInvitationService"]
+        IN["IInvitationNotifier"]
+        ES["IEmailSender"]
+        UIR["UserInvitationResult"]
+        EM["EmailMessage"]
+    end
+
+    subgraph Domain["Domain - Modelo de negocio"]
+        U["User / UserId"]
+        ST["UserStatus<br/>PendingActivation / Active"]
+    end
+
+    subgraph Infrastructure["Infrastructure - Implementaciones"]
+        ID["IdentityUserInvitationService"]
+        NOT["InvitationEmailNotifier"]
+        REN["InvitationTemplateRenderer"]
+        CAT["InvitationTemplateCatalog"]
+        SMTP["MailKitSmtpEmailSender"]
+        OPT["Opciones de configuración"]
+    end
+
+    subgraph External["Servicios y recursos"]
+        IAM["ASP.NET Core Identity"]
+        DB[("PostgreSQL")]
+        DP["Data Protection<br/>Key Ring"]
+        TPL["templates.json<br/>invitation.html / invitation.txt"]
+        SERVER["Servidor SMTP"]
+    end
+
+    API -->|Registra servicios| Infrastructure
+
+    ID -.->|Implementa| UIS
+    NOT -.->|Implementa| IN
+    SMTP -.->|Implementa| ES
+
+    UIS --> UIR
+    UIR --> U
+    U --> ST
+
+    ID --> IAM
+    IAM --> DB
+    IAM --> DP
+
+    NOT --> REN
+    REN --> CAT
+    CAT --> TPL
+
+    NOT -->|Construye| EM
+    NOT -->|Solicita envío| ES
+    SMTP --> SERVER
+
+    OPT -.-> ID
+    OPT -.-> NOT
+    OPT -.-> CAT
+    OPT -.-> SMTP
+```
+
+#### Responsabilidad por capa
+
+| Capa                          | Componentes principales                                                              | Responsabilidad                                                                        |
+| ----------------------------- | ------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------- |
+| **Domain**                    | `User`, `UserId`, `UserStatus`                                                       | Representa usuarios, identificadores y estados de las cuentas.                         |
+| **Application**               | `IUserInvitationService`, `IInvitationNotifier`, `IEmailSender`                      | Define contratos independientes de tecnologías externas.                               |
+| **Infrastructure - Identity** | `IdentityUserInvitationService`, `UserInvitationTokenProvider`                       | Gestiona cuentas pendientes, tokens, activación y persistencia.                        |
+| **Infrastructure - Email**    | `InvitationEmailNotifier`, `InvitationTemplateRenderer`, `InvitationTemplateCatalog` | Construye invitaciones y procesa plantillas HTML/TXT.                                  |
+| **Infrastructure - SMTP**     | `MailKitSmtpEmailSender`                                                             | Envía correos mediante MailKit utilizando conexiones TLS.                              |
+| **Presentation**              | `Program.cs`, `DependencyInjection`                                                  | Configura y conecta los servicios mediante inyección de dependencias.                  |
+| **Tests**                     | UnitTests, IntegrationTests                                                          | Valida configuración SMTP, errores de transporte y compatibilidad del flujo existente. |
+
+#### Flujo funcional de registro, invitación y activación
+
+```mermaid
+sequenceDiagram
+    autonumber
+
+    participant APP as Application
+    participant ID as IdentityUserInvitationService
+    participant DB as PostgreSQL
+    participant DP as Data Protection
+    participant NOT as InvitationEmailNotifier
+    participant TPL as TemplateRenderer
+    participant SMTP as MailKitSmtpEmailSender
+    participant USER as Usuario
+
+    Note over APP,USER: Registro e invitación
+
+    APP->>ID: RegisterPendingAsync(email)
+    ID->>DB: Crear usuario PendingActivation
+    ID->>DB: Asignar rol User
+    ID->>DP: Generar token de activación
+    DP-->>ID: ActivationToken
+    ID-->>APP: UserInvitationResult
+
+    Note over APP,USER: Notificación
+
+    APP->>NOT: NotifyAsync(invitation)
+    NOT->>NOT: Construir activationLink
+    NOT->>TPL: Render(invitation, parametros)
+    TPL-->>NOT: HTML + TXT + Subject
+    NOT->>SMTP: SendAsync(EmailMessage)
+    SMTP-->>USER: Correo de invitación
+
+    Note over APP,USER: Activación de cuenta
+
+    USER->>APP: userId + token + contraseña
+    APP->>ID: ActivateAsync(userId, token, password)
+    ID->>DB: Buscar usuario pendiente
+    ID->>DP: Validar token
+    DP-->>ID: Resultado de validación
+    ID->>DB: Establecer contraseña
+    ID->>DB: Confirmar correo y activar cuenta
+    ID-->>APP: Result(User Active)
+```
+
+**Nota:** el diagrama de secuencia representa el flujo funcional que permiten los contratos y adaptadores implementados. La coordinación mediante casos de uso y endpoints HTTP de registro y activación corresponde a SPEC 04; no se documenta aquí como una implementación ya existente.
+
+#### Resumen del funcionamiento
+
+| Proceso                     | Componente responsable                  | Resultado                                                             |
+| --------------------------- | --------------------------------------- | --------------------------------------------------------------------- |
+| Registro pendiente          | `IdentityUserInvitationService`         | Usuario con estado `PendingActivation`.                               |
+| Generación del token        | ASP.NET Core Identity + Data Protection | Token de activación con vigencia configurable.                        |
+| Construcción del enlace     | `InvitationEmailNotifier`               | URL HTTPS con `userId` y token.                                       |
+| Procesamiento de plantillas | `InvitationTemplateRenderer`            | Contenido HTML/TXT personalizado.                                     |
+| Envío del correo            | `MailKitSmtpEmailSender`                | Mensaje enviado al servidor SMTP.                                     |
+| Reenvío de invitación       | `IdentityUserInvitationService`         | Nuevo token; invalidación de los anteriores mediante `SecurityStamp`. |
+| Validación del token        | ASP.NET Core Identity                   | Verificación de autenticidad, propósito y vigencia.                   |
+| Activación                  | `IdentityUserInvitationService`         | Contraseña inicial, correo confirmado y estado `Active`.              |
+| Autenticación               | `IdentityCredentialService`             | Solo permite validar credenciales de usuarios activos.                |
+| Persistencia                | Entity Framework Core + PostgreSQL      | Almacenamiento de usuarios, roles y estados.                          |
+
+#### **Resultado final:** el spec `03-registro-invitacion-activacion` establece la infraestructura necesaria para gestionar cuentas pendientes, tokens de activación, notificaciones mediante plantillas y transporte SMTP seguro, manteniendo la separación de responsabilidades de Clean Architecture y DDD.
+
+---
+
+### 17. Comandos Git / PR\*\* (una vez validada la implementación y revisados los cambios)
 
 ```powershell
 git add .

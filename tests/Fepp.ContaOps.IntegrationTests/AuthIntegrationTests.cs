@@ -105,6 +105,15 @@ public sealed class AuthIntegrationTests : IAsyncLifetime
             builder.UseSetting("Jwt:AccessTokenLifetimeMinutes", "15");
             builder.UseSetting("BootstrapAdmin:Email", "admin@example.com");
             builder.UseSetting("BootstrapAdmin:Password", "AdminPassword123!");
+            builder.UseSetting("UserInvitation:TokenLifetimeHours", "24");
+            builder.UseSetting("UserInvitation:ActivationBaseUrl", "https://client.test/activate");
+            builder.UseSetting("Email:Smtp:Host", "localhost");
+            builder.UseSetting("Email:Smtp:Port", "587");
+            builder.UseSetting("Email:Smtp:SecurityMode", "StartTls");
+            builder.UseSetting("Email:Smtp:Username", "test@example.com");
+            builder.UseSetting("Email:Smtp:Password", "test-provider-secret");
+            builder.UseSetting("Email:Smtp:FromAddress", "test@example.com");
+            builder.UseSetting("Email:Smtp:TimeoutSeconds", "5");
         }
     }
 }

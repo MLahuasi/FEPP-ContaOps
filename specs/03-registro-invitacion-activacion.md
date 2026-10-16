@@ -314,8 +314,8 @@ La plantilla recibe parámetros explícitos, como `userId` y `activationLink`. C
 
 ## Criterios de aceptación
 
-- [ ] Domain no referencia ASP.NET Core, Identity, EF Core, Gmail ni MailKit.
-- [ ] Application no referencia Api, Infrastructure, Gmail ni MailKit.
+- [x] Domain no referencia ASP.NET Core, Identity, EF Core, Gmail ni MailKit.
+- [x] Application no referencia Api, Infrastructure, Gmail ni MailKit.
 - [ ] Una cuenta registrada queda pendiente, sin contraseña utilizable y con rol exclusivamente `User`.
 - [ ] Una cuenta pendiente no puede iniciar sesión.
 - [ ] El registro confirma PostgreSQL antes de intentar SMTP.
@@ -325,19 +325,19 @@ La plantilla recibe parámetros explícitos, como `userId` y `activationLink`. C
 - [ ] La activación aplica la política de contraseña de Identity.
 - [ ] El enlace usa HTTPS, `userId`, token URL-safe y fragmento de cliente.
 - [ ] Ningún log, error o respuesta contiene token, contraseña, security stamp o enlace completo.
-- [ ] `IEmailSender` no expone tipos MailKit.
-- [ ] MailKit solo se utiliza en el adaptador de Infrastructure.
-- [ ] `Email:Smtp:SecurityMode` admite `StartTls` y `TlsOnConnect`, sin SMTP sin cifrado.
+- [x] `IEmailSender` no expone tipos MailKit.
+- [x] MailKit solo se utiliza en el adaptador de Infrastructure.
+- [x] `Email:Smtp:SecurityMode` admite `StartTls` y `TlsOnConnect`, sin SMTP sin cifrado.
 - [ ] Gmail funciona con contraseña de aplicación y no con API key.
-- [ ] El SMTP permite sustituir Gmail por otro proveedor compatible sin modificar Application.
+- [x] El SMTP permite sustituir Gmail por otro proveedor compatible sin modificar Application.
 - [ ] HTML y texto plano se construyen desde la misma clave de plantilla y parámetros.
-- [ ] El manifest valida archivos, asunto y parámetros al arrancar.
+- [x] El manifest valida archivos, asunto y parámetros al arrancar.
 - [ ] Las plantillas pueden reemplazarse mediante `Email:Templates:RootPath`.
 - [ ] El key ring local puede usar DPAPI y Docker utiliza un named volume persistente.
-- [ ] Las pruebas SMTP utilizan un servidor en proceso y nunca Gmail real.
-- [ ] `.env.example`, `README.md` y `AGENTS.md` documentan el mismo contrato de configuración.
-- [ ] Ningún archivo versionado contiene contraseñas, claves JWT o secretos SMTP reales.
-- [ ] Las variables `MAILER_*`, `MAIL_*` y `MAIL_TEMPLATE_EXTENSION` no se usan como configuración vigente.
+- [x] Las pruebas SMTP utilizan un servidor en proceso y nunca Gmail real.
+- [x] `.env.example`, `README.md` y `AGENTS.md` documentan el mismo contrato de configuración.
+- [x] Ningún archivo versionado contiene contraseñas, claves JWT o secretos SMTP reales.
+- [x] Las variables `MAILER_*`, `MAIL_*` y `MAIL_TEMPLATE_EXTENSION` no se usan como configuración vigente.
 - [ ] La configuración inválida o incompleta impide el arranque de la aplicación.
 
 ## Decisiones
