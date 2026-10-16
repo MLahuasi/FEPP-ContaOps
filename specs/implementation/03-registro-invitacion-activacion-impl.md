@@ -214,7 +214,104 @@ flowchart TD
 
 ---
 
-### 3. Implementar opciones y validación de invitaciones, URL y key ring.
+### 3. Implementar opciones y validación de invitaciones, URL y key ring
+
+#### Componentes implementados
+
+| Componente                           | Acción   | Tipo           | Capa           | Responsabilidad                                                                                         |
+| ------------------------------------ | -------- | -------------- | -------------- | ------------------------------------------------------------------------------------------------------- |
+| `UserInvitationOptions`              | Create   | `class`        | Infrastructure | Define la vigencia del token y la URL de activación.                                                    |
+| `UserInvitationTokenProvider`        | Create   | `class`        | Infrastructure | Extiende el proveedor de tokens de Identity para utilizar una configuración específica de invitaciones. |
+| `UserInvitationTokenProviderOptions` | Create   | `class`        | Infrastructure | Define el nombre del protector criptográfico dedicado a invitaciones.                                   |
+| `DependencyInjection`                | Update\* | `static class` | Infrastructure | Contiene el registro de servicios de Identity y del proveedor de tokens.                                |
+
+_Nota:_ el código de `DependencyInjection` proporcionado mantiene el registro de `DataProtectorTokenProvider<ApplicationIdentityUser>`. Todavía no muestra la integración de `UserInvitationTokenProvider`, la configuración de su vigencia ni la persistencia del key ring.
+
+#### Propiedades y configuración
+
+**UserInvitationOptions**
+
+| Propiedad            | Tipo           | Valor predeterminado | Responsabilidad                                           |
+| -------------------- | -------------- | -------------------- | --------------------------------------------------------- |
+| `SectionName`        | `const string` | `UserInvitation`     | Identifica la sección de configuración.                   |
+| `TokenLifetimeHours` | `double`       | `24`                 | Define la duración prevista del token en horas.           |
+| `ActivationBaseUrl`  | `string`       | `string.Empty`       | URL de la aplicación cliente que procesará la activación. |
+
+**UserInvitationTokenProviderOptions**
+
+| Propiedad | Tipo     | Valor                                      | Responsabilidad                                               |
+| --------- | -------- | ------------------------------------------ | ------------------------------------------------------------- |
+| `Name`    | `string` | `UserInvitationDataProtectorTokenProvider` | Identifica el protector utilizado por el proveedor de tokens. |
+
+El nombre del protector permite separar criptográficamente los tokens de invitación de otros tokens que utilicen nombres diferentes.
+
+#### Métodos y funciones principales
+
+| Clase                                | Método                                 | Responsabilidad                                                                             |
+| ------------------------------------ | -------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `UserInvitationOptions`              | `IsValid()`                            | Comprueba que la vigencia sea positiva y finita, y que la URL sea absoluta y utilice HTTPS. |
+| `UserInvitationTokenProvider`        | `UserInvitationTokenProvider()`        | Inicializa el proveedor de tokens mediante Data Protection, opciones y logger.              |
+| `UserInvitationTokenProviderOptions` | `UserInvitationTokenProviderOptions()` | Establece el nombre del protector criptográfico.                                            |
+| `DependencyInjection`                | `AddInfrastructure()`                  | Configura Identity y registra los servicios de infraestructura.                             |
+
+#### Validaciones de seguridad
+
+| Validación                           | Componente    | Descripción                                                          |
+| ------------------------------------ | ------------- | -------------------------------------------------------------------- |
+| `double.IsFinite()`                  | .NET          | Impide utilizar valores infinitos o `NaN` como vigencia.             |
+| `TokenLifetimeHours > 0`             | Código propio | Exige que la duración del token sea positiva.                        |
+| `Uri.TryCreate()`                    | .NET          | Comprueba que la URL de activación tenga un formato absoluto válido. |
+| `Uri.UriSchemeHttps`                 | .NET          | Exige el protocolo HTTPS para la URL de activación.                  |
+| `StringComparison.OrdinalIgnoreCase` | .NET          | Compara el esquema HTTPS sin distinguir mayúsculas y minúsculas.     |
+
+**Importante:** `IsValid()` contiene las reglas de validación, pero en el código proporcionado todavía no se observa su ejecución automática durante el arranque.
+
+#### Componentes de .NET utilizados
+
+| Componente                           | Origen                       | Función                                                        |
+| ------------------------------------ | ---------------------------- | -------------------------------------------------------------- |
+| `DataProtectorTokenProvider<TUser>`  | ASP.NET Core Identity        | Genera y valida tokens mediante Data Protection.               |
+| `DataProtectionTokenProviderOptions` | ASP.NET Core Identity        | Configura el nombre del protector y la vigencia de los tokens. |
+| `IDataProtectionProvider`            | ASP.NET Core Data Protection | Proporciona los mecanismos de protección criptográfica.        |
+| `IOptions<T>`                        | .NET Options                 | Proporciona acceso a opciones de configuración tipadas.        |
+| `ILogger<T>`                         | .NET Logging                 | Permite registrar información técnica del proveedor.           |
+| `Uri`                                | .NET                         | Representa y valida direcciones URL.                           |
+| `AddTokenProvider<T>()`              | ASP.NET Core Identity        | Registra un proveedor de tokens con un nombre específico.      |
+
+#### Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    subgraph Infrastructure
+        DI["DependencyInjection"]
+        OPT["UserInvitationOptions"]
+        TP["UserInvitationTokenProvider"]
+        TPO["UserInvitationTokenProviderOptions"]
+    end
+
+    subgraph ASPNET["ASP.NET Core Identity / Data Protection"]
+        ID["DataProtectorTokenProvider"]
+        DP["IDataProtectionProvider"]
+        KR[("Key Ring")]
+    end
+
+    TP -->|Hereda| ID
+    TP -->|Recibe opciones| TPO
+    TP -->|Utiliza| DP
+    DP -->|Utiliza| KR
+
+    DI -.->|Registro previsto| TP
+    OPT -.->|Vigencia por configurar| TPO
+```
+
+**Interpretación:**
+
+- **Infrastructure:** define las opciones de invitación y especializa el proveedor de tokens.
+- **ASP.NET Core Identity:** proporciona la generación y validación de tokens.
+- **Data Protection:** utiliza claves criptográficas administradas mediante un key ring.
+- **Configuración pendiente:** conectar `TokenLifetimeHours` con `TokenLifespan`, registrar el proveedor personalizado y configurar la persistencia del key ring.
+
+**Resultado:** se crean los componentes para configurar y validar las invitaciones y especializar su proveedor criptográfico. La integración completa de la vigencia y el almacenamiento persistente de claves no se evidencia todavía en el código proporcionado.
 
 ---
 

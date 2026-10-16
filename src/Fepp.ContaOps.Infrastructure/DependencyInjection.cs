@@ -5,8 +5,11 @@ using Fepp.ContaOps.Infrastructure.Security;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using Microsoft.EntityFrameworkCore;
 using System.Text;
+using Microsoft.AspNetCore.DataProtection;
+using System.IO;
 
 namespace Fepp.ContaOps.Infrastructure;
 
@@ -30,6 +33,32 @@ public static class DependencyInjection
                 "ConnectionStrings:Default must be configured.");
 
         services.AddDbContext<AppDbContext>(options => options.UseNpgsql(connectionString));
+        services.AddOptions<UserInvitationOptions>()
+            .Bind(configuration.GetSection(UserInvitationOptions.SectionName))
+            .Validate(
+                options => options.IsValid(),
+                "UserInvitation:TokenLifetimeHours must be finite and greater than zero, and UserInvitation:ActivationBaseUrl must be an HTTPS URL.")
+            .ValidateOnStart();
+
+        string? keyRingPath = configuration["DataProtection:KeyRingPath"];
+        IDataProtectionBuilder dataProtectionBuilder = services.AddDataProtection();
+        if (!string.IsNullOrWhiteSpace(keyRingPath))
+        {
+            DirectoryInfo keyRingDirectory = new(keyRingPath);
+            keyRingDirectory.Create();
+            dataProtectionBuilder.PersistKeysToFileSystem(keyRingDirectory);
+            if (OperatingSystem.IsWindows())
+            {
+                dataProtectionBuilder.ProtectKeysWithDpapi();
+            }
+        }
+
+        services.AddOptions<UserInvitationTokenProviderOptions>()
+            .Configure<IOptions<UserInvitationOptions>>((tokenOptions, invitationOptions) =>
+            {
+                tokenOptions.TokenLifespan = TimeSpan.FromHours(
+                    invitationOptions.Value.TokenLifetimeHours);
+            });
         services.AddIdentity<ApplicationIdentityUser, IdentityRole>(options =>
             {
                 options.Password.RequiredLength = 12;
@@ -44,7 +73,7 @@ public static class DependencyInjection
                 options.User.RequireUniqueEmail = true;
             })
             .AddEntityFrameworkStores<AppDbContext>()
-            .AddTokenProvider<DataProtectorTokenProvider<ApplicationIdentityUser>>(
+            .AddTokenProvider<UserInvitationTokenProvider>(
                 IdentityUserInvitationService.TokenProviderName)
             .AddDefaultTokenProviders();
 
