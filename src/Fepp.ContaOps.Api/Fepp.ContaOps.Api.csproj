@@ -23,4 +23,19 @@
     <ProjectReference Include="..\Fepp.ContaOps.Infrastructure\Fepp.ContaOps.Infrastructure.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Content Include="..\Fepp.ContaOps.Infrastructure\Email\Templates\templates.json"
+             Link="Email\Templates\templates.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\Fepp.ContaOps.Infrastructure\Email\Templates\invitation.html"
+             Link="Email\Templates\invitation.html">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\Fepp.ContaOps.Infrastructure\Email\Templates\invitation.txt"
+             Link="Email\Templates\invitation.txt">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
 </Project>

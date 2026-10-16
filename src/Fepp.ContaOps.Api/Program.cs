@@ -3,6 +3,7 @@ using Fepp.ContaOps.Api.Exceptions;
 using Fepp.ContaOps.Api.Swagger;
 using Fepp.ContaOps.Application;
 using Fepp.ContaOps.Infrastructure;
+using Fepp.ContaOps.Infrastructure.Email.Templates;
 using Fepp.ContaOps.Infrastructure.Identity;
 using Serilog;
 using Serilog.Events;
@@ -32,6 +33,9 @@ using (IServiceScope scope = app.Services.CreateScope())
     IdentitySeeder seeder = scope.ServiceProvider.GetRequiredService<IdentitySeeder>();
     await seeder.SeedAsync();
 }
+
+// Valida el manifest y los archivos de plantillas antes de aceptar solicitudes.
+_ = app.Services.GetRequiredService<InvitationTemplateCatalog>();
 
 // El handler debe ejecutarse antes de los endpoints para uniformar excepciones no controladas.
 app.UseExceptionHandler();

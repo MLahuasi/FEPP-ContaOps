@@ -72,6 +72,7 @@ public static class DependencyInjection
         services.AddSingleton<InvitationTemplateCatalog>();
         services.AddSingleton<InvitationTemplateRenderer>();
         services.AddScoped<IInvitationNotifier, InvitationEmailNotifier>();
+        services.AddSingleton<IEmailSender, MailKitSmtpEmailSender>();
         services.AddIdentity<ApplicationIdentityUser, IdentityRole>(options =>
             {
                 options.Password.RequiredLength = 12;

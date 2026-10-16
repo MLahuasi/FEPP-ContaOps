@@ -900,7 +900,160 @@ flowchart TD
 
 ---
 
-### 8. Registrar servicios en el composition root.
+### 8. Registrar servicios en el composition root
+
+#### Componentes implementados
+
+| Componente                 | Acción | Tipo                        | Capa               | Responsabilidad                                                                             |
+| -------------------------- | ------ | --------------------------- | ------------------ | ------------------------------------------------------------------------------------------- |
+| `DependencyInjection`      | Update | `static class`              | Infrastructure     | Registra el adaptador SMTP y mantiene la configuración de los servicios de infraestructura. |
+| `Program`                  | Update | Clase parcial / Entry Point | Presentation (API) | Compone las capas y valida el catálogo de plantillas durante el arranque.                   |
+| `Fepp.ContaOps.Api.csproj` | Update | Archivo de proyecto         | Presentation (API) | Incluye las plantillas de correo en el directorio de salida de la API.                      |
+
+**Composition Root:** punto central donde se registran y conectan las dependencias de la aplicación. En este proyecto, `Program.cs` actúa como punto de entrada y utiliza las clases `DependencyInjection` de cada capa para configurar los servicios.
+
+#### Métodos y funciones principales
+
+| Clase / Componente    | Método                                            | Responsabilidad                                                          |
+| --------------------- | ------------------------------------------------- | ------------------------------------------------------------------------ |
+| `Program.cs`          | `WebApplication.CreateBuilder()`                  | Inicializa el constructor de la aplicación ASP.NET Core.                 |
+| `Program.cs`          | `AddApplication()`                                | Registra los servicios de Application.                                   |
+| `Program.cs`          | `AddInfrastructure()`                             | Registra los adaptadores y configuraciones de Infrastructure.            |
+| `Program.cs`          | `AddApi()`                                        | Registra los servicios de Presentation.                                  |
+| `Program.cs`          | `Build()`                                         | Construye la aplicación y su contenedor de dependencias.                 |
+| `Program.cs`          | `CreateScope()`                                   | Crea un ámbito para ejecutar la inicialización de Identity.              |
+| `Program.cs`          | `GetRequiredService<IdentitySeeder>()`            | Obtiene el servicio encargado de inicializar usuarios y roles.           |
+| `Program.cs`          | `GetRequiredService<InvitationTemplateCatalog>()` | Fuerza la carga y validación del catálogo antes de aceptar solicitudes.  |
+| `Program.cs`          | `Run()`                                           | Inicia la aplicación web.                                                |
+| `DependencyInjection` | `AddInfrastructure()`                             | Registra los servicios de correo, invitaciones, Identity y persistencia. |
+
+#### Registro de dependencias
+
+En `DependencyInjection.AddInfrastructure()` se completa el registro del transporte SMTP:
+
+```csharp
+services.AddSingleton<IEmailSender, MailKitSmtpEmailSender>();
+```
+
+Los servicios relacionados con las invitaciones quedan configurados de la siguiente manera:
+
+| Contrato / Componente        | Implementación                  | Ciclo de vida | Responsabilidad                                             |
+| ---------------------------- | ------------------------------- | ------------- | ----------------------------------------------------------- |
+| `IUserInvitationService`     | `IdentityUserInvitationService` | Scoped        | Gestiona el registro, activación y reenvío de invitaciones. |
+| `IInvitationNotifier`        | `InvitationEmailNotifier`       | Scoped        | Construye y solicita el envío de invitaciones.              |
+| `IEmailSender`               | `MailKitSmtpEmailSender`        | Singleton     | Realiza el envío mediante SMTP utilizando MailKit.          |
+| `InvitationTemplateCatalog`  | Implementación concreta         | Singleton     | Carga y valida las definiciones de plantillas.              |
+| `InvitationTemplateRenderer` | Implementación concreta         | Singleton     | Procesa las plantillas HTML/TXT.                            |
+| `IdentitySeeder`             | Implementación concreta         | Scoped        | Inicializa los roles y usuarios predeterminados.            |
+
+**Scoped:** se crea una instancia por ámbito de dependencias, normalmente por solicitud HTTP.
+
+**Singleton:** se utiliza una única instancia del servicio durante la vida de la aplicación.
+
+#### Validación durante el arranque
+
+`Program.cs` incorpora la resolución explícita del catálogo:
+
+```csharp
+_ = app.Services.GetRequiredService<InvitationTemplateCatalog>();
+```
+
+| Operación                     | Componente                | Responsabilidad                                                                |
+| ----------------------------- | ------------------------- | ------------------------------------------------------------------------------ |
+| `GetRequiredService<T>()`     | .NET Dependency Injection | Obtiene una instancia registrada y lanza una excepción si no puede resolverla. |
+| `InvitationTemplateCatalog()` | Infrastructure            | Carga el manifest y valida sus definiciones, archivos y parámetros.            |
+| `ValidateOnStart()`           | .NET Options              | Valida las opciones configuradas durante el arranque.                          |
+
+Esta inicialización permite detectar errores en las plantillas antes de que la API comience a recibir solicitudes.
+
+#### Configuración del proyecto API
+
+`Fepp.ContaOps.Api.csproj` incorpora los archivos de plantillas procedentes de Infrastructure.
+
+| Archivo           | Origen                           | Destino lógico                    |
+| ----------------- | -------------------------------- | --------------------------------- |
+| `templates.json`  | `Infrastructure/Email/Templates` | `Email/Templates/templates.json`  |
+| `invitation.html` | `Infrastructure/Email/Templates` | `Email/Templates/invitation.html` |
+| `invitation.txt`  | `Infrastructure/Email/Templates` | `Email/Templates/invitation.txt`  |
+
+Se utilizan las siguientes propiedades de MSBuild:
+
+| Elemento                  | Origen             | Función                                                     |
+| ------------------------- | ------------------ | ----------------------------------------------------------- |
+| `<Content Include="...">` | .NET SDK / MSBuild | Incorpora archivos externos al proyecto API.                |
+| `Link`                    | MSBuild            | Establece la ruta lógica del archivo dentro del proyecto.   |
+| `<CopyToOutputDirectory>` | MSBuild            | Configura la copia al directorio de salida.                 |
+| `PreserveNewest`          | MSBuild            | Copia los archivos cuando el destino necesita actualizarse. |
+
+Esto permite que `InvitationTemplateCatalog` encuentre las plantillas cuando la aplicación se ejecuta desde el proyecto API.
+
+#### Componentes de .NET utilizados
+
+| Componente                                 | Origen                    | Función                                                  |
+| ------------------------------------------ | ------------------------- | -------------------------------------------------------- |
+| `WebApplication`                           | ASP.NET Core              | Construye y ejecuta la aplicación web.                   |
+| `IServiceCollection`                       | .NET Dependency Injection | Contenedor de registros de servicios.                    |
+| `AddSingleton<TService,TImplementation>()` | .NET Dependency Injection | Registra un servicio con una única instancia compartida. |
+| `AddScoped<TService,TImplementation>()`    | .NET Dependency Injection | Registra un servicio por ámbito de dependencias.         |
+| `IServiceScope`                            | .NET Dependency Injection | Representa un ámbito para resolver servicios Scoped.     |
+| `CreateScope()`                            | .NET Dependency Injection | Crea un nuevo ámbito de dependencias.                    |
+| `GetRequiredService<T>()`                  | .NET Dependency Injection | Resuelve un servicio registrado.                         |
+| `Build()`                                  | ASP.NET Core              | Construye la aplicación y el proveedor de servicios.     |
+| `Run()`                                    | ASP.NET Core              | Inicia la ejecución del servidor web.                    |
+
+#### Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    subgraph Presentation["Presentation - API"]
+        P["Program.cs"]
+    end
+
+    subgraph Application
+        A["AddApplication"]
+        UI["IUserInvitationService"]
+        IN["IInvitationNotifier"]
+        IE["IEmailSender"]
+    end
+
+    subgraph Infrastructure
+        DI["AddInfrastructure"]
+        ID["IdentityUserInvitationService"]
+        N["InvitationEmailNotifier"]
+        S["MailKitSmtpEmailSender"]
+        R["InvitationTemplateRenderer"]
+        C["InvitationTemplateCatalog"]
+    end
+
+    P --> A
+    P --> DI
+
+    DI -->|Registra| ID
+    DI -->|Registra| N
+    DI -->|Registra| S
+    DI -->|Registra| R
+    DI -->|Registra| C
+
+    ID -.->|Implementa| UI
+    N -.->|Implementa| IN
+    S -.->|Implementa| IE
+
+    N --> R
+    N --> IE
+    R --> C
+
+    P -->|Valida al iniciar| C
+```
+
+**Interpretación:**
+
+- **Presentation:** `Program.cs` coordina el registro de las capas y el arranque de la aplicación.
+- **Application:** define las interfaces utilizadas por los servicios de invitaciones y correo.
+- **Infrastructure:** proporciona las implementaciones concretas de Identity, notificaciones, plantillas y SMTP.
+- **Dependency Injection:** conecta las interfaces con sus implementaciones sin acoplar Application a los proveedores externos.
+- **Validación inicial:** el catálogo de plantillas se carga antes de aceptar solicitudes HTTP.
+
+**Resultado:** se completa la integración de los servicios de invitaciones y correo en el contenedor de dependencias, se habilita el transporte SMTP mediante MailKit y se asegura la disponibilidad y validación inicial de las plantillas.
 
 ---
 
