@@ -1,0 +1,8 @@
+Se ha creado una cuenta para ti en FEPP ContaOps.
+
+Para establecer tu primera contraseña, abre el siguiente enlace:
+{{activationLink}}
+
+Identificador de usuario: {{userId}}
+
+Si no esperabas esta invitación, puedes ignorar este mensaje.

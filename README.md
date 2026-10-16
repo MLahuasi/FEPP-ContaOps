@@ -1,336 +1,226 @@
 # FEPP-ContaOps
 
-API de FEPP para procesos operativos contables. La solución utiliza arquitectura
-hexagonal y DDD sobre .NET 10, ASP.NET Core Web API, PostgreSQL, Identity, JWT,
-FluentValidation y Swagger.
+API contable de FEPP basada en .NET 10, ASP.NET Core, PostgreSQL, Identity,
+JWT, FluentValidation y Swagger, organizada con arquitectura hexagonal y DDD.
+
+## Inicio rápido
+
+| Paso | Acción | Comando |
+|---:|---|---|
+| 1 | Crear configuración | `Copy-Item .env.example .env` |
+| 2 | Editar valores locales | `notepad .env` |
+| 3 | Iniciar PostgreSQL y pgAdmin | `docker compose up -d database pgadmin` |
+| 4 | Confiar en HTTPS, una vez | `dotnet dev-certs https --trust` |
+| 5 | Ejecutar la API | `.\run-local.ps1` |
+
+`run-local.ps1` carga `.env` y ejecuta la API con el perfil HTTPS. No inicia ni
+detiene contenedores Docker.
 
 ## Requisitos
 
-- .NET SDK 10.
-- Docker Desktop con Docker Compose.
-- Git.
-
-Verificar la instalación:
-
-```powershell
-dotnet --version
-docker --version
-docker compose version
-```
+| Herramienta | Uso | Verificación |
+|---|---|---|
+| .NET SDK 10 | API y pruebas | `dotnet --version` |
+| Docker Desktop | PostgreSQL y pruebas de integración | `docker --version` |
+| Docker Compose | Servicios locales | `docker compose version` |
+| Git | Control de versiones | `git --version` |
 
 ## Estructura
 
-```text
-src/
-├── Fepp.ContaOps.Domain/          # Modelo y reglas del negocio
-├── Fepp.ContaOps.Application/     # Casos de uso y puertos
-├── Fepp.ContaOps.Infrastructure/  # EF Core, PostgreSQL, Identity y JWT
-└── Fepp.ContaOps.Api/             # HTTP, autenticación y Swagger
-```
+| Proyecto | Responsabilidad |
+|---|---|
+| `Fepp.ContaOps.Domain` | Modelo y reglas de negocio |
+| `Fepp.ContaOps.Application` | Casos de uso y puertos |
+| `Fepp.ContaOps.Infrastructure` | Persistencia, Identity, JWT y correo |
+| `Fepp.ContaOps.Api` | HTTP, autenticación y Swagger |
 
-## 1. Configurar Docker y PostgreSQL
+## Configuración
 
-Copiar la plantilla de variables y sustituir los valores localmente. El archivo
-`.env` está excluido de Git y no debe publicarse:
+`.env` está excluido de Git y no debe publicarse. ASP.NET Core no carga `.env`
+automáticamente; `run-local.ps1` lo importa para la ejecución local.
 
-```powershell
-Copy-Item .env.example .env
-notepad .env
-```
+Para una ejecución manual sin `run-local.ps1`, importa las variables al proceso
+antes de ejecutar la API. PowerShell no carga `.env` automáticamente; puedes
+usar el script recomendado o asignar las variables con
+`$env:Nombre='valor'`. No pongas secretos en archivos versionados.
 
-El archivo debe contener las variables de Docker y de la API. Los nombres con
-doble guion bajo (`__`) representan secciones anidadas de la configuración .NET:
+| Grupo | Variables | Secretos |
+|---|---|---:|
+| PostgreSQL | `POSTGRES_PASSWORD`, `ConnectionStrings__Default` | Sí |
+| pgAdmin | `PGADMIN_DEFAULT_EMAIL`, `PGADMIN_DEFAULT_PASSWORD` | Contraseña |
+| JWT | `Jwt__Issuer`, `Jwt__Audience`, `Jwt__SigningKey`, `Jwt__AccessTokenLifetimeMinutes` | `SigningKey` |
+| Administrador | `BootstrapAdmin__Email`, `BootstrapAdmin__Password` | Contraseña |
+| Invitaciones | `UserInvitation__TokenLifetimeHours`, `UserInvitation__ActivationBaseUrl` | No |
+| SMTP | `Email__Smtp__*` | `Password` |
+| Plantillas | `Email__Templates__RootPath` | No |
+| Data Protection | `DataProtection__KeyRingPath` | No |
 
-```dotenv
-# Credencial usada por PostgreSQL dentro del contenedor.
-POSTGRES_PASSWORD='replace-with-a-local-database-password'
+Reglas principales:
 
-# Credenciales para ingresar a pgAdmin en http://localhost:5050.
-PGADMIN_DEFAULT_EMAIL='jmlahuasiq@gmail.com'
-PGADMIN_DEFAULT_PASSWORD='replace-with-a-local-pgadmin-password'
+| Elemento | Regla |
+|---|---|
+| Variables anidadas | Usar doble guion bajo (`__`) |
+| PostgreSQL desde la API | `Host=localhost` |
+| PostgreSQL desde pgAdmin | Host `database` |
+| SMTP Gmail | `smtp.gmail.com:587` con `StartTls` |
+| Autenticación Gmail | Contraseña de aplicación; no API key |
+| URL de activación | HTTPS obligatorio |
+| SMTP seguro | Solo `StartTls` en 587 o `TlsOnConnect` en 465 |
+| Usuarios regulares | Se crean mediante invitación; no existe configuración `BootstrapUser` |
+| Valores reales | Solo en `.env`, User Secrets o variables seguras |
 
-# Cadena de conexión de la API cuando se ejecuta en el host con dotnet run.
-# Debe usar Host=localhost y la misma contraseña de POSTGRES_PASSWORD.
-ConnectionStrings__Default='Host=localhost;Port=5432;Database=fepp_contaops_dev;Username=app;Password=replace-with-a-local-database-password'
+El listado completo de placeholders debe mantenerse en `.env.example`.
 
-# Configuración del token JWT.
-# Jwt__SigningKey debe tener como mínimo 32 bytes y mantenerse secreta.
-Jwt__Issuer='FEPP-ContaOps'
-Jwt__Audience='FEPP-ContaOps.Api'
-Jwt__SigningKey='replace-with-a-random-key-of-at-least-32-bytes'
-Jwt__AccessTokenLifetimeMinutes='60'
+### SMTP y Gmail
 
-# Administrador creado automáticamente por el seed.
-BootstrapAdmin__Email='jmlahuasiq@gmail.com'
-BootstrapAdmin__Password='replace-with-an-admin-password'
+Gmail es el proveedor inicial mediante SMTP compatible. Activa la verificación
+en dos pasos y crea una **contraseña de aplicación** de Google; una API key de
+Google no autentica SMTP. Configura la cuenta en
+`Email__Smtp__Username` y `Email__Smtp__FromAddress`, y la contraseña de
+aplicación únicamente en `Email__Smtp__Password`.
 
-# Usuario regular opcional creado automáticamente con el rol User.
-BootstrapUser__Email='user@fepp.local'
-BootstrapUser__Password='replace-with-a-regular-user-password'
+El contrato no depende de Gmail: otro proveedor compatible puede sustituirse
+cambiando `Email__Smtp__*`. No se usan `MAILER_*`, `MAIL_*` ni
+`MAIL_TEMPLATE_EXTENSION`.
 
-```
+### Plantillas y key ring
 
-Iniciar PostgreSQL y pgAdmin:
+El catálogo base está en `src/Fepp.ContaOps.Infrastructure/Email/Templates/` y
+contiene `templates.json`, `invitation.html` e `invitation.txt`. Se puede
+reemplazar mediante `Email__Templates__RootPath`; el manifest y ambos formatos
+se validan al iniciar.
 
-```powershell
-docker compose -f docker-compose.yml up -d database pgadmin
-docker compose -f docker-compose.yml ps
-```
+`DataProtection__KeyRingPath` es opcional para desarrollo local. En Docker o
+un despliegue persistente debe apuntar a un directorio montado desde un named
+volume con permisos de lectura y escritura para la API. El volumen debe
+conservarse al recrear el contenedor; el almacenamiento anfitrión debe contar
+con protección en reposo. En Windows local se puede usar DPAPI.
 
-Servicios disponibles:
+## Servicios y direcciones
 
-- PostgreSQL desde el host: `localhost:5432`.
-- PostgreSQL desde pgAdmin: host `database`, puerto `5432`.
-- pgAdmin: `http://localhost:5050`.
+| Servicio | Desde el host | Desde Docker |
+|---|---|---|
+| PostgreSQL | `localhost:5432` | `database:5432` |
+| pgAdmin | `http://localhost:5050` | — |
+| API HTTPS | `https://localhost:7077` | — |
+| API HTTP | `http://localhost:5282` | — |
+| Swagger | `https://localhost:7077/swagger` | — |
+| OpenAPI | `https://localhost:7077/swagger/v1/swagger.json` | — |
 
-Para detener los servicios conservando los datos:
+## Ejecutar la API
 
-```powershell
-docker compose -f docker-compose.yml down
-```
-
-Para eliminar también los datos persistidos:
-
-```powershell
-docker compose -f docker-compose.yml down --volumes
-```
-
-## 2. Cargar configuración desde `.env`
-
-ASP.NET Core no carga archivos `.env` automáticamente. Para ejecutar la API con
-`dotnet run`, primero se deben importar sus variables al proceso de PowerShell.
-Ejecutar desde la raíz del repositorio:
-
-```powershell
-Get-Content .env | ForEach-Object {
-    $line = $_.Trim()
-    if (-not [string]::IsNullOrWhiteSpace($line) -and -not $line.StartsWith('#')) {
-        $parts = $line -split '=', 2
-        $value = $parts[1].Trim()
-        if (($value.StartsWith("'") -and $value.EndsWith("'")) -or
-            ($value.StartsWith('"') -and $value.EndsWith('"'))) {
-            $value = $value.Substring(1, $value.Length - 2)
-        }
-        [Environment]::SetEnvironmentVariable($parts[0].Trim(), $value, 'Process')
-    }
-}
-
-dotnet run --project src/Fepp.ContaOps.Api
-```
-
-Las variables se mantienen únicamente en la sesión actual de PowerShell. Para
-confirmar que una variable fue cargada sin mostrar su valor completo:
+### Opción recomendada
 
 ```powershell
-if ([string]::IsNullOrWhiteSpace($env:ConnectionStrings__Default)) {
-    throw 'ConnectionStrings__Default no fue cargada.'
-}
+.\run-local.ps1
 ```
 
-También es posible usar User Secrets en desarrollo, pero no es necesario si se
-usa este procedimiento con `.env`.
+| El script | Comportamiento |
+|---|---|
+| `.env` | Verifica, valida y carga variables en el proceso |
+| Proyecto | Verifica el proyecto API y `dotnet` |
+| Perfil | Ejecuta el perfil HTTPS |
+| Docker | No inicia, detiene ni elimina contenedores |
+| `Ctrl+C` | Detiene la API y conserva los contenedores |
 
-## 3. Seed de Identity
-
-El seed se ejecuta automáticamente durante el arranque de la API. No se ejecuta
-con un comando separado:
-
-1. Crea el esquema de Identity si todavía no existe.
-2. Crea los roles `Admin` y `User`.
-3. Crea el administrador inicial si no existe.
-4. No sobrescribe la contraseña de un usuario existente.
-5. Crea opcionalmente un usuario regular con rol `User`.
-
-El administrador y el usuario regular se configuran en `.env` mediante
-`BootstrapAdmin__*` y `BootstrapUser__*`. No guardar contraseñas reales en este
-README ni en archivos versionados.
-
-La contraseña debe tener al menos 12 caracteres, mayúscula, minúscula, dígito,
-símbolo y seis caracteres únicos.
-
-## 4. Compilar y levantar la API
-
-Ejecutar desde la raíz del repositorio:
+### Opción manual
 
 ```powershell
 dotnet restore FEPP-ContaOps.slnx
 dotnet build FEPP-ContaOps.slnx
+dotnet run --project src/Fepp.ContaOps.Api --launch-profile https
 ```
 
-Después de compilar, cargar `.env` como se indicó en la sección 2 y ejecutar:
+## Identity y endpoints
 
-```powershell
-dotnet run --project src/Fepp.ContaOps.Api
-```
+El seed se ejecuta al iniciar la API:
 
-Al iniciar, la aplicación ejecuta automáticamente el seed. Si falta
-`ConnectionStrings:Default`, JWT o `BootstrapAdmin`, el arranque falla de forma
-intencional para evitar una configuración insegura.
+| Operación | Resultado |
+|---|---|
+| Esquema | Se crea si no existe |
+| Roles | Crea `Admin` y `User` |
+| Administrador | Se crea si no existe |
+| Contraseña existente | No se reemplaza |
+| Usuario regular | Se crea mediante invitación |
+| Configuración inválida | Impide el arranque |
 
-## 5. Rutas y acceso manual
-
-Con el perfil HTTPS de `launchSettings.json`:
-
-- API base: `https://localhost:7077`.
-- API HTTP: `http://localhost:5282`.
-- Swagger UI: `https://localhost:7077/swagger`.
-- Documento OpenAPI: `https://localhost:7077/swagger/v1/swagger.json`.
-- pgAdmin: `http://localhost:5050`.
+| Método | Ruta | Acceso | Uso |
+|---|---|---|---|
+| `POST` | `/api/auth/login` | Anónimo | Obtener JWT |
+| `POST` | `/api/users/invitations` | `Admin` | Crear invitación |
+| `POST` | `/api/auth/activate` | Anónimo | Activar cuenta |
+| `POST` | `/api/users/{id}/invitations` | `Admin` | Reenviar invitación |
 
 ### Login
 
-`POST /api/auth/login`
-
-Request:
-
 ```json
 {
-  "email": "jmlahuasiq@gmail.com",
+  "email": "admin@example.local",
   "password": "LA_CLAVE_ADMINISTRATIVA_CONFIGURADA"
 }
 ```
 
-Respuesta exitosa:
+Las credenciales inválidas devuelven `401` con `code` y `traceId`. Para usar
+Swagger, abrir `/swagger`, ejecutar login, pulsar **Authorize** e introducir
+`Bearer <accessToken>`.
 
-```json
-{
-  "accessToken": "...",
-  "tokenType": "Bearer",
-  "expiresIn": 3600
-}
-```
+## pgAdmin
 
-Credenciales inválidas devuelven `401` con `code` y `traceId`.
+Abrir `http://localhost:5050` e iniciar sesión con las variables del `.env`.
+Registrar PostgreSQL con estos valores:
 
-### Swagger con Bearer
+| Campo | Valor |
+|---|---|
+| Name | `FEPP local` |
+| Host | `database` |
+| Port | `5432` |
+| Database | `fepp_contaops_dev` |
+| Username | `app` |
+| Password | Valor de `POSTGRES_PASSWORD` |
 
-1. Abrir `/swagger`.
-2. Ejecutar `POST /api/auth/login` y copiar `accessToken`.
-3. Pulsar **Authorize**.
-4. Introducir `Bearer <accessToken>`.
-5. Pulsar **Authorize** y cerrar la ventana.
-
-El esquema Bearer ya está registrado en Swagger. Las futuras rutas protegidas
-usarán el token mediante `UseAuthentication` y `UseAuthorization`.
-
-## 6. pgAdmin
-
-pgAdmin se ejecuta en un contenedor independiente. La conexión a PostgreSQL
-debe realizarse por la red interna de Docker Compose, usando el nombre del
-servicio `database`, no `localhost`.
-
-### Ingresar a pgAdmin
-
-1. Abrir `http://localhost:5050`.
-2. Ingresar con `PGADMIN_DEFAULT_EMAIL` del `.env`.
-3. Ingresar con `PGADMIN_DEFAULT_PASSWORD` del `.env`.
-
-### Registrar el servidor PostgreSQL
-
-Si el panel izquierdo muestra `Servers` vacío, es necesario registrar la
-conexión manualmente:
-
-1. En el panel izquierdo, hacer clic derecho sobre **Servers**.
-2. Seleccionar **Register > Server**.
-3. En la pestaña **General**, completar:
-
-   ```text
-   Name: FEPP local
-   ```
-
-4. Abrir la pestaña **Connection** y completar:
-
-   ```text
-   Host name/address: database
-   Port: 5432
-   Maintenance database: fepp_contaops_dev
-   Username: app
-   Password: valor de POSTGRES_PASSWORD del archivo .env
-   Save password: activado
-   ```
-
-5. Pulsar **Save**.
-
-El campo `FEPP local` es únicamente el nombre visible de la conexión. No debe
-escribirse en `Host name/address`; el host correcto es `database`.
-
-La conexión utiliza esta ruta interna:
-
-```text
-pgAdmin (contenedor) ──► database:5432 ──► PostgreSQL (contenedor)
-```
-
-Después de guardar, expandir:
-
-```text
-Servers
-└── FEPP local
-    └── Databases
-        └── fepp_contaops_dev
-            └── Schemas
-                └── public
-                    └── Tables
-```
-
-Las tablas de Identity creadas por el seed son `AspNetUsers`, `AspNetRoles`,
-`AspNetUserRoles`, `AspNetUserClaims`, `AspNetRoleClaims`, `AspNetUserLogins` y
-`AspNetUserTokens`.
-
-Si pgAdmin no conecta, verificar el estado de los contenedores:
+Diagnóstico:
 
 ```powershell
-docker compose -f docker-compose.yml ps
-docker compose -f docker-compose.yml logs --tail=50 pgadmin
+docker compose ps
+docker compose logs --tail=50 pgadmin
 ```
 
-PostgreSQL debe aparecer como `healthy`. No usar `docker compose down --volumes`
-para solucionar problemas de conexión salvo que se quiera eliminar toda la
-base de datos y sus usuarios.
+PostgreSQL debe aparecer como `healthy`. Para detener servicios conservando
+datos usar `docker compose down`. `docker compose down --volumes` elimina los
+datos locales.
 
-## 7. Seguridad del archivo `.env`
+## Comandos operativos
 
-El archivo `.env` contiene contraseñas y la clave de firma JWT. Debe permanecer
-fuera de Git, tener permisos restringidos y no incluirse en imágenes Docker ni
-en respaldos sin cifrar. Para producción se recomienda inyectar estas mismas
-variables mediante el sistema de despliegue o un gestor de secretos.
+| Acción | Comando |
+|---|---|
+| Restaurar | `dotnet restore FEPP-ContaOps.slnx` |
+| Compilar | `dotnet build FEPP-ContaOps.slnx` |
+| Ejecutar API | `.\run-local.ps1` |
+| Probar | `dotnet test FEPP-ContaOps.slnx` |
+| Ver contenedores | `docker compose ps` |
+| Detener Docker | `docker compose down` |
 
-La clave `Jwt__SigningKey` debe tener al menos 32 bytes. No reutilizar la misma
-contraseña para PostgreSQL, el administrador y el usuario regular.
+Las pruebas de integración requieren Docker activo y no conectan con Gmail real.
+Las pruebas SMTP usan servidores en proceso y nunca credenciales ni servidores
+Gmail reales.
 
-## 8. Pruebas automatizadas
+## Seguridad y logs
 
-Las pruebas unitarias no requieren Docker. Las de integración utilizan un
-contenedor PostgreSQL efímero y requieren Docker activo:
-
-```powershell
-dotnet test FEPP-ContaOps.slnx
-```
-
-## 9. Logs
-
-La API escribe logs estructurados en formato JSON en:
-
-```text
-src/Fepp.ContaOps.Api/logs/fepp-contaops-YYYYMMDD.json
-```
-
-La consola muestra únicamente el estado de arranque, las URLs de la API,
-Swagger, OpenAPI y las rutas principales. Las solicitudes exitosas no se
-imprimen en consola ni se guardan como eventos de información; las advertencias,
-errores y excepciones sí se conservan en los archivos de logs.
-
-La rotación se realiza:
-
-- diariamente;
-- al alcanzar 10 MB por archivo;
-- conservando como máximo 14 archivos.
-
-El directorio `logs/` está excluido de Git. Los logs no deben contener
-contraseñas, tokens JWT ni información sensible.
+| Regla | Aplicación |
+|---|---|
+| `.env` | No versionar ni publicar |
+| `.env.example` | Solo placeholders |
+| JWT y SMTP | Secretos fuera de Git |
+| Contraseñas | No reutilizarlas entre servicios |
+| Logs | No contienen contraseñas, tokens ni secretos |
+| Key ring Docker | Volumen persistente y protegido |
+| Logs | `src/Fepp.ContaOps.Api/logs/`, rotación diaria y máximo 14 archivos |
 
 ## Documentación complementaria
 
-- [Creación e instalación](sdd/create-install.md)
-- [Arquitectura de la Web API](sdd/webapi-architecture.md)
-- [Modelo e importación del balance global](sdd/global-balance-sheet.md)
-- [Naming y documentación de código](sdd/dotnet-naming-and-code-documentation.md)
+| Documento | Contenido |
+|---|---|
+| [Creación e instalación](sdd/create-install.md) | Solución, paquetes, Docker y migraciones |
+| [Arquitectura Web API](sdd/webapi-architecture.md) | Capas y dependencias |
+| [Balance global](sdd/global-balance-sheet.md) | Modelo e importación contable |
+| [Naming y documentación](sdd/dotnet-naming-and-code-documentation.md) | Convenciones .NET |

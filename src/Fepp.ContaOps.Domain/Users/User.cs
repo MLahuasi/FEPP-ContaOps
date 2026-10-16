@@ -13,7 +13,12 @@ public sealed class User
     /// <param name="id">Identificador del usuario.</param>
     /// <param name="email">Correo electrónico del usuario.</param>
     /// <param name="roles">Roles efectivos del usuario.</param>
-    public User(UserId id, string email, IEnumerable<string> roles)
+    /// <param name="status">Estado funcional de la cuenta.</param>
+    public User(
+        UserId id,
+        string email,
+        IEnumerable<string> roles,
+        UserStatus status = UserStatus.Active)
     {
         if (!id.IsValid())
         {
@@ -29,6 +34,7 @@ public sealed class User
 
         Id = id;
         Email = email;
+        Status = status;
         _roles = roles
             .Where(role => !string.IsNullOrWhiteSpace(role))
             .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -44,6 +50,11 @@ public sealed class User
     /// Obtiene el correo electrónico del usuario.
     /// </summary>
     public string Email { get; }
+
+    /// <summary>
+    /// Obtiene el estado funcional de la cuenta.
+    /// </summary>
+    public UserStatus Status { get; }
 
     /// <summary>
     /// Obtiene los roles efectivos del usuario.

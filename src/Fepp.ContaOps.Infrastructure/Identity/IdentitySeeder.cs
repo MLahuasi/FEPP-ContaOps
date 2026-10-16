@@ -2,6 +2,7 @@ using Fepp.ContaOps.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
+using Fepp.ContaOps.Domain.Users;
 
 namespace Fepp.ContaOps.Infrastructure.Identity;
 
@@ -75,6 +76,7 @@ public sealed class IdentitySeeder
     public async Task SeedAsync(CancellationToken cancellationToken = default)
     {
         await _dbContext.Database.EnsureCreatedAsync(cancellationToken);
+        await EnsureUserStatusColumnAsync(cancellationToken);
 
         await EnsureRoleAsync(AdminRole);
         await EnsureRoleAsync(UserRole);
@@ -86,7 +88,8 @@ public sealed class IdentitySeeder
             {
                 UserName = _options.Email,
                 Email = _options.Email,
-                EmailConfirmed = true
+                EmailConfirmed = true,
+                Status = UserStatus.Active
             };
 
             IdentityResult creationResult = await _userManager.CreateAsync(admin, _options.Password);
@@ -103,6 +106,18 @@ public sealed class IdentitySeeder
         {
             await EnsureBootstrapUserAsync();
         }
+    }
+
+    /// <summary>
+    /// Añade de forma idempotente el estado funcional a bases creadas por versiones anteriores.
+    /// </summary>
+    /// <param name="cancellationToken">Token de cancelación de la actualización.</param>
+    /// <returns>Una tarea que representa la actualización del esquema.</returns>
+    private async Task EnsureUserStatusColumnAsync(CancellationToken cancellationToken)
+    {
+        await _dbContext.Database.ExecuteSqlRawAsync(
+            "ALTER TABLE \"AspNetUsers\" ADD COLUMN IF NOT EXISTS \"Status\" integer NOT NULL DEFAULT 1;",
+            cancellationToken);
     }
 
     /// <summary>
@@ -134,7 +149,8 @@ public sealed class IdentitySeeder
             {
                 UserName = _userOptions.Email,
                 Email = _userOptions.Email,
-                EmailConfirmed = true
+                EmailConfirmed = true,
+                Status = UserStatus.Active
             };
 
             IdentityResult creationResult = await _userManager.CreateAsync(user, _userOptions.Password);

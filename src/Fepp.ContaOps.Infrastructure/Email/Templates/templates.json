@@ -1,0 +1,11 @@
+{
+  "invitation": {
+    "htmlFile": "invitation.html",
+    "textFile": "invitation.txt",
+    "subject": "Activa tu cuenta de FEPP ContaOps",
+    "parameters": [
+      "userId",
+      "activationLink"
+    ]
+  }
+}
