@@ -315,7 +315,150 @@ flowchart TD
 
 ---
 
-### 4. Definir configuración neutral SMTP y plantillas.
+### 4. Definir configuración neutral SMTP y plantillas
+
+#### Componentes implementados
+
+| Componente              | Acción | Tipo           | Capa           | Responsabilidad                                                                  |
+| ----------------------- | ------ | -------------- | -------------- | -------------------------------------------------------------------------------- |
+| `EmailSmtpOptions`      | Create | `class`        | Infrastructure | Define y valida la configuración de conexión SMTP.                               |
+| `EmailTemplatesOptions` | Create | `class`        | Infrastructure | Configura el directorio donde se almacenarán las plantillas de correo.           |
+| `SmtpSecurityMode`      | Create | `enum`         | Infrastructure | Define los modos de conexión SMTP cifrada.                                       |
+| `DependencyInjection`   | Update | `static class` | Infrastructure | Registra y valida las opciones SMTP, plantillas, invitaciones y Data Protection. |
+
+#### Propiedades y configuración
+
+**EmailSmtpOptions**
+
+Se vincula con la sección `Email:Smtp`.
+
+| Propiedad        | Tipo               | Descripción                                 |
+| ---------------- | ------------------ | ------------------------------------------- |
+| `Host`           | `string`           | Servidor SMTP.                              |
+| `Port`           | `int`              | Puerto de conexión SMTP.                    |
+| `SecurityMode`   | `SmtpSecurityMode` | Modo de cifrado TLS.                        |
+| `Username`       | `string`           | Usuario de autenticación SMTP.              |
+| `Password`       | `string`           | Contraseña SMTP o contraseña de aplicación. |
+| `FromAddress`    | `string`           | Dirección de correo del remitente.          |
+| `FromName`       | `string`           | Nombre visible del remitente (opcional).    |
+| `TimeoutSeconds` | `int`              | Tiempo máximo de espera en segundos.        |
+
+**EmailTemplatesOptions**
+
+Se vincula con la sección `Email:Templates`.
+
+| Propiedad  | Tipo     | Descripción                                                    |
+| ---------- | -------- | -------------------------------------------------------------- |
+| `RootPath` | `string` | Directorio alternativo que contendrá las plantillas de correo. |
+
+**SmtpSecurityMode**
+
+| Valor          | Puerto | Descripción                                           |
+| -------------- | ------ | ----------------------------------------------------- |
+| `StartTls`     | `587`  | Inicia la conexión SMTP y posteriormente negocia TLS. |
+| `TlsOnConnect` | `465`  | Establece TLS desde el inicio de la conexión.         |
+
+La configuración solo acepta estos dos modos de conexión cifrada.
+
+#### Métodos y funciones principales
+
+| Clase                 | Método                | Responsabilidad                                                            |
+| --------------------- | --------------------- | -------------------------------------------------------------------------- |
+| `EmailSmtpOptions`    | `IsValid()`           | Valida host, puerto, cifrado, credenciales, remitente y tiempo de espera.  |
+| `EmailSmtpOptions`    | `IsCompatiblePort()`  | Comprueba que el puerto corresponda al modo TLS configurado.               |
+| `DependencyInjection` | `AddInfrastructure()` | Registra las opciones de configuración y los servicios de infraestructura. |
+
+#### Validaciones SMTP
+
+| Validación   | Regla                                                 |
+| ------------ | ----------------------------------------------------- |
+| Servidor     | `Host` no puede estar vacío.                          |
+| Puerto       | Debe ser positivo y compatible con el modo TLS.       |
+| Cifrado      | Solo se admiten `StartTls` y `TlsOnConnect`.          |
+| Credenciales | `Username` y `Password` son obligatorios.             |
+| Remitente    | `FromAddress` debe tener un formato de correo válido. |
+| Timeout      | `TimeoutSeconds` debe ser mayor que cero.             |
+
+La configuración SMTP se valida durante el arranque mediante `ValidateOnStart()`.
+
+Las opciones de plantillas se registran mediante `Bind()`, sin validaciones adicionales en este paso.
+
+#### Configuración adicional de Identity y Data Protection
+
+La clase `DependencyInjection` incorpora también la configuración de seguridad definida en el paso anterior.
+
+| Configuración                        | Responsabilidad                                                             |
+| ------------------------------------ | --------------------------------------------------------------------------- |
+| `UserInvitationOptions`              | Vincula y valida la vigencia del token y la URL HTTPS de activación.        |
+| `UserInvitationTokenProviderOptions` | Configura `TokenLifespan` utilizando `TokenLifetimeHours`.                  |
+| `UserInvitationTokenProvider`        | Registra el proveedor dedicado de tokens de invitación.                     |
+| `DataProtection:KeyRingPath`         | Define una ubicación para persistir las claves criptográficas.              |
+| `ProtectKeysWithDpapi()`             | Protege las claves almacenadas mediante DPAPI cuando se ejecuta en Windows. |
+
+**Key Ring:** conjunto de claves criptográficas utilizadas por ASP.NET Core Data Protection para proteger y validar información, incluidos los tokens de invitación.
+
+Cuando se configura `DataProtection:KeyRingPath`, las claves se almacenan en el directorio indicado. Si no se configura, Data Protection utiliza su comportamiento predeterminado.
+
+#### Componentes de .NET utilizados
+
+| Componente                    | Origen                       | Función                                                              |
+| ----------------------------- | ---------------------------- | -------------------------------------------------------------------- |
+| `EmailAddressAttribute`       | .NET DataAnnotations         | Valida el formato del correo remitente.                              |
+| `IOptions<T>`                 | .NET Options                 | Proporciona acceso a configuraciones tipadas.                        |
+| `AddOptions<T>()`             | .NET Options                 | Registra opciones de configuración.                                  |
+| `Bind()`                      | .NET Configuration           | Vincula valores de configuración con las propiedades de una clase.   |
+| `Validate()`                  | .NET Options                 | Define reglas de validación para las opciones.                       |
+| `ValidateOnStart()`           | .NET Options                 | Ejecuta las validaciones durante el arranque.                        |
+| `AddDataProtection()`         | ASP.NET Core                 | Registra los servicios de protección criptográfica.                  |
+| `PersistKeysToFileSystem()`   | ASP.NET Core Data Protection | Configura el almacenamiento de claves en el sistema de archivos.     |
+| `ProtectKeysWithDpapi()`      | ASP.NET Core Data Protection | Protege las claves mediante DPAPI de Windows.                        |
+| `DirectoryInfo`               | .NET System.IO               | Representa y permite crear el directorio de claves.                  |
+| `OperatingSystem.IsWindows()` | .NET                         | Identifica si la aplicación se ejecuta en Windows.                   |
+| `TimeSpan.FromHours()`        | .NET                         | Convierte la vigencia configurada en horas a un intervalo de tiempo. |
+
+#### Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    subgraph Infrastructure
+        DI["DependencyInjection"]
+
+        SMTP["EmailSmtpOptions"]
+        TPL["EmailTemplatesOptions"]
+        MODE["SmtpSecurityMode"]
+
+        INV["UserInvitationOptions"]
+        TOKEN["UserInvitationTokenProvider"]
+    end
+
+    subgraph ASPNET["ASP.NET Core"]
+        OPT["Options / Configuration"]
+        DP["Data Protection"]
+        KR[("Key Ring")]
+    end
+
+    DI --> OPT
+    OPT --> SMTP
+    OPT --> TPL
+    OPT --> INV
+
+    SMTP --> MODE
+
+    DI --> TOKEN
+    DI --> DP
+    TOKEN --> DP
+    DP --> KR
+```
+
+**Interpretación:**
+
+- **Infrastructure:** centraliza las opciones SMTP, plantillas y configuración de invitaciones.
+- **Options / Configuration:** permite obtener y validar configuraciones desde las secciones correspondientes.
+- **Data Protection:** administra la protección criptográfica de los tokens mediante un key ring.
+- **SMTP:** queda configurado y validado, pero todavía no se implementa el transporte efectivo de mensajes.
+- **Plantillas:** se define su ubicación, pero todavía no se implementa su lectura ni procesamiento.
+
+**Resultado:** se establecen las configuraciones necesarias para utilizar un proveedor SMTP con conexiones cifradas, definir la ubicación de las plantillas y completar la integración de vigencia de tokens y persistencia del key ring.
 
 ---
 

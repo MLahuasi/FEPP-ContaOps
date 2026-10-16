@@ -1,4 +1,5 @@
 using Fepp.ContaOps.Application.Abstractions;
+using Fepp.ContaOps.Infrastructure.Email;
 using Fepp.ContaOps.Infrastructure.Identity;
 using Fepp.ContaOps.Infrastructure.Persistence;
 using Fepp.ContaOps.Infrastructure.Security;
@@ -59,6 +60,14 @@ public static class DependencyInjection
                 tokenOptions.TokenLifespan = TimeSpan.FromHours(
                     invitationOptions.Value.TokenLifetimeHours);
             });
+        services.AddOptions<EmailSmtpOptions>()
+            .Bind(configuration.GetSection(EmailSmtpOptions.SectionName))
+            .Validate(
+                options => options.IsValid(),
+                "Email:Smtp must configure a valid encrypted SMTP connection, credentials, sender, and positive timeout.")
+            .ValidateOnStart();
+        services.AddOptions<EmailTemplatesOptions>()
+            .Bind(configuration.GetSection(EmailTemplatesOptions.SectionName));
         services.AddIdentity<ApplicationIdentityUser, IdentityRole>(options =>
             {
                 options.Password.RequiredLength = 12;
