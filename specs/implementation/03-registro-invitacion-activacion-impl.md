@@ -1335,7 +1335,135 @@ flowchart TD
 
 ---
 
-### 11. Actualizar .env.example, README.md y AGENTS.md.
+### 11. Actualizar .env.example, README.md y AGENTS.md
+
+#### Componentes implementados
+
+| Componente     | Acción   | Tipo                     | Capa          | Responsabilidad                                                                  |
+| -------------- | -------- | ------------------------ | ------------- | -------------------------------------------------------------------------------- |
+| `.env.example` | Update   | Archivo de configuración | Configuración | Documenta las variables de entorno necesarias para ejecutar la aplicación.       |
+| `README.md`    | Update\* | Documentación Markdown   | Documentación | Proporciona instrucciones de configuración y ejecución del proyecto.             |
+| `AGENTS.md`    | Update\* | Documentación Markdown   | Documentación | Define las instrucciones y convenciones del proyecto para agentes de desarrollo. |
+
+_El contenido proporcionado corresponde únicamente a `.env.example`. No se incluyen los cambios específicos realizados en `README.md` y `AGENTS.md`._
+
+#### Variables de entorno
+
+**Base de datos y autenticación**
+
+| Variable                          | Responsabilidad                                       |
+| --------------------------------- | ----------------------------------------------------- |
+| `POSTGRES_PASSWORD`               | Contraseña de PostgreSQL utilizada por el contenedor. |
+| `PGADMIN_DEFAULT_EMAIL`           | Correo de acceso a pgAdmin.                           |
+| `PGADMIN_DEFAULT_PASSWORD`        | Contraseña de acceso a pgAdmin.                       |
+| `ConnectionStrings__Default`      | Cadena de conexión de la API a PostgreSQL.            |
+| `Jwt__Issuer`                     | Identificador del emisor de tokens JWT.               |
+| `Jwt__Audience`                   | Audiencia autorizada para los tokens JWT.             |
+| `Jwt__SigningKey`                 | Clave secreta para firmar tokens JWT.                 |
+| `Jwt__AccessTokenLifetimeMinutes` | Vigencia del token de acceso en minutos.              |
+| `BootstrapAdmin__Email`           | Correo del administrador inicial.                     |
+| `BootstrapAdmin__Password`        | Contraseña del administrador inicial.                 |
+
+**Invitaciones y activación**
+
+| Variable                             | Valor de ejemplo                 | Responsabilidad                                                   |
+| ------------------------------------ | -------------------------------- | ----------------------------------------------------------------- |
+| `UserInvitation__TokenLifetimeHours` | `24`                             | Establece la vigencia del token de activación en horas.           |
+| `UserInvitation__ActivationBaseUrl`  | `https://cliente.local/activate` | Define la URL HTTPS del cliente donde se procesará la activación. |
+
+**Configuración SMTP**
+
+| Variable                      | Valor de ejemplo     | Responsabilidad                             |
+| ----------------------------- | -------------------- | ------------------------------------------- |
+| `Email__Smtp__Host`           | `smtp.gmail.com`     | Servidor SMTP.                              |
+| `Email__Smtp__Port`           | `587`                | Puerto de conexión.                         |
+| `Email__Smtp__SecurityMode`   | `StartTls`           | Modo de cifrado de la conexión.             |
+| `Email__Smtp__Username`       | `sender@example.com` | Usuario de autenticación SMTP.              |
+| `Email__Smtp__Password`       | Valor de reemplazo   | Contraseña SMTP o contraseña de aplicación. |
+| `Email__Smtp__FromAddress`    | `sender@example.com` | Dirección del remitente.                    |
+| `Email__Smtp__FromName`       | `FEPP ContaOps`      | Nombre visible del remitente.               |
+| `Email__Smtp__TimeoutSeconds` | `30`                 | Tiempo máximo de espera en segundos.        |
+
+**Plantillas y Data Protection**
+
+| Variable                      | Valor | Responsabilidad                                                                         |
+| ----------------------------- | ----- | --------------------------------------------------------------------------------------- |
+| `Email__Templates__RootPath`  | Vacío | Utiliza el catálogo de plantillas distribuido con la aplicación.                        |
+| `DataProtection__KeyRingPath` | Vacío | Utiliza la configuración predeterminada de almacenamiento de claves de Data Protection. |
+
+En despliegues con Docker se debe configurar `DataProtection__KeyRingPath` con una ubicación persistente para conservar las claves criptográficas entre reinicios o recreaciones de contenedores.
+
+#### Componentes de .NET relacionados
+
+| Componente                | Origen                       | Función                                                        |
+| ------------------------- | ---------------------------- | -------------------------------------------------------------- |
+| `IConfiguration`          | .NET Configuration           | Proporciona acceso a las variables de configuración.           |
+| `ConfigurationBinder`     | .NET Configuration           | Vincula las variables de configuración con clases de opciones. |
+| `IOptions<T>`             | .NET Options                 | Proporciona acceso a las opciones configuradas.                |
+| `EmailSmtpOptions`        | Infrastructure               | Representa y valida la configuración SMTP.                     |
+| `UserInvitationOptions`   | Infrastructure               | Representa y valida la configuración de invitaciones.          |
+| `EmailTemplatesOptions`   | Infrastructure               | Define la ubicación del catálogo de plantillas.                |
+| `IDataProtectionProvider` | ASP.NET Core Data Protection | Proporciona servicios de protección criptográfica.             |
+
+**Convención de .NET:** el separador `__` en las variables de entorno representa `:` en las claves jerárquicas de configuración.
+
+Ejemplo:
+
+```text
+Email__Smtp__Host
+        ↓
+Email:Smtp:Host
+        ↓
+EmailSmtpOptions.Host
+```
+
+#### Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    ENV["Variables de entorno"]
+    CONF["IConfiguration"]
+
+    subgraph Infrastructure
+        SMTP["EmailSmtpOptions"]
+        INV["UserInvitationOptions"]
+        TPL["EmailTemplatesOptions"]
+        DP["Data Protection"]
+    end
+
+    ENV --> CONF
+
+    CONF --> SMTP
+    CONF --> INV
+    CONF --> TPL
+    CONF --> DP
+
+    SMTP --> MAIL["MailKitSmtpEmailSender"]
+    INV --> NOTIFIER["InvitationEmailNotifier"]
+    TPL --> CATALOG["InvitationTemplateCatalog"]
+    DP --> KR[("Key Ring")]
+```
+
+**Interpretación:**
+
+- **Variables de entorno:** proporcionan los valores necesarios para configurar la aplicación.
+- **IConfiguration:** permite acceder a la configuración desde .NET.
+- **Infrastructure:** transforma los valores de configuración en opciones utilizadas por los servicios.
+- **Data Protection:** administra las claves criptográficas necesarias para proteger los tokens de invitación.
+
+#### Consideraciones de seguridad
+
+| Aspecto           | Recomendación                                                               |
+| ----------------- | --------------------------------------------------------------------------- |
+| Contraseñas       | Utilizar valores seguros y diferentes para cada servicio.                   |
+| JWT               | Configurar una clave secreta aleatoria de al menos 32 bytes.                |
+| SMTP              | Utilizar conexiones TLS y credenciales específicas del proveedor.           |
+| `.env.example`    | Mantener únicamente valores de ejemplo, nunca credenciales reales.          |
+| `.env`            | Excluir el archivo de Git mediante `.gitignore`.                            |
+| Key Ring          | Utilizar almacenamiento persistente en Docker y otros despliegues durables. |
+| URL de activación | Utilizar HTTPS, como exige `UserInvitationOptions.IsValid()`.               |
+
+**Resultado:** se documentan las variables necesarias para configurar PostgreSQL, JWT, invitaciones, SMTP, plantillas y Data Protection, facilitando la instalación y ejecución del proyecto en diferentes entornos.
 
 ---
 

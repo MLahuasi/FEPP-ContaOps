@@ -39,6 +39,11 @@ detiene contenedores Docker.
 `.env` está excluido de Git y no debe publicarse. ASP.NET Core no carga `.env`
 automáticamente; `run-local.ps1` lo importa para la ejecución local.
 
+Para una ejecución manual sin `run-local.ps1`, importa las variables al proceso
+antes de ejecutar la API. PowerShell no carga `.env` automáticamente; puedes
+usar el script recomendado o asignar las variables con
+`$env:Nombre='valor'`. No pongas secretos en archivos versionados.
+
 | Grupo | Variables | Secretos |
 |---|---|---:|
 | PostgreSQL | `POSTGRES_PASSWORD`, `ConnectionStrings__Default` | Sí |
@@ -60,10 +65,36 @@ Reglas principales:
 | SMTP Gmail | `smtp.gmail.com:587` con `StartTls` |
 | Autenticación Gmail | Contraseña de aplicación; no API key |
 | URL de activación | HTTPS obligatorio |
-| Usuarios regulares | Se crean mediante invitación; no existe `BootstrapUser` |
+| SMTP seguro | Solo `StartTls` en 587 o `TlsOnConnect` en 465 |
+| Usuarios regulares | Se crean mediante invitación; no existe configuración `BootstrapUser` |
 | Valores reales | Solo en `.env`, User Secrets o variables seguras |
 
 El listado completo de placeholders debe mantenerse en `.env.example`.
+
+### SMTP y Gmail
+
+Gmail es el proveedor inicial mediante SMTP compatible. Activa la verificación
+en dos pasos y crea una **contraseña de aplicación** de Google; una API key de
+Google no autentica SMTP. Configura la cuenta en
+`Email__Smtp__Username` y `Email__Smtp__FromAddress`, y la contraseña de
+aplicación únicamente en `Email__Smtp__Password`.
+
+El contrato no depende de Gmail: otro proveedor compatible puede sustituirse
+cambiando `Email__Smtp__*`. No se usan `MAILER_*`, `MAIL_*` ni
+`MAIL_TEMPLATE_EXTENSION`.
+
+### Plantillas y key ring
+
+El catálogo base está en `src/Fepp.ContaOps.Infrastructure/Email/Templates/` y
+contiene `templates.json`, `invitation.html` e `invitation.txt`. Se puede
+reemplazar mediante `Email__Templates__RootPath`; el manifest y ambos formatos
+se validan al iniciar.
+
+`DataProtection__KeyRingPath` es opcional para desarrollo local. En Docker o
+un despliegue persistente debe apuntar a un directorio montado desde un named
+volume con permisos de lectura y escritura para la API. El volumen debe
+conservarse al recrear el contenedor; el almacenamiento anfitrión debe contar
+con protección en reposo. En Windows local se puede usar DPAPI.
 
 ## Servicios y direcciones
 
@@ -170,6 +201,8 @@ datos locales.
 | Detener Docker | `docker compose down` |
 
 Las pruebas de integración requieren Docker activo y no conectan con Gmail real.
+Las pruebas SMTP usan servidores en proceso y nunca credenciales ni servidores
+Gmail reales.
 
 ## Seguridad y logs
 
