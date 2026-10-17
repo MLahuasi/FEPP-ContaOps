@@ -1638,8 +1638,6 @@ dotnet test FEPP-ContaOps.slnx
 
 Revisar el spec: [`03-registro-invitacion-activacion.md`](../03-registro-invitacion-activacion.md).
 
-### 15. Validación del spec (flujo de trabajo existente)
-
 #### Componentes implementados
 
 | Componente                            | Acción      | Tipo                | Capa                     | Responsabilidad                                                                      |

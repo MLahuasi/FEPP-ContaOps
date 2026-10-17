@@ -2,15 +2,87 @@
 
 ## PASOS
 
-### 1.
+### 1. Definir DTOs y responses HTTP.
 
 ---
 
-### ??. Ajustes por pruebas manuales
+### 2. Crear casos de uso de Application.
 
 ---
 
-### ??. Validación, ejecución local y Git
+### 3. Implementar validación uniforme.
+
+---
+
+### 4. Crear controllers.
+
+---
+
+### 5. Aplicar política AdminOnly.
+
+---
+
+### 6. Completar mapeo de errores HTTP.
+
+---
+
+### 7. Traducir errores de contraseña de Identity.
+
+---
+
+### 8. Configurar políticas de contraseña y bloqueo.
+
+---
+
+### 9. Eliminar BootstrapUser.
+
+---
+
+### 10. Endurecer el seed.
+
+---
+
+### 11. Verificar login uniforme.
+
+---
+
+### 12. Agregar pruebas unitarias.
+
+---
+
+### 13. Agregar pruebas de integración.
+
+---
+
+### 14. Actualizar Swagger y documentación.
+
+---
+
+### 15. Actualizar .env.example.
+
+---
+
+### 16. Actualizar README.md.
+
+---
+
+### 17. Actualizar AGENTS.md.
+
+---
+
+### 18. Consolidar configuración.
+
+---
+
+### 19. Ejecutar restore, build y pruebas.
+
+---
+
+### 20. Ajustes por pruebas manuales
+
+---
+
+### 21. Validación, ejecución local y Git
 
 **Prerrequisitos:** Docker disponible; crear un archivo `.env` local a partir de `.env.example` y sustituir todos los valores de ejemplo por credenciales y secretos propios. **No subir `.env` a Git.**
 
@@ -34,7 +106,9 @@ dotnet test FEPP-ContaOps.slnx
 .\run-local.ps1
 ```
 
-**Validación del spec (flujo de trabajo existente):**
+---
+
+### 22. Validación del spec (flujo de trabajo existente):
 
 ```powershell
 /spec-acceptance-validator @specs/03-registro-invitacion-activacion.md
@@ -42,7 +116,13 @@ dotnet test FEPP-ContaOps.slnx
 
 Revisar el spec: [`04-api-invitaciones-y-validacion-identidad.md`](../04-api-invitaciones-y-validacion-identidad.md).
 
-**Comandos Git / PR** (una vez validada la implementación y revisados los cambios):
+---
+
+### 23. Diagrama Final: Arquitectura del spec 03-registro-invitacion-activacion
+
+---
+
+### 24. Comandos Git / PR\*\* (una vez validada la implementación y revisados los cambios)
 
 ```powershell
 git add .
