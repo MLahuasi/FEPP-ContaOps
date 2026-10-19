@@ -41,6 +41,18 @@ public static class DependencyInjection
                 options => options.IsValid(),
                 "UserInvitation:TokenLifetimeHours must be finite and greater than zero, and UserInvitation:ActivationBaseUrl must be an HTTPS URL.")
             .ValidateOnStart();
+        services.AddOptions<IdentityPasswordOptions>()
+            .Bind(configuration.GetSection(IdentityPasswordOptions.SectionName))
+            .Validate(
+                options => options.IsValid(),
+                "Identity:Password contains invalid password policy values.")
+            .ValidateOnStart();
+        services.AddOptions<IdentityLockoutOptions>()
+            .Bind(configuration.GetSection(IdentityLockoutOptions.SectionName))
+            .Validate(
+                options => options.IsValid(),
+                "Identity:Lockout contains invalid lockout policy values.")
+            .ValidateOnStart();
 
         string? keyRingPath = configuration["DataProtection:KeyRingPath"];
         IDataProtectionBuilder dataProtectionBuilder = services.AddDataProtection();
@@ -73,17 +85,27 @@ public static class DependencyInjection
         services.AddSingleton<InvitationTemplateRenderer>();
         services.AddScoped<IInvitationNotifier, InvitationEmailNotifier>();
         services.AddSingleton<IEmailSender, MailKitSmtpEmailSender>();
+        IdentityPasswordOptions passwordOptions = configuration
+            .GetSection(IdentityPasswordOptions.SectionName)
+            .Get<IdentityPasswordOptions>()
+            ?? new IdentityPasswordOptions();
+        IdentityLockoutOptions lockoutOptions = configuration
+            .GetSection(IdentityLockoutOptions.SectionName)
+            .Get<IdentityLockoutOptions>()
+            ?? new IdentityLockoutOptions();
+
         services.AddIdentity<ApplicationIdentityUser, IdentityRole>(options =>
             {
-                options.Password.RequiredLength = 12;
-                options.Password.RequireUppercase = true;
-                options.Password.RequireLowercase = true;
-                options.Password.RequireDigit = true;
-                options.Password.RequireNonAlphanumeric = true;
-                options.Password.RequiredUniqueChars = 6;
-                options.Lockout.DefaultLockoutTimeSpan = TimeSpan.FromMinutes(15);
-                options.Lockout.MaxFailedAccessAttempts = 5;
-                options.Lockout.AllowedForNewUsers = true;
+                options.Password.RequiredLength = passwordOptions.RequiredLength;
+                options.Password.RequireUppercase = passwordOptions.RequireUppercase;
+                options.Password.RequireLowercase = passwordOptions.RequireLowercase;
+                options.Password.RequireDigit = passwordOptions.RequireDigit;
+                options.Password.RequireNonAlphanumeric = passwordOptions.RequireNonAlphanumeric;
+                options.Password.RequiredUniqueChars = passwordOptions.RequiredUniqueChars;
+                options.Lockout.DefaultLockoutTimeSpan = TimeSpan.FromMinutes(
+                    lockoutOptions.DefaultLockoutTimeSpanMinutes);
+                options.Lockout.MaxFailedAccessAttempts = lockoutOptions.MaxFailedAccessAttempts;
+                options.Lockout.AllowedForNewUsers = lockoutOptions.AllowedForNewUsers;
                 options.User.RequireUniqueEmail = true;
             })
             .AddEntityFrameworkStores<AppDbContext>()

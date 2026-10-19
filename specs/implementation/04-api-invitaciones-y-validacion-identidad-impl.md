@@ -1565,6 +1565,354 @@ Esta implementación permite comunicar al cliente las reglas de contraseña incu
 
 ### 8. Configurar políticas de contraseña y bloqueo.
 
+#### Componentes implementados
+
+| Componente                | Acción         | Tipo           | Capa           | Responsabilidad                                                                                                   |
+| ------------------------- | -------------- | -------------- | -------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `DependencyInjection`     | Update         | class (static) | Infrastructure | Registra y aplica las políticas configurables de contraseñas y bloqueo de cuentas mediante ASP.NET Core Identity. |
+| `IdentityPasswordOptions` | No verificable | class          | Infrastructure | Define los parámetros configurables de seguridad de contraseñas y valida sus valores.                             |
+| `IdentityLockoutOptions`  | No verificable | class          | Infrastructure | Define los parámetros configurables de bloqueo de cuentas por intentos fallidos de acceso.                        |
+
+**Ubicaciones:**
+
+- `Fepp.ContaOps.Infrastructure.DependencyInjection`
+- `Fepp.ContaOps.Infrastructure.Identity.IdentityPasswordOptions`
+- `Fepp.ContaOps.Infrastructure.Identity.IdentityLockoutOptions`
+
+La configuración de seguridad se mantiene en **Infrastructure**, donde se integra directamente con ASP.NET Core Identity.
+
+Se verifica la actualización de `DependencyInjection` respecto a la configuración anterior. Los fragmentos no permiten determinar si las dos clases de opciones fueron creadas o modificadas.
+
+#### Métodos y funciones principales
+
+| Clase                     | Método                | Responsabilidad                                                                                      |
+| ------------------------- | --------------------- | ---------------------------------------------------------------------------------------------------- |
+| `DependencyInjection`     | `AddInfrastructure()` | Registra, valida y aplica las opciones de contraseña y bloqueo a ASP.NET Core Identity.              |
+| `IdentityPasswordOptions` | `IsValid()`           | Comprueba que los parámetros numéricos de la política de contraseñas sean válidos.                   |
+| `IdentityLockoutOptions`  | `IsValid()`           | Comprueba que el número máximo de intentos fallidos y la duración del bloqueo sean mayores que cero. |
+
+#### Modelos de configuración
+
+**1. `IdentityPasswordOptions`**
+
+Namespace: `Fepp.ContaOps.Infrastructure.Identity`
+
+Se utiliza para configurar los requisitos que deben cumplir las contraseñas administradas por Identity.
+
+**Sección de configuración:** `Identity:Password`
+
+| Propiedad                | Tipo   | Valor predeterminado | Responsabilidad                                        |
+| ------------------------ | ------ | -------------------- | ------------------------------------------------------ |
+| `RequiredLength`         | `int`  | `12`                 | Establece la longitud mínima de las contraseñas.       |
+| `RequireUppercase`       | `bool` | `true`               | Exige al menos una letra mayúscula.                    |
+| `RequireLowercase`       | `bool` | `true`               | Exige al menos una letra minúscula.                    |
+| `RequireDigit`           | `bool` | `true`               | Exige al menos un número.                              |
+| `RequireNonAlphanumeric` | `bool` | `true`               | Exige al menos un carácter no alfanumérico.            |
+| `RequiredUniqueChars`    | `int`  | `6`                  | Establece la cantidad mínima de caracteres diferentes. |
+
+**Validación de configuración:**
+
+```csharp
+public bool IsValid()
+{
+    return RequiredLength > 0
+        && RequiredUniqueChars >= 0
+        && RequiredUniqueChars <= RequiredLength;
+}
+```
+
+Las condiciones garantizan que:
+
+- La longitud mínima sea mayor que cero.
+- La cantidad de caracteres únicos no sea negativa.
+- La cantidad de caracteres únicos no supere la longitud mínima configurada.
+
+La validación comprueba la coherencia de la configuración, no una contraseña concreta.
+
+La validación efectiva de cada contraseña corresponde a ASP.NET Core Identity.
+
+**2. `IdentityLockoutOptions`**
+
+Namespace: `Fepp.ContaOps.Infrastructure.Identity`
+
+Se utiliza para configurar el bloqueo temporal de cuentas por intentos fallidos de autenticación.
+
+**Sección de configuración:** `Identity:Lockout`
+
+| Propiedad                       | Tipo   | Valor predeterminado | Responsabilidad                                                    |
+| ------------------------------- | ------ | -------------------- | ------------------------------------------------------------------ |
+| `AllowedForNewUsers`            | `bool` | `true`               | Habilita el bloqueo para las cuentas nuevas.                       |
+| `MaxFailedAccessAttempts`       | `int`  | `5`                  | Establece el número máximo de intentos fallidos antes del bloqueo. |
+| `DefaultLockoutTimeSpanMinutes` | `int`  | `15`                 | Establece la duración del bloqueo temporal en minutos.             |
+
+**Validación de configuración:**
+
+```csharp
+public bool IsValid()
+{
+    return MaxFailedAccessAttempts > 0
+        && DefaultLockoutTimeSpanMinutes > 0;
+}
+```
+
+El método comprueba que el número de intentos fallidos permitidos y la duración del bloqueo sean mayores que cero.
+
+**Importante:** la configuración habilita los parámetros de bloqueo de Identity, pero no demuestra por sí sola que el inicio de sesión incremente los contadores de intentos fallidos. Ese comportamiento depende de la implementación de autenticación utilizada.
+
+#### Registro de opciones en Infrastructure
+
+Las opciones se registran mediante el patrón **Options** de .NET.
+
+**1. Política de contraseñas**
+
+```csharp
+services.AddOptions<IdentityPasswordOptions>()
+    .Bind(configuration.GetSection(IdentityPasswordOptions.SectionName))
+    .Validate(
+        options => options.IsValid(),
+        "Identity:Password contains invalid password policy values.")
+    .ValidateOnStart();
+```
+
+**2. Política de bloqueo**
+
+```csharp
+services.AddOptions<IdentityLockoutOptions>()
+    .Bind(configuration.GetSection(IdentityLockoutOptions.SectionName))
+    .Validate(
+        options => options.IsValid(),
+        "Identity:Lockout contains invalid lockout policy values.")
+    .ValidateOnStart();
+```
+
+| Operación           | Componente         | Responsabilidad                                                       |
+| ------------------- | ------------------ | --------------------------------------------------------------------- |
+| `AddOptions<T>()`   | .NET Options       | Registra la configuración tipada.                                     |
+| `GetSection()`      | .NET Configuration | Obtiene la sección correspondiente de configuración.                  |
+| `Bind()`            | .NET Configuration | Asigna los valores configurados a las propiedades del modelo.         |
+| `Validate()`        | .NET Options       | Comprueba las reglas definidas en `IsValid()`.                        |
+| `ValidateOnStart()` | .NET Options       | Solicita validar la configuración durante el inicio de la aplicación. |
+
+**Comportamiento:**
+
+- Las políticas pueden configurarse mediante las fuentes de configuración soportadas por .NET.
+- Si no se proporcionan valores específicos, se utilizan los valores predeterminados definidos en las clases.
+- Si los parámetros registrados no superan la validación, se produce un error de configuración durante el inicio de la aplicación.
+
+#### Aplicación de las políticas en ASP.NET Core Identity
+
+El método `AddInfrastructure()` obtiene los valores configurados y los aplica mediante `AddIdentity()`.
+
+**1. Obtener las opciones**
+
+```csharp
+IdentityPasswordOptions passwordOptions = configuration
+    .GetSection(IdentityPasswordOptions.SectionName)
+    .Get<IdentityPasswordOptions>()
+    ?? new IdentityPasswordOptions();
+
+IdentityLockoutOptions lockoutOptions = configuration
+    .GetSection(IdentityLockoutOptions.SectionName)
+    .Get<IdentityLockoutOptions>()
+    ?? new IdentityLockoutOptions();
+```
+
+Si una sección no puede convertirse en una instancia de configuración, se utiliza una instancia con los valores predeterminados.
+
+**2. Aplicar las opciones**
+
+```csharp
+services.AddIdentity<ApplicationIdentityUser, IdentityRole>(options =>
+{
+    options.Password.RequiredLength = passwordOptions.RequiredLength;
+    options.Password.RequireUppercase = passwordOptions.RequireUppercase;
+    options.Password.RequireLowercase = passwordOptions.RequireLowercase;
+    options.Password.RequireDigit = passwordOptions.RequireDigit;
+    options.Password.RequireNonAlphanumeric = passwordOptions.RequireNonAlphanumeric;
+    options.Password.RequiredUniqueChars = passwordOptions.RequiredUniqueChars;
+
+    options.Lockout.DefaultLockoutTimeSpan = TimeSpan.FromMinutes(
+        lockoutOptions.DefaultLockoutTimeSpanMinutes);
+    options.Lockout.MaxFailedAccessAttempts = lockoutOptions.MaxFailedAccessAttempts;
+    options.Lockout.AllowedForNewUsers = lockoutOptions.AllowedForNewUsers;
+
+    options.User.RequireUniqueEmail = true;
+});
+```
+
+**Relación entre configuración e Identity:**
+
+| Configuración propia                                   | Propiedad de Identity                     |
+| ------------------------------------------------------ | ----------------------------------------- |
+| `IdentityPasswordOptions.RequiredLength`               | `options.Password.RequiredLength`         |
+| `IdentityPasswordOptions.RequireUppercase`             | `options.Password.RequireUppercase`       |
+| `IdentityPasswordOptions.RequireLowercase`             | `options.Password.RequireLowercase`       |
+| `IdentityPasswordOptions.RequireDigit`                 | `options.Password.RequireDigit`           |
+| `IdentityPasswordOptions.RequireNonAlphanumeric`       | `options.Password.RequireNonAlphanumeric` |
+| `IdentityPasswordOptions.RequiredUniqueChars`          | `options.Password.RequiredUniqueChars`    |
+| `IdentityLockoutOptions.DefaultLockoutTimeSpanMinutes` | `options.Lockout.DefaultLockoutTimeSpan`  |
+| `IdentityLockoutOptions.MaxFailedAccessAttempts`       | `options.Lockout.MaxFailedAccessAttempts` |
+| `IdentityLockoutOptions.AllowedForNewUsers`            | `options.Lockout.AllowedForNewUsers`      |
+
+Adicionalmente, se mantiene:
+
+```csharp
+options.User.RequireUniqueEmail = true;
+```
+
+Esta configuración exige correos electrónicos únicos para los usuarios administrados por Identity.
+
+#### Relación con el paso 7: validación de contraseñas
+
+La configuración implementada complementa el método `ToPasswordValidationError()` de `IdentityUserInvitationService`.
+
+| Componente                       | Capa                  | Responsabilidad                                               |
+| -------------------------------- | --------------------- | ------------------------------------------------------------- |
+| `IdentityPasswordOptions`        | Infrastructure        | Define las reglas de contraseña configurables.                |
+| `DependencyInjection`            | Infrastructure        | Aplica las reglas mediante `AddIdentity()`.                   |
+| `UserManager.AddPasswordAsync()` | ASP.NET Core Identity | Comprueba la contraseña inicial durante la activación.        |
+| `ToPasswordValidationError()`    | Infrastructure        | Traduce los errores de Identity a mensajes seguros.           |
+| `ValidationError`                | Application           | Representa las reglas incumplidas mediante errores agrupados. |
+| `ProblemDetailsResponseFactory`  | Presentation          | Convierte el error de validación en una respuesta HTTP 400.   |
+
+**Ejemplo de política predeterminada:**
+
+Una contraseña utilizada para activar una cuenta debe cumplir los requisitos configurados:
+
+| Regla                 | Requisito                    |
+| --------------------- | ---------------------------- |
+| Longitud mínima       | 12 caracteres                |
+| Mayúsculas            | Al menos una                 |
+| Minúsculas            | Al menos una                 |
+| Números               | Al menos uno                 |
+| Caracteres especiales | Al menos uno no alfanumérico |
+| Caracteres diferentes | Al menos 6                   |
+
+Si una contraseña incumple una o varias reglas, Identity devuelve los errores correspondientes y `ToPasswordValidationError()` los convierte al contrato de errores de Application.
+
+#### Componentes de .NET y proveedores externos
+
+| Componente / Método           | Origen                             | Función                                                                   |
+| ----------------------------- | ---------------------------------- | ------------------------------------------------------------------------- |
+| `AddOptions<T>()`             | Microsoft.Extensions.Options       | Registra clases de configuración tipadas.                                 |
+| `Bind()`                      | Microsoft.Extensions.Configuration | Vincula los valores de configuración con las propiedades del modelo.      |
+| `Validate()`                  | Microsoft.Extensions.Options       | Define reglas de validación para las opciones.                            |
+| `ValidateOnStart()`           | Microsoft.Extensions.Options       | Ejecuta la validación durante el inicio de la aplicación.                 |
+| `AddIdentity<TUser, TRole>()` | ASP.NET Core Identity              | Registra y configura los servicios de administración de usuarios y roles. |
+| `IdentityOptions.Password`    | ASP.NET Core Identity              | Configura los requisitos de contraseña.                                   |
+| `IdentityOptions.Lockout`     | ASP.NET Core Identity              | Configura los parámetros de bloqueo de cuentas.                           |
+| `PasswordOptions`             | ASP.NET Core Identity              | Contiene los requisitos de validación de contraseñas.                     |
+| `LockoutOptions`              | ASP.NET Core Identity              | Contiene las opciones del mecanismo de bloqueo.                           |
+| `TimeSpan.FromMinutes()`      | .NET                               | Convierte la duración configurada en minutos a un intervalo de tiempo.    |
+| `UserManager<TUser>`          | ASP.NET Core Identity              | Administra usuarios y aplica las validaciones correspondientes.           |
+
+#### Flujo funcional o relaciones
+
+**1. Configuración durante el inicio de la aplicación**
+
+| Orden | Operación                                            | Componente responsable            |
+| ----- | ---------------------------------------------------- | --------------------------------- |
+| 1     | Obtener la sección `Identity:Password`.              | `IConfiguration`                  |
+| 2     | Obtener la sección `Identity:Lockout`.               | `IConfiguration`                  |
+| 3     | Vincular los valores a los modelos de configuración. | `Bind()`                          |
+| 4     | Validar los parámetros configurados.                 | `IsValid()` / `ValidateOnStart()` |
+| 5     | Obtener las opciones para configurar Identity.       | `Get<T>()`                        |
+| 6     | Registrar ASP.NET Core Identity.                     | `AddIdentity()`                   |
+| 7     | Aplicar las políticas de contraseña y bloqueo.       | `IdentityOptions`                 |
+
+**2. Validación de contraseña durante la activación**
+
+| Orden | Operación                                              | Componente responsable           |
+| ----- | ------------------------------------------------------ | -------------------------------- |
+| 1     | El usuario solicita activar su cuenta.                 | `AuthController`                 |
+| 2     | Se ejecuta el caso de uso de activación.               | `ActivateUser`                   |
+| 3     | Se solicita establecer la contraseña inicial.          | `IdentityUserInvitationService`  |
+| 4     | Identity evalúa las reglas de contraseña configuradas. | `UserManager.AddPasswordAsync()` |
+| 5     | Si la contraseña es inválida, se traducen los errores. | `ToPasswordValidationError()`    |
+| 6     | Se devuelve un resultado fallido de Application.       | `Result<User>.Failure()`         |
+| 7     | Presentation genera la respuesta HTTP 400.             | `ProblemDetailsResponseFactory`  |
+
+**3. Política de bloqueo**
+
+| Condición         | Comportamiento configurado                                                         |
+| ----------------- | ---------------------------------------------------------------------------------- |
+| Cuenta nueva      | Puede participar en el mecanismo de bloqueo porque `AllowedForNewUsers` es `true`. |
+| Intentos fallidos | El umbral configurado es de 5 intentos.                                            |
+| Bloqueo temporal  | La duración configurada es de 15 minutos.                                          |
+
+El código proporcionado confirma la configuración de los parámetros de bloqueo, pero no demuestra su aplicación efectiva durante el inicio de sesión.
+
+Para que el bloqueo se active, el flujo de autenticación debe utilizar las operaciones de Identity que registran intentos fallidos y aplican las restricciones correspondientes.
+
+#### Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    CONFIG["Configuración de la aplicación"]
+
+    subgraph Infrastructure["Infrastructure"]
+        DI["DependencyInjection.AddInfrastructure"]
+
+        PASSWORD["IdentityPasswordOptions"]
+        LOCKOUT["IdentityLockoutOptions"]
+
+        IDENTITY["ASP.NET Core Identity"]
+        SERVICE["IdentityUserInvitationService"]
+        TRANSLATOR["ToPasswordValidationError"]
+    end
+
+    subgraph Application
+        ACTIVATE["ActivateUser"]
+        ERROR["ValidationError"]
+    end
+
+    subgraph Presentation
+        API["AuthController"]
+        HTTP["ProblemDetails HTTP 400"]
+    end
+
+    CONFIG --> PASSWORD
+    CONFIG --> LOCKOUT
+
+    PASSWORD --> DI
+    LOCKOUT --> DI
+
+    DI -->|"Configura políticas"| IDENTITY
+
+    API --> ACTIVATE
+    ACTIVATE --> SERVICE
+
+    SERVICE -->|"AddPasswordAsync"| IDENTITY
+
+    IDENTITY -->|"Contraseña inválida"| TRANSLATOR
+    TRANSLATOR --> ERROR
+
+    ERROR -->|"Resultado fallido"| ACTIVATE
+    ACTIVATE --> API
+    API --> HTTP
+```
+
+**Interpretación:**
+
+- **Infrastructure:** define las opciones de seguridad y las aplica directamente sobre ASP.NET Core Identity.
+- **ASP.NET Core Identity:** proporciona las reglas de validación de contraseñas y el mecanismo de bloqueo de cuentas.
+- **Application:** coordina la activación y recibe errores tipados sin depender de las clases técnicas de Identity.
+- **Presentation:** recibe la solicitud HTTP y transforma los errores de validación en respuestas uniformes.
+
+La configuración de seguridad permanece desacoplada de los controladores y casos de uso.
+
+#### Resultado
+
+Se configuraron políticas de contraseñas y bloqueo de cuentas mediante clases de opciones tipadas y configurables.
+
+Las reglas predeterminadas exigen contraseñas de al menos 12 caracteres, con mayúsculas, minúsculas, números, caracteres especiales y un mínimo de 6 caracteres diferentes.
+
+También se configuró el bloqueo de cuentas nuevas, con un umbral de 5 intentos fallidos y una duración de 15 minutos.
+
+Las opciones se validan durante el inicio de la aplicación y se aplican a ASP.NET Core Identity desde Infrastructure.
+
+Esta implementación complementa la traducción de errores de contraseña del paso 7 y centraliza la configuración de seguridad sin incorporar reglas técnicas de Identity en Application o Domain.
+
 ---
 
 ### 9. Eliminar BootstrapUser.
