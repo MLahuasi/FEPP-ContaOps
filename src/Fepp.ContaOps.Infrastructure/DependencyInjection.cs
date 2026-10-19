@@ -138,12 +138,6 @@ public static class DependencyInjection
                 options => options.IsValid(),
                 "BootstrapAdmin:Email and BootstrapAdmin:Password must be configured with valid values.")
             .ValidateOnStart();
-        services.AddOptions<BootstrapUserOptions>()
-            .Bind(configuration.GetSection(BootstrapUserOptions.SectionName))
-            .Validate(
-                options => options.IsValid(),
-                "BootstrapUser:Email and BootstrapUser:Password must both be configured when a regular user is enabled.")
-            .ValidateOnStart();
         services.AddSingleton<ITokenIssuer, JwtTokenIssuer>();
         services.AddScoped<IdentitySeeder>();
         return services;

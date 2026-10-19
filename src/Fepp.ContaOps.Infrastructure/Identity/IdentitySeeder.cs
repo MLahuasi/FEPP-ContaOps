@@ -42,30 +42,22 @@ public sealed class IdentitySeeder
     private readonly BootstrapAdminOptions _options;
 
     /// <summary>
-    /// Configuración opcional del usuario regular inicial.
-    /// </summary>
-    private readonly BootstrapUserOptions _userOptions;
-
-    /// <summary>
     /// Inicializa el seed de Identity.
     /// </summary>
     /// <param name="dbContext">Contexto de persistencia.</param>
     /// <param name="userManager">Administrador de usuarios.</param>
     /// <param name="roleManager">Administrador de roles.</param>
     /// <param name="options">Configuración del administrador inicial.</param>
-    /// <param name="userOptions">Configuración opcional del usuario regular inicial.</param>
     public IdentitySeeder(
         AppDbContext dbContext,
         UserManager<ApplicationIdentityUser> userManager,
         RoleManager<IdentityRole> roleManager,
-        IOptions<BootstrapAdminOptions> options,
-        IOptions<BootstrapUserOptions> userOptions)
+        IOptions<BootstrapAdminOptions> options)
     {
         _dbContext = dbContext;
         _userManager = userManager;
         _roleManager = roleManager;
         _options = options.Value;
-        _userOptions = userOptions.Value;
     }
 
     /// <summary>
@@ -102,10 +94,6 @@ public sealed class IdentitySeeder
             EnsureSuccess(roleResult, "The bootstrap administrator role could not be assigned.");
         }
 
-        if (_userOptions.IsConfigured)
-        {
-            await EnsureBootstrapUserAsync();
-        }
     }
 
     /// <summary>
@@ -134,34 +122,6 @@ public sealed class IdentitySeeder
 
         IdentityResult result = await _roleManager.CreateAsync(new IdentityRole(roleName));
         EnsureSuccess(result, $"The identity role '{roleName}' could not be created.");
-    }
-
-    /// <summary>
-    /// Crea de forma idempotente el usuario regular inicial y le asigna el rol User.
-    /// </summary>
-    /// <returns>Una tarea que representa la operación.</returns>
-    private async Task EnsureBootstrapUserAsync()
-    {
-        ApplicationIdentityUser? user = await _userManager.FindByEmailAsync(_userOptions.Email);
-        if (user is null)
-        {
-            user = new ApplicationIdentityUser
-            {
-                UserName = _userOptions.Email,
-                Email = _userOptions.Email,
-                EmailConfirmed = true,
-                Status = UserStatus.Active
-            };
-
-            IdentityResult creationResult = await _userManager.CreateAsync(user, _userOptions.Password);
-            EnsureSuccess(creationResult, "The bootstrap user could not be created.");
-        }
-
-        if (!await _userManager.IsInRoleAsync(user, UserRole))
-        {
-            IdentityResult roleResult = await _userManager.AddToRoleAsync(user, UserRole);
-            EnsureSuccess(roleResult, "The bootstrap user role could not be assigned.");
-        }
     }
 
     /// <summary>

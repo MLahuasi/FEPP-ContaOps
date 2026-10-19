@@ -1917,6 +1917,263 @@ Esta implementación complementa la traducción de errores de contraseña del pa
 
 ### 9. Eliminar BootstrapUser.
 
+#### Componentes implementados
+
+| Componente             | Acción | Tipo           | Capa           | Responsabilidad                                                                                                                                                  |
+| ---------------------- | ------ | -------------- | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DependencyInjection`  | Update | class (static) | Infrastructure | Elimina el registro y la validación de la configuración `BootstrapUserOptions`, manteniendo la configuración del administrador inicial.                          |
+| `IdentitySeeder`       | Update | class          | Infrastructure | Limita la inicialización de Identity a la creación de roles y del administrador inicial.                                                                         |
+| `BootstrapUserOptions` | Delete | class          | Infrastructure | Configuración utilizada anteriormente para crear automáticamente un usuario regular. Su eliminación física no puede verificarse con los archivos proporcionados. |
+
+**Ubicaciones:**
+
+- `Fepp.ContaOps.Infrastructure.DependencyInjection`
+- `Fepp.ContaOps.Infrastructure.Identity.IdentitySeeder`
+
+El cambio elimina la dependencia funcional del usuario regular de inicialización (_BootstrapUser_) y conserva el mecanismo de creación del administrador inicial (_BootstrapAdmin_).
+
+#### Métodos y funciones principales
+
+| Clase                 | Método                          | Responsabilidad                                                                                                                  |
+| --------------------- | ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `DependencyInjection` | `AddInfrastructure()`           | Registra los servicios de Infrastructure y mantiene únicamente `BootstrapAdminOptions` como configuración de usuarios iniciales. |
+| `IdentitySeeder`      | `SeedAsync()`                   | Inicializa el esquema, garantiza la existencia de los roles `Admin` y `User`, y crea o configura el administrador inicial.       |
+| `IdentitySeeder`      | `EnsureUserStatusColumnAsync()` | Garantiza que exista la columna `Status` en la tabla `AspNetUsers`.                                                              |
+| `IdentitySeeder`      | `EnsureRoleAsync()`             | Crea un rol de Identity únicamente cuando todavía no existe.                                                                     |
+| `IdentitySeeder`      | `EnsureSuccess()`               | Convierte resultados fallidos de Identity en excepciones de inicialización.                                                      |
+
+#### Cambios en la configuración de dependencias
+
+**1. Eliminación de BootstrapUser**
+
+En `DependencyInjection.AddInfrastructure()` ya no se registra la configuración `BootstrapUserOptions`.
+
+Se conserva únicamente:
+
+```csharp
+services.AddOptions<BootstrapAdminOptions>()
+    .Bind(configuration.GetSection(BootstrapAdminOptions.SectionName))
+    .Validate(
+        options => options.IsValid(),
+        "BootstrapAdmin:Email and BootstrapAdmin:Password must be configured with valid values.")
+    .ValidateOnStart();
+
+services.AddScoped<IdentitySeeder>();
+```
+
+| Configuración           | Estado                  | Responsabilidad                                               |
+| ----------------------- | ----------------------- | ------------------------------------------------------------- |
+| `BootstrapAdminOptions` | Se mantiene             | Proporciona las credenciales del administrador inicial.       |
+| `BootstrapUserOptions`  | Se elimina del registro | Deja de participar en la configuración de usuarios iniciales. |
+| `IdentitySeeder`        | Se mantiene             | Inicializa los roles y el administrador.                      |
+
+**Consideraciones:**
+
+- La aplicación continúa validando `BootstrapAdminOptions` durante el inicio.
+- Ya no se vincula ni valida la sección `BootstrapUserOptions`.
+- El registro de `IdentitySeeder` permanece con ciclo de vida `Scoped`.
+- La creación de usuarios regulares queda disponible mediante el proceso de invitaciones implementado anteriormente.
+
+#### Inicialización de usuarios y roles
+
+El método `IdentitySeeder.SeedAsync()` mantiene las siguientes operaciones:
+
+| Orden | Operación                                               | Componente responsable                       |
+| ----- | ------------------------------------------------------- | -------------------------------------------- |
+| 1     | Garantizar la existencia del esquema de base de datos.  | `AppDbContext.Database.EnsureCreatedAsync()` |
+| 2     | Garantizar la existencia de la columna `Status`.        | `EnsureUserStatusColumnAsync()`              |
+| 3     | Verificar o crear el rol `Admin`.                       | `EnsureRoleAsync(AdminRole)`                 |
+| 4     | Verificar o crear el rol `User`.                        | `EnsureRoleAsync(UserRole)`                  |
+| 5     | Buscar el administrador mediante su correo electrónico. | `UserManager.FindByEmailAsync()`             |
+| 6     | Crear el administrador cuando todavía no existe.        | `UserManager.CreateAsync()`                  |
+| 7     | Verificar si el administrador pertenece al rol `Admin`. | `UserManager.IsInRoleAsync()`                |
+| 8     | Asignar el rol `Admin` cuando sea necesario.            | `UserManager.AddToRoleAsync()`               |
+
+**Código principal:**
+
+```csharp
+public async Task SeedAsync(CancellationToken cancellationToken = default)
+{
+    await _dbContext.Database.EnsureCreatedAsync(cancellationToken);
+    await EnsureUserStatusColumnAsync(cancellationToken);
+
+    await EnsureRoleAsync(AdminRole);
+    await EnsureRoleAsync(UserRole);
+
+    ApplicationIdentityUser? admin =
+        await _userManager.FindByEmailAsync(_options.Email);
+
+    if (admin is null)
+    {
+        admin = new ApplicationIdentityUser
+        {
+            UserName = _options.Email,
+            Email = _options.Email,
+            EmailConfirmed = true,
+            Status = UserStatus.Active
+        };
+
+        IdentityResult creationResult =
+            await _userManager.CreateAsync(admin, _options.Password);
+
+        EnsureSuccess(
+            creationResult,
+            "The bootstrap administrator could not be created.");
+    }
+
+    if (!await _userManager.IsInRoleAsync(admin, AdminRole))
+    {
+        IdentityResult roleResult =
+            await _userManager.AddToRoleAsync(admin, AdminRole);
+
+        EnsureSuccess(
+            roleResult,
+            "The bootstrap administrator role could not be assigned.");
+    }
+}
+```
+
+**Comportamiento:**
+
+- El administrador inicial se crea únicamente cuando no existe una cuenta con el correo electrónico configurado.
+- El administrador se crea con `EmailConfirmed = true` y `UserStatus.Active`.
+- Si el usuario ya existe, se verifica que tenga asignado el rol `Admin`.
+- Los roles `Admin` y `User` se crean únicamente cuando no existen.
+- Ya no se crea automáticamente un usuario regular durante la inicialización.
+
+La inicialización mantiene un comportamiento idempotente respecto a la creación de roles y del administrador, evitando su creación duplicada.
+
+#### Modelos y componentes relacionados
+
+| Componente                | Capa                                   | Responsabilidad                                                          |
+| ------------------------- | -------------------------------------- | ------------------------------------------------------------------------ |
+| `BootstrapAdminOptions`   | Infrastructure                         | Contiene la configuración necesaria para crear el administrador inicial. |
+| `ApplicationIdentityUser` | Infrastructure                         | Representa el usuario administrado por ASP.NET Core Identity.            |
+| `IdentityRole`            | Infrastructure / ASP.NET Core Identity | Representa los roles de autorización.                                    |
+| `UserStatus`              | Domain                                 | Define el estado funcional del usuario.                                  |
+| `AppDbContext`            | Infrastructure                         | Proporciona acceso a la persistencia de Identity.                        |
+| `IdentitySeeder`          | Infrastructure                         | Ejecuta la inicialización de roles y administrador.                      |
+
+**Roles definidos:**
+
+| Constante                  | Valor   | Responsabilidad                                                         |
+| -------------------------- | ------- | ----------------------------------------------------------------------- |
+| `IdentitySeeder.AdminRole` | `Admin` | Identifica el rol administrativo utilizado por la política `AdminOnly`. |
+| `IdentitySeeder.UserRole`  | `User`  | Identifica el rol utilizado para usuarios regulares.                    |
+
+La eliminación de `BootstrapUser` no elimina el rol `User`.
+
+Este rol continúa siendo necesario para las cuentas creadas mediante el proceso de invitación.
+
+#### Relación con el proceso de invitaciones
+
+| Proceso                           | Componente responsable          | Resultado                                                             |
+| --------------------------------- | ------------------------------- | --------------------------------------------------------------------- |
+| Inicialización del administrador  | `IdentitySeeder`                | Crea la cuenta administrativa inicial cuando no existe.               |
+| Inicialización de roles           | `IdentitySeeder`                | Garantiza la existencia de `Admin` y `User`.                          |
+| Creación de usuarios regulares    | `CreateUserInvitation`          | Coordina el registro de una cuenta pendiente y su invitación.         |
+| Persistencia de cuentas invitadas | `IdentityUserInvitationService` | Registra la cuenta con estado `PendingActivation` y rol `User`.       |
+| Activación de cuentas             | `ActivateUser`                  | Coordina el establecimiento de la contraseña inicial y la activación. |
+
+**Diferencia entre mecanismos:**
+
+| Característica         | BootstrapAdmin                               | Invitación de usuarios                         |
+| ---------------------- | -------------------------------------------- | ---------------------------------------------- |
+| Propósito              | Crear el administrador inicial.              | Registrar usuarios regulares.                  |
+| Componente principal   | `IdentitySeeder`                             | `CreateUserInvitation`                         |
+| Ejecución              | Inicialización de Identity.                  | Solicitud HTTP administrativa.                 |
+| Rol asignado           | `Admin`                                      | `User`                                         |
+| Estado inicial         | `Active`                                     | `PendingActivation`                            |
+| Contraseña inicial     | Configuración `BootstrapAdminOptions`.       | Definida por el usuario durante la activación. |
+| Confirmación de correo | Automática mediante `EmailConfirmed = true`. | Se confirma durante la activación.             |
+
+La eliminación de `BootstrapUser` evita mantener dos mecanismos independientes para la creación de usuarios regulares.
+
+#### Componentes de .NET y proveedores externos
+
+| Componente / Método    | Origen                             | Función                                                                            |
+| ---------------------- | ---------------------------------- | ---------------------------------------------------------------------------------- |
+| `AddOptions<T>()`      | Microsoft.Extensions.Options       | Registra configuraciones tipadas.                                                  |
+| `Bind()`               | Microsoft.Extensions.Configuration | Vincula valores de configuración con un objeto de opciones.                        |
+| `ValidateOnStart()`    | Microsoft.Extensions.Options       | Ejecuta la validación de opciones durante el inicio.                               |
+| `EnsureCreatedAsync()` | Entity Framework Core              | Garantiza la creación de la base de datos y su esquema inicial cuando corresponde. |
+| `ExecuteSqlRawAsync()` | Entity Framework Core              | Ejecuta una instrucción SQL directamente.                                          |
+| `UserManager<TUser>`   | ASP.NET Core Identity              | Administra usuarios y sus roles.                                                   |
+| `RoleManager<TRole>`   | ASP.NET Core Identity              | Administra los roles de Identity.                                                  |
+| `FindByEmailAsync()`   | ASP.NET Core Identity              | Busca un usuario mediante su correo electrónico.                                   |
+| `CreateAsync()`        | ASP.NET Core Identity              | Crea un usuario con la contraseña proporcionada.                                   |
+| `IsInRoleAsync()`      | ASP.NET Core Identity              | Comprueba si un usuario pertenece a un rol.                                        |
+| `AddToRoleAsync()`     | ASP.NET Core Identity              | Asigna un rol a un usuario.                                                        |
+| `RoleExistsAsync()`    | ASP.NET Core Identity              | Comprueba si existe un rol.                                                        |
+
+#### Flujo funcional o relaciones
+
+| Orden | Operación                                                            | Componente responsable                 |
+| ----- | -------------------------------------------------------------------- | -------------------------------------- |
+| 1     | Se ejecuta la inicialización de Identity.                            | `IdentitySeeder.SeedAsync()`           |
+| 2     | Se garantiza la existencia del esquema y la columna `Status`.        | `AppDbContext`                         |
+| 3     | Se garantiza la existencia de los roles `Admin` y `User`.            | `RoleManager<IdentityRole>`            |
+| 4     | Se busca el administrador inicial.                                   | `UserManager<ApplicationIdentityUser>` |
+| 5     | Se crea el administrador cuando no existe.                           | `IdentitySeeder`                       |
+| 6     | Se garantiza su pertenencia al rol `Admin`.                          | `IdentitySeeder`                       |
+| 7     | Finaliza la inicialización sin crear usuarios regulares adicionales. | `IdentitySeeder`                       |
+
+#### Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    CONFIG["BootstrapAdminOptions"]
+
+    subgraph Infrastructure["Infrastructure"]
+        SEEDER["IdentitySeeder"]
+        USERMANAGER["UserManager"]
+        ROLEMANAGER["RoleManager"]
+        DATABASE["AppDbContext"]
+        INVITATION["IdentityUserInvitationService"]
+    end
+
+    subgraph Application
+        CREATE["CreateUserInvitation"]
+        ACTIVATE["ActivateUser"]
+    end
+
+    subgraph Domain
+        STATUS["UserStatus"]
+    end
+
+    CONFIG --> SEEDER
+
+    SEEDER --> DATABASE
+    SEEDER --> ROLEMANAGER
+    SEEDER --> USERMANAGER
+
+    ROLEMANAGER -->|"Garantiza roles"| ROLES["Admin / User"]
+    USERMANAGER -->|"Crea administrador"| ADMIN["Administrador inicial"]
+
+    CREATE --> INVITATION
+    INVITATION -->|"Registra usuario pendiente"| USERMANAGER
+
+    ACTIVATE --> INVITATION
+    INVITATION -.-> STATUS
+```
+
+**Interpretación:**
+
+- **Infrastructure:** mantiene la inicialización del administrador y los roles mediante `IdentitySeeder`.
+- **Application:** coordina la creación y activación de usuarios regulares mediante los casos de uso de invitaciones.
+- **Domain:** proporciona los estados funcionales utilizados por las cuentas.
+- **ASP.NET Core Identity:** continúa administrando usuarios y roles, independientemente del mecanismo utilizado para registrar cada cuenta.
+
+El diagrama diferencia la creación automática del administrador de la creación de usuarios regulares mediante invitaciones.
+
+#### Resultado
+
+Se eliminó el registro de `BootstrapUserOptions` y la creación automática de usuarios regulares desde el proceso de inicialización de Identity.
+
+`IdentitySeeder` conserva exclusivamente la responsabilidad de garantizar los roles `Admin` y `User`, así como la existencia del administrador inicial.
+
+Con este cambio, los usuarios regulares pasan a gestionarse mediante el flujo de invitación y activación implementado en los pasos anteriores, evitando mecanismos duplicados de registro y manteniendo centralizada la administración inicial de seguridad.
+
 ---
 
 ### 10. Endurecer el seed.
