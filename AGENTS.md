@@ -29,6 +29,10 @@
 - Configure Api User Secrets for `ConnectionStrings:Default`, `Jwt:SigningKey`, `BootstrapAdmin:Password`, `Email:Smtp:Password`, and `FileImport:RootPath`. Never put credentials, JWT keys, SMTP passwords, or the real `Plan_Cuentas` path in tracked files.
 - .NET environment-variable names use double underscores for configuration nesting, for example `ConnectionStrings__Default`, `Jwt__SigningKey`, and `FileImport__RootPath`.
 - Invitation configuration uses `UserInvitation__TokenLifetimeHours` and `UserInvitation__ActivationBaseUrl`; the latter must be HTTPS.
+- Regular accounts are created only through the administrative invitation flow; there is no separate configured bootstrap regular user.
+- Identity password policy is configured through `Identity__Password__RequiredLength`, `RequireUppercase`, `RequireLowercase`, `RequireDigit`, `RequireNonAlphanumeric`, and `RequiredUniqueChars`.
+- Identity lockout is configured through `Identity__Lockout__AllowedForNewUsers`, `MaxFailedAccessAttempts`, and `DefaultLockoutTimeSpanMinutes`; invalid values must prevent startup.
+- Administrative invitation endpoints require the `AdminOnly` policy; account activation is anonymous. HTTP errors use `application/problem+json` with `code` and `traceId`.
 - SMTP configuration uses only `Email__Smtp__Host`, `Port`, `SecurityMode`, `Username`, `Password`, `FromAddress`, `FromName`, and `TimeoutSeconds`. Supported modes are `StartTls` on port 587 and `TlsOnConnect` on port 465.
 - Gmail SMTP requires a Google app password with two-step verification; a Google API key is not an SMTP credential. Do not use `MAILER_*`, `MAIL_*`, or `MAIL_TEMPLATE_EXTENSION` as current configuration.
 - SMTP tests must use an in-process server and never connect to real Gmail. MailKit must remain isolated in Infrastructure; Domain and Application must not reference it.
@@ -36,6 +40,7 @@
 - `Email__Templates__RootPath` is optional; the distributed `templates.json`, HTML, and TXT catalog must be validated at startup. `DataProtection__KeyRingPath` is optional locally but must be persistent in Docker/deployments.
 - When the API runs on the host, PostgreSQL uses `Host=localhost`; containers use the service hostname `database`. A containerized API must use the mounted internal `FileImport:RootPath`.
 - Once the solution exists, the documented order is: `dotnet restore FEPP-ContaOps.slnx`, `dotnet build FEPP-ContaOps.slnx`, `dotnet ef database update --project src/Fepp.ContaOps.Infrastructure --startup-project src/Fepp.ContaOps.Api`, then `dotnet run --project src/Fepp.ContaOps.Api`.
+- Unit tests can run without Docker with `dotnet test tests/Fepp.ContaOps.UnitTests/Fepp.ContaOps.UnitTests.csproj`. Integration tests use PostgreSQL through Testcontainers and require Docker to be running; they must use a fake/in-process mail adapter and never real Gmail credentials.
 
 ## Import Constraints
 

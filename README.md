@@ -50,6 +50,8 @@ usar el script recomendado o asignar las variables con
 | pgAdmin | `PGADMIN_DEFAULT_EMAIL`, `PGADMIN_DEFAULT_PASSWORD` | Contraseña |
 | JWT | `Jwt__Issuer`, `Jwt__Audience`, `Jwt__SigningKey`, `Jwt__AccessTokenLifetimeMinutes` | `SigningKey` |
 | Administrador | `BootstrapAdmin__Email`, `BootstrapAdmin__Password` | Contraseña |
+| Contraseña Identity | `Identity__Password__*` | No |
+| Bloqueo Identity | `Identity__Lockout__*` | No |
 | Invitaciones | `UserInvitation__TokenLifetimeHours`, `UserInvitation__ActivationBaseUrl` | No |
 | SMTP | `Email__Smtp__*` | `Password` |
 | Plantillas | `Email__Templates__RootPath` | No |
@@ -66,7 +68,7 @@ Reglas principales:
 | Autenticación Gmail | Contraseña de aplicación; no API key |
 | URL de activación | HTTPS obligatorio |
 | SMTP seguro | Solo `StartTls` en 587 o `TlsOnConnect` en 465 |
-| Usuarios regulares | Se crean mediante invitación; no existe configuración `BootstrapUser` |
+| Usuarios regulares | Se crean exclusivamente mediante invitación |
 | Valores reales | Solo en `.env`, User Secrets o variables seguras |
 
 El listado completo de placeholders debe mantenerse en `.env.example`.
@@ -142,6 +144,8 @@ El seed se ejecuta al iniciar la API:
 | Administrador | Se crea si no existe |
 | Contraseña existente | No se reemplaza |
 | Usuario regular | Se crea mediante invitación |
+| Política de contraseña | Se valida y configura mediante `Identity__Password__*` |
+| Bloqueo | Se configura mediante `Identity__Lockout__*` |
 | Configuración inválida | Impide el arranque |
 
 | Método | Ruta | Acceso | Uso |
@@ -163,6 +167,71 @@ El seed se ejecuta al iniciar la API:
 Las credenciales inválidas devuelven `401` con `code` y `traceId`. Para usar
 Swagger, abrir `/swagger`, ejecutar login, pulsar **Authorize** e introducir
 `Bearer <accessToken>`.
+
+### Invitaciones y activación
+
+Un administrador autenticado crea una cuenta pendiente:
+
+```http
+POST /api/users/invitations
+Authorization: Bearer <admin-jwt>
+Content-Type: application/json
+```
+
+```json
+{
+  "email": "user@example.com"
+}
+```
+
+La respuesta `201 Created` contiene únicamente `id`, `email` y `role`. El token
+y el enlace se entregan exclusivamente mediante el correo de invitación.
+
+El cliente activa la cuenta de forma anónima con el token recibido:
+
+```http
+POST /api/auth/activate
+Content-Type: application/json
+```
+
+```json
+{
+  "userId": "<user-id>",
+  "token": "<opaque-token>",
+  "newPassword": "<password>"
+}
+```
+
+Una activación correcta devuelve `204 No Content`. La contraseña debe cumplir
+la política efectiva de Identity; la API solo valida los límites de transporte.
+
+Para una cuenta que todavía está pendiente, un administrador puede invalidar la
+invitación anterior y enviar una nueva:
+
+```http
+POST /api/users/{id}/invitations
+Authorization: Bearer <admin-jwt>
+```
+
+El reenvío correcto devuelve `204 No Content`. No se puede reenviar una cuenta
+activa.
+
+### Errores de API
+
+Los errores usan `application/problem+json` e incluyen `code` y `traceId`.
+
+| Situación | HTTP | Código |
+|---|---:|---|
+| Request inválido | 400 | `validation_error` |
+| Token inválido, vencido o usado | 400 | `invalid_activation_token` |
+| Sin JWT | 401 | `authentication_required` |
+| JWT sin rol `Admin` | 403 | `forbidden` |
+| Usuario inexistente para reenvío | 404 | `resource_not_found` |
+| Email duplicado o cuenta activa | 409 | `resource_conflict` |
+| Correo no disponible | 503 | `email_delivery_unavailable` |
+
+Las respuestas no exponen contraseñas, tokens, enlaces completos, security
+stamps ni credenciales SMTP.
 
 ## pgAdmin
 
@@ -224,3 +293,4 @@ Gmail reales.
 | [Arquitectura Web API](sdd/webapi-architecture.md) | Capas y dependencias |
 | [Balance global](sdd/global-balance-sheet.md) | Modelo e importación contable |
 | [Naming y documentación](sdd/dotnet-naming-and-code-documentation.md) | Convenciones .NET |
+| [API de invitaciones](sdd/api-invitations.md) | Endpoints, autorización y errores |
