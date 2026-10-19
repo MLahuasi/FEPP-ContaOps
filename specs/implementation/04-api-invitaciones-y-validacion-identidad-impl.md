@@ -474,6 +474,274 @@ Esta implementación mantiene la separación entre los errores de negocio defini
 
 ### 4. Crear controllers.
 
+#### Componentes implementados
+
+| Componente                  | Acción         | Tipo  | Capa         | Responsabilidad                                                      |
+| --------------------------- | -------------- | ----- | ------------ | -------------------------------------------------------------------- |
+| `AuthController`            | No verificable | class | Presentation | Expone los endpoints HTTP de autenticación y activación de usuarios. |
+| `UserInvitationsController` | No verificable | class | Presentation | Expone los endpoints HTTP para crear y reenviar invitaciones.        |
+
+**Ubicación:** `Fepp.ContaOps.Api.Controllers`
+
+Los controladores pertenecen a **Presentation** y actúan como punto de entrada de las solicitudes HTTP.
+
+Sus responsabilidades principales son:
+
+- Recibir solicitudes mediante los DTOs definidos en el paso 1.
+- Transformar los datos HTTP en modelos de entrada de Application.
+- Ejecutar los casos de uso correspondientes.
+- Convertir los resultados en respuestas HTTP.
+- Delegar la transformación de errores a `ApplicationErrorProblemDetailsMapper`.
+
+Los archivos no permiten determinar si los controladores fueron creados o modificados.
+
+#### Métodos y funciones principales
+
+| Clase                       | Método               | Responsabilidad                                                                                             |
+| --------------------------- | -------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `AuthController`            | `Login()`            | Ejecuta el caso de uso `LoginUser` y devuelve un token de acceso.                                           |
+| `AuthController`            | `Activate()`         | Valida el formato del identificador y ejecuta `ActivateUser`.                                               |
+| `UserInvitationsController` | `CreateInvitation()` | Ejecuta `CreateUserInvitation` y devuelve la representación pública del usuario creado.                     |
+| `UserInvitationsController` | `ResendInvitation()` | Valida el identificador y ejecuta `ResendUserInvitation`.                                                   |
+| `UserInvitationsController` | `ToResponse()`       | Convierte una entidad `User` en `UserInvitationResponse`, sin exponer información interna de la invitación. |
+
+**Dependencias inyectadas:**
+
+| Controller                  | Dependencia                            | Capa         | Uso                                                     |
+| --------------------------- | -------------------------------------- | ------------ | ------------------------------------------------------- |
+| `AuthController`            | `LoginUser`                            | Application  | Autenticación de usuarios.                              |
+| `AuthController`            | `ActivateUser`                         | Application  | Activación de cuentas pendientes.                       |
+| `AuthController`            | `ApplicationErrorProblemDetailsMapper` | Presentation | Traducción de errores de Application a respuestas HTTP. |
+| `UserInvitationsController` | `CreateUserInvitation`                 | Application  | Creación de invitaciones.                               |
+| `UserInvitationsController` | `ResendUserInvitation`                 | Application  | Reenvío de invitaciones.                                |
+| `UserInvitationsController` | `ApplicationErrorProblemDetailsMapper` | Presentation | Traducción de errores de Application a respuestas HTTP. |
+
+Los controladores utilizan **inyección de dependencias por constructor** y delegan la ejecución de los procesos a los casos de uso de Application.
+
+#### Endpoints HTTP implementados
+
+| Controller                  | Método | Ruta                          | Caso de uso            | Respuesta exitosa |
+| --------------------------- | ------ | ----------------------------- | ---------------------- | ----------------- |
+| `AuthController`            | POST   | `/api/auth/login`             | `LoginUser`            | `200 OK`          |
+| `AuthController`            | POST   | `/api/auth/activate`          | `ActivateUser`         | `204 No Content`  |
+| `UserInvitationsController` | POST   | `/api/users/invitations`      | `CreateUserInvitation` | `201 Created`     |
+| `UserInvitationsController` | POST   | `/api/users/{id}/invitations` | `ResendUserInvitation` | `204 No Content`  |
+
+**Características de los endpoints:**
+
+| Endpoint           | Característica                                      |
+| ------------------ | --------------------------------------------------- |
+| `Login`            | Permite acceso anónimo mediante `[AllowAnonymous]`. |
+| `Activate`         | Permite acceso anónimo mediante `[AllowAnonymous]`. |
+| `CreateInvitation` | No declara atributos específicos de autorización.   |
+| `ResendInvitation` | No declara atributos específicos de autorización.   |
+
+**Consideración de seguridad:**
+
+Aunque `UserInvitationsController` representa operaciones administrativas, el código proporcionado no incluye atributos `[Authorize]` ni restricciones por rol.
+
+Por tanto, no puede verificarse si estos endpoints están protegidos mediante políticas globales, convenciones u otros mecanismos de autorización.
+
+#### Modelos de datos
+
+**1. Contratos HTTP y modelos de Application**
+
+| Operación           | Request HTTP                  | Input de Application        | Response HTTP            |
+| ------------------- | ----------------------------- | --------------------------- | ------------------------ |
+| Login               | `LoginRequest`                | `LoginUserInput`            | `LoginResponse`          |
+| Activación          | `ActivateUserRequest`         | `ActivateUserInput`         | Sin contenido            |
+| Crear invitación    | `CreateUserInvitationRequest` | `CreateUserInvitationInput` | `UserInvitationResponse` |
+| Reenviar invitación | Parámetro de ruta `id`        | `ResendUserInvitationInput` | Sin contenido            |
+
+**2. Modelos utilizados**
+
+| Modelo                        | Capa         | Responsabilidad                                                  |
+| ----------------------------- | ------------ | ---------------------------------------------------------------- |
+| `LoginRequest`                | Presentation | Recibe las credenciales de autenticación.                        |
+| `LoginResponse`               | Presentation | Devuelve el token de acceso, tipo Bearer y tiempo de expiración. |
+| `ActivateUserRequest`         | Presentation | Recibe el identificador, token y contraseña inicial.             |
+| `CreateUserInvitationRequest` | Presentation | Recibe el correo electrónico del usuario invitado.               |
+| `UserInvitationResponse`      | Presentation | Expone identificador, correo electrónico y rol inicial.          |
+| `LoginUserInput`              | Application  | Transporta las credenciales al caso de uso de autenticación.     |
+| `ActivateUserInput`           | Application  | Transporta los datos de activación.                              |
+| `CreateUserInvitationInput`   | Application  | Transporta el correo electrónico al caso de uso.                 |
+| `ResendUserInvitationInput`   | Application  | Transporta el identificador del usuario pendiente.               |
+| `TokenResult`                 | Application  | Contiene el resultado interno de autenticación.                  |
+| `UserInvitationResult`        | Application  | Contiene el resultado interno de una invitación.                 |
+| `User`                        | Domain       | Representa la entidad de usuario.                                |
+| `UserId`                      | Domain       | Representa el identificador del usuario.                         |
+
+**Transformaciones relevantes:**
+
+| Origen                        | Destino                     | Transformación                                                                 |
+| ----------------------------- | --------------------------- | ------------------------------------------------------------------------------ |
+| `LoginRequest`                | `LoginUserInput`            | Transfiere correo electrónico y contraseña.                                    |
+| `TokenResult`                 | `LoginResponse`             | Expone token, tipo `Bearer` y tiempo de expiración.                            |
+| `ActivateUserRequest`         | `ActivateUserInput`         | Convierte `UserId` a identificador de dominio y transfiere token y contraseña. |
+| `CreateUserInvitationRequest` | `CreateUserInvitationInput` | Transfiere el correo electrónico.                                              |
+| `User`                        | `UserInvitationResponse`    | Extrae identificador, correo electrónico y primer rol.                         |
+| `id` de la ruta               | `ResendUserInvitationInput` | Convierte el identificador recibido en un `UserId` de dominio.                 |
+
+El método `ToResponse()` selecciona el primer elemento de `user.Roles` mediante `FirstOrDefault()` y devuelve una cadena vacía cuando no existen roles.
+
+#### Componentes de .NET y proveedores externos
+
+| Componente / Método          | Origen                     | Función                                                                       |
+| ---------------------------- | -------------------------- | ----------------------------------------------------------------------------- |
+| `ControllerBase`             | ASP.NET Core MVC           | Clase base para controladores de API.                                         |
+| `[ApiController]`            | ASP.NET Core MVC           | Habilita convenciones de API, incluyendo validación automática de ModelState. |
+| `[Route]`                    | ASP.NET Core MVC           | Define la ruta base del controlador.                                          |
+| `[HttpPost]`                 | ASP.NET Core MVC           | Asocia una acción con solicitudes HTTP POST.                                  |
+| `[AllowAnonymous]`           | ASP.NET Core Authorization | Permite ejecutar una acción sin autenticación.                                |
+| `[ProducesResponseType]`     | ASP.NET Core MVC           | Declara los tipos y códigos de respuesta para la metadata de la API.          |
+| `IActionResult`              | ASP.NET Core MVC           | Representa el resultado de una acción HTTP.                                   |
+| `Ok()`                       | ASP.NET Core MVC           | Genera una respuesta `200 OK`.                                                |
+| `Created()`                  | ASP.NET Core MVC           | Genera una respuesta `201 Created` con una ubicación del recurso.             |
+| `NoContent()`                | ASP.NET Core MVC           | Genera una respuesta `204 No Content`.                                        |
+| `ModelState.AddModelError()` | ASP.NET Core MVC           | Incorpora un error de validación asociado a un campo.                         |
+| `Guid.TryParse()`            | .NET                       | Comprueba si una cadena representa un identificador GUID válido.              |
+| `FirstOrDefault()`           | LINQ / .NET                | Obtiene el primer elemento de una colección o su valor predeterminado.        |
+| `CancellationToken`          | .NET                       | Propaga solicitudes de cancelación a los casos de uso.                        |
+
+#### Flujo funcional o relaciones
+
+**1. Inicio de sesión**
+
+| Orden | Operación                                    | Componente responsable                       |
+| ----- | -------------------------------------------- | -------------------------------------------- |
+| 1     | Recibir `LoginRequest`.                      | `AuthController.Login()`                     |
+| 2     | Construir `LoginUserInput`.                  | `AuthController`                             |
+| 3     | Ejecutar autenticación.                      | `LoginUser.ExecuteAsync()`                   |
+| 4     | Traducir el error cuando la operación falla. | `ApplicationErrorProblemDetailsMapper.Map()` |
+| 5     | Convertir `TokenResult` en `LoginResponse`.  | `AuthController`                             |
+| 6     | Devolver `200 OK`.                           | `Ok()`                                       |
+
+**2. Activación de cuenta**
+
+| Orden | Operación                                                   | Componente responsable                       |
+| ----- | ----------------------------------------------------------- | -------------------------------------------- |
+| 1     | Recibir `ActivateUserRequest`.                              | `AuthController.Activate()`                  |
+| 2     | Validar que `UserId` tenga formato GUID.                    | `Guid.TryParse()`                            |
+| 3     | Devolver `400 Bad Request` si el identificador es inválido. | `ProblemDetailsResponseFactory`              |
+| 4     | Construir `ActivateUserInput` con `UserId` de dominio.      | `AuthController`                             |
+| 5     | Ejecutar activación.                                        | `ActivateUser.ExecuteAsync()`                |
+| 6     | Traducir el error si la activación falla.                   | `ApplicationErrorProblemDetailsMapper.Map()` |
+| 7     | Devolver `204 No Content` si tiene éxito.                   | `NoContent()`                                |
+
+**3. Creación de invitación**
+
+| Orden | Operación                                               | Componente responsable                         |
+| ----- | ------------------------------------------------------- | ---------------------------------------------- |
+| 1     | Recibir `CreateUserInvitationRequest`.                  | `UserInvitationsController.CreateInvitation()` |
+| 2     | Construir `CreateUserInvitationInput`.                  | `UserInvitationsController`                    |
+| 3     | Ejecutar creación y notificación de la invitación.      | `CreateUserInvitation.ExecuteAsync()`          |
+| 4     | Traducir el error si la operación falla.                | `ApplicationErrorProblemDetailsMapper.Map()`   |
+| 5     | Convertir `User` en `UserInvitationResponse`.           | `ToResponse()`                                 |
+| 6     | Devolver `201 Created` con ubicación `/api/users/{id}`. | `Created()`                                    |
+
+**4. Reenvío de invitación**
+
+| Orden | Operación                                                       | Componente responsable                         |
+| ----- | --------------------------------------------------------------- | ---------------------------------------------- |
+| 1     | Recibir el identificador desde la ruta.                         | `UserInvitationsController.ResendInvitation()` |
+| 2     | Validar que el identificador tenga formato GUID.                | `Guid.TryParse()`                              |
+| 3     | Devolver `400 Bad Request` cuando el identificador es inválido. | `ProblemDetailsResponseFactory`                |
+| 4     | Construir `ResendUserInvitationInput`.                          | `UserInvitationsController`                    |
+| 5     | Ejecutar el reenvío.                                            | `ResendUserInvitation.ExecuteAsync()`          |
+| 6     | Traducir el error cuando la operación falla.                    | `ApplicationErrorProblemDetailsMapper.Map()`   |
+| 7     | Devolver `204 No Content` si tiene éxito.                       | `NoContent()`                                  |
+
+#### Manejo de errores HTTP
+
+Los controladores utilizan dos mecanismos complementarios:
+
+| Mecanismo                     | Componente                             | Responsabilidad                                                                    |
+| ----------------------------- | -------------------------------------- | ---------------------------------------------------------------------------------- |
+| Validación de identificadores | `ProblemDetailsResponseFactory`        | Genera respuestas HTTP 400 cuando el identificador recibido no tiene formato GUID. |
+| Errores de Application        | `ApplicationErrorProblemDetailsMapper` | Convierte errores tipados de los casos de uso en respuestas HTTP.                  |
+
+**Respuestas declaradas mediante atributos:**
+
+| Endpoint           | Códigos HTTP            |
+| ------------------ | ----------------------- |
+| `Login`            | 200, 400, 401           |
+| `Activate`         | 204, 400                |
+| `CreateInvitation` | 201, 400, 409, 503      |
+| `ResendInvitation` | 204, 400, 404, 409, 503 |
+
+Los códigos representan las respuestas declaradas mediante `[ProducesResponseType]`. La generación efectiva de errores depende de los resultados de Application y del comportamiento de `ApplicationErrorProblemDetailsMapper`.
+
+La implementación de este mapper no se incluye entre los archivos proporcionados, por lo que no es posible verificar todas sus reglas de traducción.
+
+#### Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    CLIENT["Cliente HTTP"]
+
+    subgraph Presentation["Presentation - API"]
+        AUTH["AuthController"]
+        INV["UserInvitationsController"]
+        MAPPER["ApplicationErrorProblemDetailsMapper"]
+        PROBLEM["ProblemDetailsResponseFactory"]
+        RESPONSE["Responses HTTP"]
+    end
+
+    subgraph Application
+        LOGIN["LoginUser"]
+        ACTIVATE["ActivateUser"]
+        CREATE["CreateUserInvitation"]
+        RESEND["ResendUserInvitation"]
+    end
+
+    subgraph Domain
+        USER["User"]
+        USERID["UserId"]
+    end
+
+    CLIENT --> AUTH
+    CLIENT --> INV
+
+    AUTH --> LOGIN
+    AUTH --> ACTIVATE
+
+    INV --> CREATE
+    INV --> RESEND
+
+    AUTH --> MAPPER
+    INV --> MAPPER
+
+    AUTH --> PROBLEM
+    INV --> PROBLEM
+
+    ACTIVATE -.-> USERID
+    RESEND -.-> USERID
+    CREATE -.-> USER
+
+    AUTH --> RESPONSE
+    INV --> RESPONSE
+    MAPPER --> RESPONSE
+    PROBLEM --> RESPONSE
+
+    RESPONSE --> CLIENT
+```
+
+**Interpretación:**
+
+- **Presentation:** recibe solicitudes HTTP, transforma los DTOs y construye las respuestas.
+- **Application:** ejecuta los casos de uso de autenticación, activación, creación y reenvío de invitaciones.
+- **Domain:** proporciona las entidades e identificadores utilizados por los casos de uso.
+- **Validación:** los controladores comprueban el formato GUID y utilizan los componentes de validación y traducción de errores de Presentation.
+- **Separación arquitectónica:** los controladores no implementan directamente reglas de negocio, persistencia ni envío de correos.
+
+#### Resultado
+
+Se implementaron los endpoints HTTP para autenticación, activación, creación y reenvío de invitaciones.
+
+Los controladores integran los contratos HTTP definidos en el paso 1 con los casos de uso de Application documentados en el paso 2 y utilizan los mecanismos de manejo de errores de Presentation.
+
+Esta implementación establece la comunicación entre los clientes HTTP y los procesos del ciclo de invitaciones, manteniendo separadas las responsabilidades de Presentation, Application y Domain.
+
 ---
 
 ### 5. Aplicar política AdminOnly.
