@@ -3966,6 +3966,340 @@ Con estos cambios, la documentación Swagger proporciona información más compl
 
 ### 15. Actualizar .env.example.
 
+#### Componentes implementados
+
+| Componente     | Acción | Tipo    | Capa                           | Responsabilidad                                                                                                                              |
+| -------------- | ------ | ------- | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `.env.example` | Update | archivo | Infrastructure / Configuración | Documenta las variables de entorno necesarias para configurar PostgreSQL, JWT, Identity, invitaciones, correo electrónico y Data Protection. |
+
+**Ubicación:** `.env.example` (raíz del proyecto).
+
+La actualización incorpora las variables de configuración utilizadas por las funcionalidades desarrolladas durante SPEC 04 y mantiene las configuraciones existentes de SPEC 03.
+
+El archivo proporciona una plantilla de configuración sin incluir credenciales reales.
+
+#### Variables de configuración
+
+**1. PostgreSQL y pgAdmin**
+
+| Variable                     | Valor de ejemplo                         | Responsabilidad                                                    |
+| ---------------------------- | ---------------------------------------- | ------------------------------------------------------------------ |
+| `POSTGRES_PASSWORD`          | `replace-with-a-local-database-password` | Contraseña del usuario de PostgreSQL configurado en el contenedor. |
+| `PGADMIN_DEFAULT_EMAIL`      | `admin@example.local`                    | Correo electrónico para acceder a pgAdmin.                         |
+| `PGADMIN_DEFAULT_PASSWORD`   | `replace-with-a-local-pgadmin-password`  | Contraseña de acceso a pgAdmin.                                    |
+| `ConnectionStrings__Default` | Cadena de conexión PostgreSQL            | Configura la conexión de la API a la base de datos.                |
+
+**Consideraciones:**
+
+- La cadena de conexión utiliza `Host=localhost` para ejecutar la API directamente desde el host.
+- La contraseña incluida en `ConnectionStrings__Default` debe coincidir con la configurada para PostgreSQL.
+- Se utilizan valores de ejemplo que deben sustituirse en cada entorno.
+
+**2. Autenticación JWT**
+
+| Variable                          | Valor predeterminado de ejemplo                  | Responsabilidad                                       |
+| --------------------------------- | ------------------------------------------------ | ----------------------------------------------------- |
+| `Jwt__Issuer`                     | `FEPP-ContaOps`                                  | Identifica el emisor de los tokens JWT.               |
+| `Jwt__Audience`                   | `FEPP-ContaOps.Api`                              | Identifica la audiencia autorizada.                   |
+| `Jwt__SigningKey`                 | `replace-with-a-random-key-of-at-least-32-bytes` | Define la clave utilizada para firmar los tokens.     |
+| `Jwt__AccessTokenLifetimeMinutes` | `60`                                             | Establece la duración del token de acceso en minutos. |
+
+**Relación con la implementación:**
+
+Las variables se vinculan al modelo `JwtOptions`, registrado en `DependencyInjection.AddInfrastructure()`.
+
+La configuración se utiliza para emitir y validar tokens JWT.
+
+La clave de firma debe contener al menos **32 bytes UTF-8** y mantenerse secreta.
+
+**3. Administrador inicial**
+
+| Variable                   | Valor de ejemplo                 | Responsabilidad                                                                       |
+| -------------------------- | -------------------------------- | ------------------------------------------------------------------------------------- |
+| `BootstrapAdmin__Email`    | `admin@example.local`            | Correo electrónico del administrador inicial.                                         |
+| `BootstrapAdmin__Password` | `replace-with-an-admin-password` | Contraseña utilizada para crear y validar la configuración del administrador inicial. |
+
+**Relación con los pasos 9 y 10:**
+
+- `IdentitySeeder` utiliza `BootstrapAdminOptions` para inicializar el administrador.
+- `ValidateBootstrapPasswordAsync()` verifica que la contraseña configurada cumpla las políticas de ASP.NET Core Identity.
+- Se elimina la configuración de `BootstrapUser`, manteniendo exclusivamente el administrador inicial.
+
+**Importante:** el valor `replace-with-an-admin-password` es un marcador de ejemplo y no debe utilizarse como contraseña real.
+
+#### Políticas de seguridad de Identity
+
+**1. Política de contraseñas**
+
+Se incorporan las variables correspondientes a `IdentityPasswordOptions`.
+
+| Variable                                     | Valor  | Responsabilidad                            |
+| -------------------------------------------- | ------ | ------------------------------------------ |
+| `Identity__Password__RequiredLength`         | `12`   | Longitud mínima de contraseña.             |
+| `Identity__Password__RequireUppercase`       | `true` | Exige letras mayúsculas.                   |
+| `Identity__Password__RequireLowercase`       | `true` | Exige letras minúsculas.                   |
+| `Identity__Password__RequireDigit`           | `true` | Exige números.                             |
+| `Identity__Password__RequireNonAlphanumeric` | `true` | Exige caracteres no alfanuméricos.         |
+| `Identity__Password__RequiredUniqueChars`    | `6`    | Exige al menos seis caracteres diferentes. |
+
+Estas variables corresponden a la sección de configuración:
+
+`Identity:Password`
+
+**2. Política de bloqueo**
+
+Se incorporan las variables correspondientes a `IdentityLockoutOptions`.
+
+| Variable                                           | Valor  | Responsabilidad                                |
+| -------------------------------------------------- | ------ | ---------------------------------------------- |
+| `Identity__Lockout__AllowedForNewUsers`            | `true` | Permite el bloqueo temporal de cuentas nuevas. |
+| `Identity__Lockout__MaxFailedAccessAttempts`       | `5`    | Establece el umbral de intentos fallidos.      |
+| `Identity__Lockout__DefaultLockoutTimeSpanMinutes` | `15`   | Establece la duración del bloqueo en minutos.  |
+
+Estas variables corresponden a la sección:
+
+`Identity:Lockout`
+
+**Relación con el paso 8:**
+
+Ambas configuraciones se vinculan mediante el patrón Options de .NET y se aplican a ASP.NET Core Identity desde `DependencyInjection.AddInfrastructure()`.
+
+La implementación utiliza `ValidateOnStart()` para comprobar que los parámetros configurados cumplan las restricciones definidas en sus respectivos modelos.
+
+#### Invitaciones y activación
+
+Se mantienen las variables utilizadas por el ciclo de invitaciones implementado en SPEC 03.
+
+| Variable                             | Valor de ejemplo                 | Responsabilidad                                                      |
+| ------------------------------------ | -------------------------------- | -------------------------------------------------------------------- |
+| `UserInvitation__TokenLifetimeHours` | `24`                             | Define la vigencia del token de activación en horas.                 |
+| `UserInvitation__ActivationBaseUrl`  | `https://cliente.local/activate` | Define la URL base utilizada para construir el enlace de activación. |
+
+**Relación con la arquitectura:**
+
+| Componente                           | Responsabilidad                                                              |
+| ------------------------------------ | ---------------------------------------------------------------------------- |
+| `UserInvitationOptions`              | Representa la configuración de invitaciones.                                 |
+| `UserInvitationTokenProviderOptions` | Recibe la duración configurada del token.                                    |
+| `UserInvitationTokenProvider`        | Proporciona el mecanismo de generación y validación de tokens de invitación. |
+| `InvitationEmailNotifier`            | Utiliza la información de invitación para solicitar su notificación.         |
+
+**Consideraciones:**
+
+- La URL de activación debe utilizar HTTPS.
+- La vigencia del token debe ser mayor que cero.
+- Los parámetros se validan durante el inicio de la aplicación.
+
+#### Configuración de correo electrónico
+
+Se mantiene la configuración SMTP utilizada para enviar las invitaciones.
+
+| Variable                      | Valor de ejemplo                 | Responsabilidad                                      |
+| ----------------------------- | -------------------------------- | ---------------------------------------------------- |
+| `Email__Smtp__Host`           | `smtp.gmail.com`                 | Servidor SMTP.                                       |
+| `Email__Smtp__Port`           | `587`                            | Puerto de conexión SMTP.                             |
+| `Email__Smtp__SecurityMode`   | `StartTls`                       | Mecanismo de seguridad de la conexión.               |
+| `Email__Smtp__Username`       | `sender@example.com`             | Usuario de autenticación SMTP.                       |
+| `Email__Smtp__Password`       | `replace-with-a-provider-secret` | Credencial de autenticación del proveedor.           |
+| `Email__Smtp__FromAddress`    | `sender@example.com`             | Dirección utilizada como remitente.                  |
+| `Email__Smtp__FromName`       | `FEPP ContaOps`                  | Nombre público del remitente.                        |
+| `Email__Smtp__TimeoutSeconds` | `30`                             | Tiempo máximo configurado para las operaciones SMTP. |
+
+**Configuración de plantillas:**
+
+| Variable                     | Valor        | Responsabilidad                                                                |
+| ---------------------------- | ------------ | ------------------------------------------------------------------------------ |
+| `Email__Templates__RootPath` | Cadena vacía | Permite especificar una ubicación personalizada para las plantillas de correo. |
+
+Cuando no se especifica una ruta personalizada, la configuración contempla utilizar el catálogo de plantillas distribuido con la aplicación.
+
+**Consideraciones:**
+
+- Los valores SMTP corresponden a una configuración de ejemplo orientada a Gmail.
+- Para Gmail mediante SMTP se contempla el uso de TLS y contraseña de aplicación.
+- Las credenciales deben sustituirse por valores válidos del proveedor utilizado.
+- Los secretos no deben almacenarse en archivos versionados del repositorio.
+
+#### Configuración de Data Protection
+
+Se mantiene la variable utilizada para configurar la persistencia de claves criptográficas.
+
+| Variable                      | Valor de ejemplo | Responsabilidad                                                                                |
+| ----------------------------- | ---------------- | ---------------------------------------------------------------------------------------------- |
+| `DataProtection__KeyRingPath` | Cadena vacía     | Define la ubicación donde se almacenará el conjunto de claves de ASP.NET Core Data Protection. |
+
+**Relación con Infrastructure:**
+
+El registro de Data Protection utiliza:
+
+```csharp
+string? keyRingPath = configuration["DataProtection:KeyRingPath"];
+
+IDataProtectionBuilder dataProtectionBuilder =
+    services.AddDataProtection();
+
+if (!string.IsNullOrWhiteSpace(keyRingPath))
+{
+    DirectoryInfo keyRingDirectory = new(keyRingPath);
+    keyRingDirectory.Create();
+
+    dataProtectionBuilder.PersistKeysToFileSystem(keyRingDirectory);
+
+    if (OperatingSystem.IsWindows())
+    {
+        dataProtectionBuilder.ProtectKeysWithDpapi();
+    }
+}
+```
+
+**Comportamiento:**
+
+| Condición                                        | Resultado                                                                         |
+| ------------------------------------------------ | --------------------------------------------------------------------------------- |
+| Ruta no configurada                              | Se utiliza el comportamiento predeterminado de Data Protection.                   |
+| Ruta configurada                                 | Se almacenan las claves en el directorio especificado.                            |
+| Ejecución en Windows con ruta configurada        | Se configura protección de claves mediante DPAPI.                                 |
+| Ejecución en otros sistemas con ruta configurada | Se configura persistencia en archivos sin protección DPAPI en el código mostrado. |
+
+**Consideración de seguridad:**
+
+En contenedores Docker y despliegues persistentes, el directorio de claves debe conservarse entre reinicios para evitar problemas con los tokens protegidos mediante Data Protection.
+
+El código mostrado no configura explícitamente cifrado de claves en reposo para entornos distintos de Windows.
+
+#### Relación con el sistema de configuración de .NET
+
+Las variables utilizan doble guion bajo (`__`) para representar secciones jerárquicas de configuración.
+
+| Variable de entorno                          | Clave de configuración .NET                | Modelo                                          |
+| -------------------------------------------- | ------------------------------------------ | ----------------------------------------------- |
+| `Jwt__Issuer`                                | `Jwt:Issuer`                               | `JwtOptions`                                    |
+| `BootstrapAdmin__Email`                      | `BootstrapAdmin:Email`                     | `BootstrapAdminOptions`                         |
+| `Identity__Password__RequiredLength`         | `Identity:Password:RequiredLength`         | `IdentityPasswordOptions`                       |
+| `Identity__Lockout__MaxFailedAccessAttempts` | `Identity:Lockout:MaxFailedAccessAttempts` | `IdentityLockoutOptions`                        |
+| `UserInvitation__TokenLifetimeHours`         | `UserInvitation:TokenLifetimeHours`        | `UserInvitationOptions`                         |
+| `Email__Smtp__Host`                          | `Email:Smtp:Host`                          | `EmailSmtpOptions`                              |
+| `Email__Templates__RootPath`                 | `Email:Templates:RootPath`                 | `EmailTemplatesOptions`                         |
+| `DataProtection__KeyRingPath`                | `DataProtection:KeyRingPath`               | Configuración directa mediante `IConfiguration` |
+
+**Ejemplo:**
+
+```env
+Identity__Password__RequiredLength='12'
+```
+
+Corresponde a:
+
+```text
+Identity:Password:RequiredLength
+```
+
+El mecanismo de configuración de .NET permite obtener este valor mediante `IConfiguration` y vincularlo a una propiedad de `IdentityPasswordOptions`.
+
+#### Componentes de .NET y proveedores externos
+
+| Componente / Método         | Origen                                    | Función                                                             |
+| --------------------------- | ----------------------------------------- | ------------------------------------------------------------------- |
+| `IConfiguration`            | Microsoft.Extensions.Configuration        | Proporciona acceso a los valores de configuración de la aplicación. |
+| `GetSection()`              | Microsoft.Extensions.Configuration        | Obtiene una sección jerárquica de configuración.                    |
+| `Get<T>()`                  | Microsoft.Extensions.Configuration.Binder | Convierte una sección de configuración en un objeto tipado.         |
+| `Bind()`                    | Microsoft.Extensions.Configuration.Binder | Vincula valores configurados con las propiedades de un modelo.      |
+| `AddOptions<T>()`           | Microsoft.Extensions.Options              | Registra modelos tipados de configuración.                          |
+| `Validate()`                | Microsoft.Extensions.Options              | Comprueba las reglas definidas para una configuración.              |
+| `ValidateOnStart()`         | Microsoft.Extensions.Options              | Ejecuta la validación de opciones al iniciar la aplicación.         |
+| `AddIdentity()`             | ASP.NET Core Identity                     | Aplica las políticas de contraseñas y bloqueo.                      |
+| `AddDataProtection()`       | ASP.NET Core Data Protection              | Registra los servicios de protección criptográfica.                 |
+| `PersistKeysToFileSystem()` | ASP.NET Core Data Protection              | Configura la persistencia de claves en archivos.                    |
+| `ProtectKeysWithDpapi()`    | ASP.NET Core Data Protection              | Configura la protección de claves mediante DPAPI en Windows.        |
+
+#### Flujo funcional o relaciones
+
+| Orden | Operación                                                                        | Componente responsable                    |
+| ----- | -------------------------------------------------------------------------------- | ----------------------------------------- |
+| 1     | Definir las variables de configuración del entorno.                              | `.env.example` como plantilla             |
+| 2     | Proporcionar los valores mediante variables de entorno o mecanismos compatibles. | Configuración del proceso anfitrión       |
+| 3     | Obtener los valores configurados.                                                | `IConfiguration`                          |
+| 4     | Vincular los valores a modelos tipados.                                          | `Bind()` / `Get<T>()`                     |
+| 5     | Validar las opciones registradas.                                                | `Validate()` / `ValidateOnStart()`        |
+| 6     | Configurar ASP.NET Core Identity.                                                | `DependencyInjection.AddInfrastructure()` |
+| 7     | Configurar JWT y los servicios de invitaciones.                                  | Infrastructure / Presentation             |
+| 8     | Configurar el transporte SMTP y Data Protection.                                 | Infrastructure                            |
+| 9     | Inicializar el administrador utilizando la configuración proporcionada.          | `IdentitySeeder`                          |
+
+**Importante:** `.env.example` es una plantilla. El código proporcionado no demuestra que ASP.NET Core cargue automáticamente este archivo.
+
+Los valores deben incorporarse al entorno de ejecución mediante Docker Compose, variables de entorno u otro mecanismo de configuración.
+
+#### Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    ENV[".env.example"]
+
+    RUNTIME["Variables de entorno del proceso"]
+
+    CONFIG["IConfiguration"]
+
+    subgraph Presentation
+        API["DependencyInjection.AddApi"]
+        JWT["JWT Bearer Authentication"]
+    end
+
+    subgraph Infrastructure
+        DI["DependencyInjection.AddInfrastructure"]
+
+        PASSWORD["IdentityPasswordOptions"]
+        LOCKOUT["IdentityLockoutOptions"]
+        ADMIN["BootstrapAdminOptions"]
+        INVITATION["UserInvitationOptions"]
+        SMTP["EmailSmtpOptions"]
+        PROTECTION["Data Protection"]
+
+        IDENTITY["ASP.NET Core Identity"]
+        SEEDER["IdentitySeeder"]
+    end
+
+    ENV -.->|"Plantilla de configuración"| RUNTIME
+    RUNTIME --> CONFIG
+
+    CONFIG --> API
+    CONFIG --> DI
+
+    API --> JWT
+
+    DI --> PASSWORD
+    DI --> LOCKOUT
+    DI --> ADMIN
+    DI --> INVITATION
+    DI --> SMTP
+    DI --> PROTECTION
+
+    PASSWORD --> IDENTITY
+    LOCKOUT --> IDENTITY
+
+    ADMIN --> SEEDER
+```
+
+**Interpretación:**
+
+- **`.env.example`:** documenta los parámetros necesarios para configurar la aplicación.
+- **IConfiguration:** proporciona acceso a los valores definidos en el entorno.
+- **Presentation:** utiliza la configuración JWT para autenticar y autorizar solicitudes HTTP.
+- **Infrastructure:** configura Identity, invitaciones, SMTP y Data Protection.
+- **IdentitySeeder:** utiliza la configuración administrativa para inicializar la cuenta `Admin`.
+
+El archivo de ejemplo no implementa lógica de negocio ni introduce dependencias entre capas.
+
+#### Resultado
+
+Se actualizó `.env.example` para documentar las variables de configuración utilizadas por FEPP ContaOps, incorporando las políticas de contraseña y bloqueo de ASP.NET Core Identity.
+
+También se consolidaron los parámetros de PostgreSQL, pgAdmin, JWT, administrador inicial, invitaciones, SMTP y Data Protection.
+
+Se eliminaron las referencias de configuración a `BootstrapUser`, conforme al cambio implementado en el paso 9.
+
+El archivo proporciona una plantilla centralizada para configurar diferentes entornos de ejecución sin incluir credenciales reales, facilitando la instalación, el mantenimiento y la configuración segura de la aplicación.
+
 ---
 
 ### 16. Actualizar README.md.
