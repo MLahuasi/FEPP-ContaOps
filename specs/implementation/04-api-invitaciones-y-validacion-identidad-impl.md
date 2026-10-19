@@ -4618,15 +4618,444 @@ Se mantienen las reglas de seguridad, validaciones de configuración y registros
 
 ---
 
-### 19. Ejecutar restore, build y pruebas.
+### 17. Ejecutar restore, build y pruebas.
+
+#### Componentes implementados
+
+| Componente                   | Acción                   | Tipo           | Capa         | Responsabilidad                                                                                                    |
+| ---------------------------- | ------------------------ | -------------- | ------------ | ------------------------------------------------------------------------------------------------------------------ |
+| `DependencyInjection`        | Sin cambios verificables | class (static) | Presentation | Mantiene el registro de controladores, validadores, autenticación JWT, autorización y documentación Swagger.       |
+| `InvitationIntegrationTests` | Update                   | class          | Tests        | Ajusta las pruebas de integración para ejecutar solicitudes HTTPS y utilizar una configuración de pruebas aislada. |
+| `CreateHttpsClient()`        | Create                   | Método privado | Tests        | Construye un cliente HTTP con dirección base HTTPS y redirecciones automáticas deshabilitadas.                     |
+| `SendAsAdminAsync()`         | Update                   | Método privado | Tests        | Construye explícitamente el encabezado `Authorization` con el token Bearer.                                        |
+| `TestApiFactory`             | Update                   | class          | Tests        | Aísla la configuración de la aplicación y sustituye servicios para ejecutar pruebas de integración controladas.    |
+| `TestAuthenticationHandler`  | Create                   | class          | Tests        | Implementa un esquema de autenticación exclusivo para las pruebas de integración.                                  |
+| `FakeInvitationNotifier`     | Sin cambios verificables | class          | Tests        | Simula la entrega de invitaciones y permite provocar errores de notificación.                                      |
+
+**Ubicaciones:**
+
+- `Fepp.ContaOps.Api.DependencyInjection`
+- `Fepp.ContaOps.IntegrationTests.InvitationIntegrationTests`
+
+El cambio principal se concentra en la infraestructura de pruebas de integración.
+
+El código compartido no contiene resultados de ejecución de `dotnet restore`, `dotnet build` ni `dotnet test`. Por tanto, se documentan las modificaciones verificables, sin atribuirles resultados de ejecución.
+
+#### Métodos y funciones principales
+
+| Clase                        | Método                      | Responsabilidad                                                                                 |
+| ---------------------------- | --------------------------- | ----------------------------------------------------------------------------------------------- |
+| `InvitationIntegrationTests` | `CreateHttpsClient()`       | Crea un cliente de pruebas utilizando HTTPS y deshabilita las redirecciones automáticas.        |
+| `InvitationIntegrationTests` | `SendAsAdminAsync()`        | Envía solicitudes HTTP con el encabezado Bearer construido explícitamente.                      |
+| `TestApiFactory`             | `ConfigureWebHost()`        | Configura el entorno de integración y sustituye dependencias de la aplicación.                  |
+| `TestAuthenticationHandler`  | `HandleAuthenticateAsync()` | Lee los claims de un JWT y construye una identidad autenticada para las pruebas.                |
+| `TestAuthenticationHandler`  | `HandleChallengeAsync()`    | Genera una respuesta HTTP 401 uniforme cuando no existe una identidad autenticada.              |
+| `TestAuthenticationHandler`  | `HandleForbiddenAsync()`    | Genera una respuesta HTTP 403 uniforme cuando la identidad no cumple los permisos requeridos.   |
+| `TestAuthenticationHandler`  | `WriteProblemAsync()`       | Construye la respuesta JSON utilizada para representar errores de autenticación y autorización. |
+
+#### Cambios en las pruebas de integración
+
+**1. Configuración del cliente HTTPS**
+
+Se incorpora el método `CreateHttpsClient()`:
+
+```csharp
+private static HttpClient CreateHttpsClient(TestApiFactory factory)
+{
+    return factory.CreateClient(new WebApplicationFactoryClientOptions
+    {
+        BaseAddress = new Uri("https://localhost"),
+        AllowAutoRedirect = false
+    });
+}
+```
+
+| Configuración       | Valor               | Responsabilidad                                                            |
+| ------------------- | ------------------- | -------------------------------------------------------------------------- |
+| `BaseAddress`       | `https://localhost` | Utiliza HTTPS como esquema de las solicitudes de prueba.                   |
+| `AllowAutoRedirect` | `false`             | Impide que el cliente siga automáticamente respuestas de redirección HTTP. |
+
+**Objetivo:**
+
+Ejecutar las solicitudes directamente sobre HTTPS y evitar que las redirecciones automáticas interfieran con la comprobación de códigos HTTP.
+
+La utilización de una dirección HTTPS en `WebApplicationFactory` no demuestra por sí sola que se esté realizando una conexión TLS real.
+
+**2. Construcción del encabezado Authorization**
+
+Se modifica `SendAsAdminAsync()`:
+
+```csharp
+request.Headers.Remove("Authorization");
+request.Headers.TryAddWithoutValidation(
+    "Authorization",
+    $"Bearer {token}");
+
+return await client.SendAsync(request);
+```
+
+| Operación                   | Responsabilidad                                                                                       |
+| --------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `Remove("Authorization")`   | Elimina cualquier encabezado Authorization previamente establecido en la solicitud.                   |
+| `TryAddWithoutValidation()` | Agrega el encabezado Bearer sin ejecutar la validación habitual del valor por parte de `HttpHeaders`. |
+| `SendAsync()`               | Envía la solicitud al servidor de pruebas.                                                            |
+
+El método permite utilizar el token obtenido mediante el endpoint de login en las operaciones administrativas.
+
+#### Aislamiento de la configuración de pruebas
+
+**Componente:** `TestApiFactory`
+
+Se modifica la configuración del host mediante `ConfigureAppConfiguration()`.
+
+```csharp
+builder.ConfigureAppConfiguration((_, configuration) =>
+{
+    configuration.Sources.Clear();
+
+    configuration.AddInMemoryCollection(
+        new Dictionary<string, string?>
+        {
+            ["ConnectionStrings:Default"] = _connectionString,
+            ["Jwt:Issuer"] = "FEPP-ContaOps.Tests",
+            ["Jwt:Audience"] = "FEPP-ContaOps.Tests",
+            ["Jwt:SigningKey"] = "test-signing-key-with-at-least-32-bytes",
+            ["Jwt:AccessTokenLifetimeMinutes"] = "15",
+            ["BootstrapAdmin:Email"] = "admin@example.com",
+            ["BootstrapAdmin:Password"] = "AdminPassword123!",
+            ["UserInvitation:TokenLifetimeHours"] = "24",
+            ["UserInvitation:ActivationBaseUrl"] = "https://client.test/activate"
+        });
+});
+```
+
+**Cambios principales:**
+
+| Operación                       | Responsabilidad                                                               |
+| ------------------------------- | ----------------------------------------------------------------------------- |
+| `ConfigureAppConfiguration()`   | Personaliza la configuración del host de integración.                         |
+| `configuration.Sources.Clear()` | Elimina las fuentes de configuración de aplicación existentes en ese momento. |
+| `AddInMemoryCollection()`       | Incorpora valores controlados específicamente para las pruebas.               |
+
+**Configuraciones aisladas:**
+
+| Sección             | Responsabilidad                                                  |
+| ------------------- | ---------------------------------------------------------------- |
+| `ConnectionStrings` | Utiliza PostgreSQL administrado mediante Testcontainers.         |
+| `Jwt`               | Define los parámetros de emisión de tokens de prueba.            |
+| `BootstrapAdmin`    | Configura el administrador inicial utilizado por los escenarios. |
+| `UserInvitation`    | Configura los tokens y enlaces de activación.                    |
+| `Email:Smtp`        | Proporciona valores válidos sin utilizar un servidor SMTP real.  |
+
+**Consideración:**
+
+El aislamiento evita depender de los valores habituales de configuración de la aplicación.
+
+La implementación sustituye las fuentes existentes durante la ejecución de `ConfigureAppConfiguration()`, aunque no demuestra que otras etapas del host no puedan incorporar fuentes adicionales posteriormente.
+
+#### Configuración de servicios para integración
+
+`TestApiFactory` sustituye determinadas dependencias de la aplicación.
+
+```csharp
+builder.ConfigureServices(services =>
+{
+    services.RemoveAll<DbContextOptions<AppDbContext>>();
+
+    services.AddDbContext<AppDbContext>(options =>
+        options.UseNpgsql(_connectionString));
+
+    services.AddAuthentication(TestAuthenticationHandler.SchemeName)
+        .AddScheme<AuthenticationSchemeOptions, TestAuthenticationHandler>(
+            TestAuthenticationHandler.SchemeName,
+            _ => { });
+
+    services.PostConfigure<AuthenticationOptions>(options =>
+    {
+        options.DefaultAuthenticateScheme =
+            TestAuthenticationHandler.SchemeName;
+
+        options.DefaultChallengeScheme =
+            TestAuthenticationHandler.SchemeName;
+
+        options.DefaultForbidScheme =
+            TestAuthenticationHandler.SchemeName;
+    });
+
+    services.RemoveAll<IInvitationNotifier>();
+
+    services.AddSingleton<FakeInvitationNotifier>();
+
+    services.AddSingleton<IInvitationNotifier>(provider =>
+        provider.GetRequiredService<FakeInvitationNotifier>());
+});
+```
+
+| Servicio                 | Configuración            | Responsabilidad                                                      |
+| ------------------------ | ------------------------ | -------------------------------------------------------------------- |
+| `AppDbContext`           | PostgreSQL temporal      | Ejecuta operaciones reales de persistencia.                          |
+| `AuthenticationOptions`  | `IntegrationTestBearer`  | Establece el esquema de autenticación utilizado durante las pruebas. |
+| `IInvitationNotifier`    | `FakeInvitationNotifier` | Sustituye el transporte real de correo.                              |
+| `FakeInvitationNotifier` | Singleton                | Conserva la última invitación generada y permite simular errores.    |
+
+El cambio mantiene la persistencia real mediante PostgreSQL, pero utiliza autenticación y notificación controladas para las pruebas.
+
+#### Implementación de TestAuthenticationHandler
+
+**Componente:** `TestAuthenticationHandler`
+
+Hereda de:
+
+```csharp
+AuthenticationHandler<AuthenticationSchemeOptions>
+```
+
+Define el esquema:
+
+```csharp
+public const string SchemeName = "IntegrationTestBearer";
+```
+
+Su responsabilidad es construir identidades autenticadas durante las pruebas de integración.
+
+**1. Autenticación**
+
+El método `HandleAuthenticateAsync()` obtiene el encabezado `Authorization` y lee el token JWT.
+
+```csharp
+string? authorization = Request.Headers.Authorization.ToString();
+
+if (!authorization.StartsWith(
+    "Bearer ",
+    StringComparison.OrdinalIgnoreCase))
+{
+    return Task.FromResult(AuthenticateResult.NoResult());
+}
+
+string token = authorization["Bearer ".Length..].Trim();
+
+JwtSecurityToken jwt =
+    new JwtSecurityTokenHandler().ReadJwtToken(token);
+
+ClaimsIdentity identity = new(
+    jwt.Claims,
+    SchemeName,
+    JwtRegisteredClaimNames.Email,
+    ClaimTypes.Role);
+
+ClaimsPrincipal principal = new(identity);
+
+AuthenticationTicket ticket = new(principal, SchemeName);
+
+return Task.FromResult(AuthenticateResult.Success(ticket));
+```
+
+**Operaciones:**
+
+| Orden | Operación                                | Resultado                                               |
+| ----- | ---------------------------------------- | ------------------------------------------------------- |
+| 1     | Leer el encabezado `Authorization`.      | Obtiene el token enviado por el cliente.                |
+| 2     | Comprobar el prefijo `Bearer`.           | Rechaza la autenticación cuando no está presente.       |
+| 3     | Extraer el token.                        | Obtiene el valor JWT.                                   |
+| 4     | Leer los claims.                         | Obtiene la información contenida en el token.           |
+| 5     | Construir `ClaimsIdentity`.              | Crea una identidad con los tipos de claim configurados. |
+| 6     | Construir `ClaimsPrincipal`.             | Representa al usuario autenticado.                      |
+| 7     | Crear `AuthenticationTicket`.            | Asocia la identidad al esquema de pruebas.              |
+| 8     | Devolver `AuthenticateResult.Success()`. | Confirma la autenticación en el host de integración.    |
+
+**Consideración de seguridad:**
+
+`ReadJwtToken()` interpreta el contenido del token, pero no valida criptográficamente su firma, emisor, audiencia ni expiración.
+
+Por tanto, `TestAuthenticationHandler` proporciona autenticación simulada para el entorno de integración.
+
+Estas pruebas no deben interpretarse como una verificación de la seguridad criptográfica del middleware JWT Bearer utilizado en producción.
+
+**2. Respuestas de autorización**
+
+El handler implementa:
+
+| Método                   | Código HTTP        | Código de error           |
+| ------------------------ | ------------------ | ------------------------- |
+| `HandleChallengeAsync()` | `401 Unauthorized` | `authentication_required` |
+| `HandleForbiddenAsync()` | `403 Forbidden`    | `forbidden`               |
+
+Ambos métodos delegan en `WriteProblemAsync()`.
+
+**3. Contrato de errores**
+
+`WriteProblemAsync()` genera una respuesta JSON con las siguientes propiedades:
+
+| Propiedad | Descripción                                            |
+| --------- | ------------------------------------------------------ |
+| `type`    | Referencia asociada al código HTTP.                    |
+| `title`   | Descripción del error de autenticación o autorización. |
+| `status`  | Código HTTP correspondiente.                           |
+| `code`    | Identificador estable del error.                       |
+| `traceId` | Identificador de trazabilidad de la solicitud.         |
+
+El contenido utiliza:
+
+```text
+application/problem+json
+```
+
+**Importante:**
+
+Este contrato es una implementación mínima para el host de pruebas.
+
+No utiliza directamente `ProblemDetailsResponseFactory` y no incluye todas las propiedades que dicha factoría puede generar, como `detail` e `instance`.
+
+#### Escenarios de integración conservados
+
+La clase `InvitationIntegrationTests` mantiene cinco escenarios funcionales.
+
+| Prueba                                                   | Responsabilidad                                                                             | Resultado esperado                                   |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| `AdminCreatesInvitation_ActivationAllowsLogin()`         | Verifica la creación, activación y autenticación de una cuenta invitada.                    | HTTP 201, 204 y 200 según la operación.              |
+| `InvitationEndpoints_RequireAdminRole()`                 | Comprueba los requisitos de autenticación y rol administrativo.                             | HTTP 401 y 403.                                      |
+| `DuplicateEmail_ReturnsConflict()`                       | Verifica el rechazo de correos previamente registrados.                                     | HTTP 409.                                            |
+| `ResendInvitation_InvalidatesPreviousToken()`            | Comprueba que una nueva invitación invalide el token anterior.                              | HTTP 400 para el token anterior y 204 para el nuevo. |
+| `NotificationFailure_Returns503AndKeepsPendingAccount()` | Verifica el tratamiento de errores de correo y el rechazo del login de la cuenta pendiente. | HTTP 503 y 401.                                      |
+
+Los escenarios utilizan:
+
+- PostgreSQL real mediante Testcontainers.
+- Los controladores HTTP de la aplicación.
+- Los casos de uso de Application.
+- ASP.NET Core Identity para las operaciones de usuarios e invitaciones.
+- Un esquema de autenticación específico para pruebas.
+- Un notificador simulado.
+
+#### Componentes de .NET y proveedores externos
+
+| Componente / Método                  | Origen                                   | Función                                                                             |
+| ------------------------------------ | ---------------------------------------- | ----------------------------------------------------------------------------------- |
+| `WebApplicationFactory<T>`           | Microsoft.AspNetCore.Mvc.Testing         | Ejecuta la aplicación dentro del entorno de pruebas.                                |
+| `WebApplicationFactoryClientOptions` | ASP.NET Core Testing                     | Configura el cliente HTTP utilizado en integración.                                 |
+| `ConfigureAppConfiguration()`        | ASP.NET Core Hosting                     | Personaliza las fuentes de configuración.                                           |
+| `AddInMemoryCollection()`            | Microsoft.Extensions.Configuration       | Incorpora configuraciones en memoria.                                               |
+| `RemoveAll<T>()`                     | Microsoft.Extensions.DependencyInjection | Elimina registros de servicios existentes.                                          |
+| `PostConfigure<T>()`                 | Microsoft.Extensions.Options             | Aplica una configuración adicional después de los registros ordinarios de opciones. |
+| `AuthenticationHandler<TOptions>`    | ASP.NET Core Authentication              | Clase base para implementar esquemas de autenticación.                              |
+| `AuthenticationSchemeOptions`        | ASP.NET Core Authentication              | Representa las opciones de un esquema.                                              |
+| `AuthenticateResult`                 | ASP.NET Core Authentication              | Representa el resultado de autenticación.                                           |
+| `AuthenticationTicket`               | ASP.NET Core Authentication              | Asocia una identidad con un esquema de autenticación.                               |
+| `JwtSecurityTokenHandler`            | System.IdentityModel.Tokens.Jwt          | Permite leer y procesar tokens JWT.                                                 |
+| `ReadJwtToken()`                     | System.IdentityModel.Tokens.Jwt          | Lee el contenido de un JWT sin validar su firma.                                    |
+| `ClaimsIdentity`                     | .NET                                     | Representa una identidad mediante claims.                                           |
+| `ClaimsPrincipal`                    | .NET                                     | Representa al usuario autenticado.                                                  |
+| `PostgreSqlContainer`                | Testcontainers.PostgreSql                | Administra una instancia temporal de PostgreSQL.                                    |
+| `IInvitationNotifier`                | Application                              | Define el contrato de notificación de invitaciones.                                 |
+
+#### Flujo funcional o relaciones
+
+| Orden | Operación                                                     | Componente responsable                         |
+| ----- | ------------------------------------------------------------- | ---------------------------------------------- |
+| 1     | Iniciar PostgreSQL temporal.                                  | `InvitationIntegrationTests.InitializeAsync()` |
+| 2     | Crear una instancia configurada de la API.                    | `TestApiFactory`                               |
+| 3     | Sustituir las fuentes de configuración.                       | `ConfigureAppConfiguration()`                  |
+| 4     | Registrar PostgreSQL, autenticación y notificador de pruebas. | `ConfigureServices()`                          |
+| 5     | Crear el cliente HTTP utilizando HTTPS.                       | `CreateHttpsClient()`                          |
+| 6     | Ejecutar el login para obtener un JWT.                        | `AuthController.Login()`                       |
+| 7     | Incorporar el token Bearer a la solicitud.                    | `SendAsAdminAsync()`                           |
+| 8     | Leer los claims y construir la identidad de prueba.           | `TestAuthenticationHandler`                    |
+| 9     | Evaluar la política de autorización correspondiente.          | ASP.NET Core Authorization                     |
+| 10    | Ejecutar los endpoints y casos de uso.                        | Presentation / Application                     |
+| 11    | Ejecutar operaciones reales de Identity y PostgreSQL.         | Infrastructure                                 |
+| 12    | Verificar códigos y respuestas HTTP.                          | xUnit                                          |
+| 13    | Liberar los recursos temporales.                              | `DisposeAsync()`                               |
+
+#### Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    subgraph Tests["Tests - Integration"]
+        TESTS["InvitationIntegrationTests"]
+        FACTORY["TestApiFactory"]
+        CLIENT["HttpClient HTTPS"]
+        AUTH["TestAuthenticationHandler"]
+        NOTIFIER["FakeInvitationNotifier"]
+        CONTAINER["PostgreSqlContainer"]
+    end
+
+    subgraph Presentation
+        CONTROLLERS["AuthController / UserInvitationsController"]
+        POLICY["Política AdminOnly"]
+    end
+
+    subgraph Application
+        LOGIN["LoginUser"]
+        CREATE["CreateUserInvitation"]
+        ACTIVATE["ActivateUser"]
+        RESEND["ResendUserInvitation"]
+        PORT["IInvitationNotifier"]
+    end
+
+    subgraph Infrastructure
+        IDENTITY["ASP.NET Core Identity"]
+        DB["AppDbContext"]
+    end
+
+    POSTGRES["PostgreSQL 16"]
+
+    TESTS --> FACTORY
+    TESTS --> CLIENT
+
+    FACTORY --> AUTH
+    FACTORY --> NOTIFIER
+    FACTORY --> CONTAINER
+
+    CLIENT --> AUTH
+    AUTH --> POLICY
+    POLICY --> CONTROLLERS
+
+    CONTROLLERS --> LOGIN
+    CONTROLLERS --> CREATE
+    CONTROLLERS --> ACTIVATE
+    CONTROLLERS --> RESEND
+
+    CREATE --> PORT
+    RESEND --> PORT
+
+    NOTIFIER -.->|"Implementa"| PORT
+
+    LOGIN --> IDENTITY
+    CREATE --> IDENTITY
+    ACTIVATE --> IDENTITY
+    RESEND --> IDENTITY
+
+    IDENTITY --> DB
+    DB --> POSTGRES
+    CONTAINER --> POSTGRES
+```
+
+**Interpretación:**
+
+- **Tests:** controla el entorno, las credenciales de prueba y los servicios simulados.
+- **Presentation:** ejecuta los endpoints y mantiene la evaluación de políticas de autorización.
+- **Application:** coordina los casos de uso de autenticación e invitaciones.
+- **Infrastructure:** utiliza ASP.NET Core Identity y PostgreSQL para las operaciones reales de usuarios.
+- **TestAuthenticationHandler:** sustituye la autenticación JWT Bearer de producción por un mecanismo determinista basado en la lectura de claims.
+- **FakeInvitationNotifier:** evita conexiones SMTP y permite controlar errores de notificación.
+
+#### Resultado
+
+Se ajustó la infraestructura de pruebas de integración para utilizar un cliente HTTPS, configuración aislada y un esquema de autenticación específico denominado `IntegrationTestBearer`.
+
+También se mantuvo la ejecución de operaciones reales sobre PostgreSQL y ASP.NET Core Identity, sustituyendo únicamente la autenticación HTTP y el transporte de notificaciones por implementaciones controladas.
+
+Estos cambios facilitan la ejecución reproducible de los escenarios de integración y reducen las dependencias respecto a la configuración local de desarrollo.
+
+**Estado de verificación:** los archivos proporcionados muestran modificaciones de código, pero no incluyen la salida de `dotnet restore`, `dotnet build` ni `dotnet test`. Por tanto, no es posible confirmar desde esta evidencia que la restauración, compilación y pruebas hayan finalizado correctamente.
 
 ---
 
-### 20. Ajustes por pruebas manuales
+### 18. Ajustes por pruebas manuales
 
 ---
 
-### 21. Validación, ejecución local y Git
+### 19. Validación, ejecución local y Git
 
 **Prerrequisitos:** Docker disponible; crear un archivo `.env` local a partir de `.env.example` y sustituir todos los valores de ejemplo por credenciales y secretos propios. **No subir `.env` a Git.**
 
@@ -4652,7 +5081,7 @@ dotnet test FEPP-ContaOps.slnx
 
 ---
 
-### 22. Validación del spec (flujo de trabajo existente):
+### 20. Validación del spec (flujo de trabajo existente):
 
 ```powershell
 /spec-acceptance-validator @specs/03-registro-invitacion-activacion.md
@@ -4662,11 +5091,11 @@ Revisar el spec: [`04-api-invitaciones-y-validacion-identidad.md`](../04-api-inv
 
 ---
 
-### 23. Diagrama Final: Arquitectura del spec 03-registro-invitacion-activacion
+### 21. Diagrama Final: Arquitectura del spec 03-registro-invitacion-activacion
 
 ---
 
-### 24. Comandos Git / PR\*\* (una vez validada la implementación y revisados los cambios)
+### 22. Comandos Git / PR\*\* (una vez validada la implementación y revisados los cambios)
 
 ```powershell
 git add .

@@ -1,13 +1,21 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
 using System.Text.Json;
 using Fepp.ContaOps.Application.Abstractions;
 using Fepp.ContaOps.Application.Results;
+using Fepp.ContaOps.Infrastructure.Persistence;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
+using Microsoft.EntityFrameworkCore;
 using Testcontainers.PostgreSql;
 
 namespace Fepp.ContaOps.IntegrationTests;
@@ -42,7 +50,7 @@ public sealed class InvitationIntegrationTests : IAsyncLifetime
     public async Task AdminCreatesInvitation_ActivationAllowsLogin()
     {
         await using TestApiFactory factory = CreateFactory();
-        using HttpClient client = factory.CreateClient();
+        using HttpClient client = CreateHttpsClient(factory);
         string adminToken = await LoginAsync(client, "admin@example.com", "AdminPassword123!");
         string email = UniqueEmail();
 
@@ -91,7 +99,7 @@ public sealed class InvitationIntegrationTests : IAsyncLifetime
     public async Task InvitationEndpoints_RequireAdminRole()
     {
         await using TestApiFactory factory = CreateFactory();
-        using HttpClient client = factory.CreateClient();
+        using HttpClient client = CreateHttpsClient(factory);
 
         HttpResponseMessage withoutToken = await client.PostAsJsonAsync(
             "/api/users/invitations",
@@ -139,7 +147,7 @@ public sealed class InvitationIntegrationTests : IAsyncLifetime
     public async Task DuplicateEmail_ReturnsConflict()
     {
         await using TestApiFactory factory = CreateFactory();
-        using HttpClient client = factory.CreateClient();
+        using HttpClient client = CreateHttpsClient(factory);
         string token = await LoginAsync(client, "admin@example.com", "AdminPassword123!");
         string email = UniqueEmail();
 
@@ -168,7 +176,7 @@ public sealed class InvitationIntegrationTests : IAsyncLifetime
     public async Task ResendInvitation_InvalidatesPreviousToken()
     {
         await using TestApiFactory factory = CreateFactory();
-        using HttpClient client = factory.CreateClient();
+        using HttpClient client = CreateHttpsClient(factory);
         string adminToken = await LoginAsync(client, "admin@example.com", "AdminPassword123!");
         string email = UniqueEmail();
 
@@ -221,7 +229,7 @@ public sealed class InvitationIntegrationTests : IAsyncLifetime
     public async Task NotificationFailure_Returns503AndKeepsPendingAccount()
     {
         await using TestApiFactory factory = CreateFactory();
-        using HttpClient client = factory.CreateClient();
+        using HttpClient client = CreateHttpsClient(factory);
         string adminToken = await LoginAsync(client, "admin@example.com", "AdminPassword123!");
         string email = UniqueEmail();
         factory.Services.GetRequiredService<FakeInvitationNotifier>().ThrowOnNotify = true;
@@ -247,6 +255,15 @@ public sealed class InvitationIntegrationTests : IAsyncLifetime
         return new TestApiFactory(_database.GetConnectionString());
     }
 
+    private static HttpClient CreateHttpsClient(TestApiFactory factory)
+    {
+        return factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            BaseAddress = new Uri("https://localhost"),
+            AllowAutoRedirect = false
+        });
+    }
+
     private static async Task<string> LoginAsync(HttpClient client, string email, string password)
     {
         HttpResponseMessage response = await client.PostAsJsonAsync(
@@ -268,7 +285,8 @@ public sealed class InvitationIntegrationTests : IAsyncLifetime
         {
             Content = content
         };
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        request.Headers.Remove("Authorization");
+        request.Headers.TryAddWithoutValidation("Authorization", $"Bearer {token}");
         return await client.SendAsync(request);
     }
 
@@ -297,29 +315,141 @@ public sealed class InvitationIntegrationTests : IAsyncLifetime
 
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
-            builder.UseSetting("ConnectionStrings:Default", _connectionString);
-            builder.UseSetting("Jwt:Issuer", "FEPP-ContaOps.Tests");
-            builder.UseSetting("Jwt:Audience", "FEPP-ContaOps.Tests");
-            builder.UseSetting("Jwt:SigningKey", "test-signing-key-with-at-least-32-bytes");
-            builder.UseSetting("Jwt:AccessTokenLifetimeMinutes", "15");
-            builder.UseSetting("BootstrapAdmin:Email", "admin@example.com");
-            builder.UseSetting("BootstrapAdmin:Password", "AdminPassword123!");
-            builder.UseSetting("UserInvitation:TokenLifetimeHours", "24");
-            builder.UseSetting("UserInvitation:ActivationBaseUrl", "https://client.test/activate");
-            builder.UseSetting("Email:Smtp:Host", "localhost");
-            builder.UseSetting("Email:Smtp:Port", "587");
-            builder.UseSetting("Email:Smtp:SecurityMode", "StartTls");
-            builder.UseSetting("Email:Smtp:Username", "test@example.com");
-            builder.UseSetting("Email:Smtp:Password", "test-provider-secret");
-            builder.UseSetting("Email:Smtp:FromAddress", "test@example.com");
-            builder.UseSetting("Email:Smtp:TimeoutSeconds", "5");
+            builder.ConfigureAppConfiguration((_, configuration) =>
+            {
+                configuration.Sources.Clear();
+                configuration.AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["ConnectionStrings:Default"] = _connectionString,
+                    ["Jwt:Issuer"] = "FEPP-ContaOps.Tests",
+                    ["Jwt:Audience"] = "FEPP-ContaOps.Tests",
+                    ["Jwt:SigningKey"] = "test-signing-key-with-at-least-32-bytes",
+                    ["Jwt:AccessTokenLifetimeMinutes"] = "15",
+                    ["BootstrapAdmin:Email"] = "admin@example.com",
+                    ["BootstrapAdmin:Password"] = "AdminPassword123!",
+                    ["UserInvitation:TokenLifetimeHours"] = "24",
+                    ["UserInvitation:ActivationBaseUrl"] = "https://client.test/activate",
+                    ["Email:Smtp:Host"] = "localhost",
+                    ["Email:Smtp:Port"] = "587",
+                    ["Email:Smtp:SecurityMode"] = "StartTls",
+                    ["Email:Smtp:Username"] = "test@example.com",
+                    ["Email:Smtp:Password"] = "test-provider-secret",
+                    ["Email:Smtp:FromAddress"] = "test@example.com",
+                    ["Email:Smtp:TimeoutSeconds"] = "5"
+                });
+            });
             builder.ConfigureServices(services =>
             {
+                services.RemoveAll<DbContextOptions<AppDbContext>>();
+                services.AddDbContext<AppDbContext>(options =>
+                    options.UseNpgsql(_connectionString));
+                services.AddAuthentication(TestAuthenticationHandler.SchemeName)
+                    .AddScheme<AuthenticationSchemeOptions, TestAuthenticationHandler>(
+                        TestAuthenticationHandler.SchemeName,
+                        _ => { });
+                services.PostConfigure<AuthenticationOptions>(options =>
+                {
+                    options.DefaultAuthenticateScheme = TestAuthenticationHandler.SchemeName;
+                    options.DefaultChallengeScheme = TestAuthenticationHandler.SchemeName;
+                    options.DefaultForbidScheme = TestAuthenticationHandler.SchemeName;
+                });
                 services.RemoveAll<IInvitationNotifier>();
                 services.AddSingleton<FakeInvitationNotifier>();
                 services.AddSingleton<IInvitationNotifier>(provider =>
                     provider.GetRequiredService<FakeInvitationNotifier>());
             });
+        }
+    }
+
+    /// <summary>
+    /// Autenticación determinista del host de integración basada en los claims del JWT.
+    /// </summary>
+    private sealed class TestAuthenticationHandler : AuthenticationHandler<AuthenticationSchemeOptions>
+    {
+        /// <summary>
+        /// Nombre del esquema de autenticación aislado para las pruebas.
+        /// </summary>
+        public const string SchemeName = "IntegrationTestBearer";
+
+        /// <summary>
+        /// Inicializa el handler de autenticación de pruebas.
+        /// </summary>
+        /// <param name="options">Opciones del esquema.</param>
+        /// <param name="logger">Fábrica de logs.</param>
+        /// <param name="encoder">Codificador de URL.</param>
+        /// <param name="clock">Reloj del sistema.</param>
+#pragma warning disable CS0618
+        public TestAuthenticationHandler(
+            Microsoft.Extensions.Options.IOptionsMonitor<AuthenticationSchemeOptions> options,
+            ILoggerFactory logger,
+            System.Text.Encodings.Web.UrlEncoder encoder,
+            ISystemClock clock)
+            : base(options, logger, encoder, clock)
+        {
+        }
+#pragma warning restore CS0618
+
+        /// <summary>
+        /// Lee el Bearer emitido por el caso de uso de login y crea su identidad de prueba.
+        /// </summary>
+        /// <returns>Resultado de autenticación.</returns>
+        protected override Task<AuthenticateResult> HandleAuthenticateAsync()
+        {
+            string? authorization = Request.Headers.Authorization.ToString();
+            if (!authorization.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
+            {
+                return Task.FromResult(AuthenticateResult.NoResult());
+            }
+
+            string token = authorization["Bearer ".Length..].Trim();
+            JwtSecurityToken jwt = new JwtSecurityTokenHandler().ReadJwtToken(token);
+            ClaimsIdentity identity = new(
+                jwt.Claims,
+                SchemeName,
+                JwtRegisteredClaimNames.Email,
+                ClaimTypes.Role);
+            ClaimsPrincipal principal = new(identity);
+            AuthenticationTicket ticket = new(principal, SchemeName);
+            return Task.FromResult(AuthenticateResult.Success(ticket));
+        }
+
+        /// <summary>
+        /// Devuelve el error uniforme esperado para una solicitud sin identidad.
+        /// </summary>
+        /// <param name="properties">Propiedades del challenge.</param>
+        protected override Task HandleChallengeAsync(AuthenticationProperties? properties)
+        {
+            return WriteProblemAsync(StatusCodes.Status401Unauthorized, "authentication_required");
+        }
+
+        /// <summary>
+        /// Devuelve el error uniforme esperado para una identidad sin permisos.
+        /// </summary>
+        /// <param name="properties">Propiedades del forbid.</param>
+        protected override Task HandleForbiddenAsync(AuthenticationProperties? properties)
+        {
+            return WriteProblemAsync(StatusCodes.Status403Forbidden, "forbidden");
+        }
+
+        /// <summary>
+        /// Escribe un ProblemDetails mínimo para el host de pruebas.
+        /// </summary>
+        /// <param name="statusCode">Código HTTP de la respuesta.</param>
+        /// <param name="code">Código estable del error.</param>
+        private Task WriteProblemAsync(int statusCode, string code)
+        {
+            Response.StatusCode = statusCode;
+            Response.ContentType = "application/problem+json";
+            return Response.WriteAsync(JsonSerializer.Serialize(new
+            {
+                type = $"https://httpstatuses.com/{statusCode}",
+                title = statusCode == StatusCodes.Status401Unauthorized
+                    ? "Authentication failed."
+                    : "Access forbidden.",
+                status = statusCode,
+                code,
+                traceId = Context.TraceIdentifier
+            }));
         }
     }
 
