@@ -58,6 +58,26 @@ public sealed class LoginUserTests
         Assert.Equal("invalid_credentials", result.Error!.Code);
     }
 
+    /// <summary>
+    /// Comprueba que cuentas no autenticables no se enumeran en el login.
+    /// </summary>
+    [Theory]
+    [InlineData(UserStatus.PendingActivation)]
+    [InlineData(UserStatus.Active)]
+    public async Task NonAuthenticableAccountStates_ReturnInvalidCredentials(UserStatus status)
+    {
+        User user = new(new UserId("user-1"), "user@example.com", ["User"], status);
+        LoginUser login = new(
+            new FakeUserRepository(user),
+            new FakeCredentialService(false),
+            new FakeTokenIssuer());
+
+        var result = await login.ExecuteAsync(new LoginUserInput(user.Email, "wrong"));
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal("invalid_credentials", result.Error!.Code);
+    }
+
     private sealed class FakeUserRepository : IUserRepository
     {
         private readonly User? _user;

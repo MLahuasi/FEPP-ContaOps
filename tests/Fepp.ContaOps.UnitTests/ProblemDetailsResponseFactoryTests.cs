@@ -54,6 +54,40 @@ public sealed class ProblemDetailsResponseFactoryTests
     }
 
     /// <summary>
+    /// Comprueba que un token de activación inválido se traduce a 400 estable.
+    /// </summary>
+    [Fact]
+    public void CreateApplicationErrorResult_InvalidActivationToken_Returns400()
+    {
+        ObjectResult result = ProblemDetailsResponseFactory.CreateApplicationErrorResult(
+            CreateHttpContext(),
+            InvalidActivationTokenError.Instance);
+        ProblemDetails problemDetails = Assert.IsType<ProblemDetails>(result.Value);
+
+        Assert.Equal(StatusCodes.Status400BadRequest, result.StatusCode);
+        Assert.Equal("invalid_activation_token", problemDetails.Extensions["code"]);
+    }
+
+    /// <summary>
+    /// Comprueba que un fallo de correo se traduce a 503 seguro.
+    /// </summary>
+    [Fact]
+    public async Task EmailDeliveryUnavailable_Returns503ProblemDetails()
+    {
+        DefaultHttpContext httpContext = CreateHttpContext();
+        GlobalExceptionHandler handler = new(NullLogger<GlobalExceptionHandler>.Instance);
+
+        bool handled = await handler.TryHandleAsync(
+            httpContext,
+            new EmailDeliveryUnavailableException(),
+            CancellationToken.None);
+
+        Assert.True(handled);
+        Assert.Equal(StatusCodes.Status503ServiceUnavailable, httpContext.Response.StatusCode);
+        Assert.Equal("application/problem+json", httpContext.Response.ContentType);
+    }
+
+    /// <summary>
     /// Comprueba que una cancelación del cliente no se convierte en HTTP 500.
     /// </summary>
     [Fact]

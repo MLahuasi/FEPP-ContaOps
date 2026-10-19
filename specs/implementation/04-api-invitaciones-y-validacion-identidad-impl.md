@@ -2815,6 +2815,460 @@ El servicio devuelve un resultado booleano sin exponer detalles específicos del
 
 ### 12. Agregar pruebas unitarias.
 
+#### Componentes implementados
+
+| Componente                           | Acción | Tipo  | Capa  | Responsabilidad                                                                                      |
+| ------------------------------------ | ------ | ----- | ----- | ---------------------------------------------------------------------------------------------------- |
+| `AdminOnlyPolicyTests`               | Create | class | Tests | Verifica que la política `AdminOnly` exija el rol administrativo.                                    |
+| `IdentityOptionsTests`               | Create | class | Tests | Comprueba los valores predeterminados y las restricciones de configuración de contraseñas y bloqueo. |
+| `InvitationUseCaseTests`             | Create | class | Tests | Verifica la coordinación de los casos de uso de creación, activación y reenvío de invitaciones.      |
+| `InvitationValidationTests`          | Create | class | Tests | Comprueba las validaciones HTTP de los requests de invitación y activación.                          |
+| `LoginUserTests`                     | Create | class | Tests | Verifica los resultados del inicio de sesión utilizando dependencias simuladas.                      |
+| `ProblemDetailsResponseFactoryTests` | Create | class | Tests | Comprueba el mapeo uniforme de errores HTTP y el manejo de excepciones.                              |
+| `FakeInvitationService`              | Create | class | Tests | Simula `IUserInvitationService` y registra los datos recibidos durante las pruebas.                  |
+| `FakeInvitationNotifier`             | Create | class | Tests | Simula el envío de invitaciones y permite provocar errores de entrega.                               |
+| `FakeUserRepository`                 | Create | class | Tests | Simula la búsqueda de usuarios por correo electrónico.                                               |
+| `FakeCredentialService`              | Create | class | Tests | Simula el resultado de la verificación de credenciales.                                              |
+| `FakeTokenIssuer`                    | Create | class | Tests | Simula la emisión de tokens de autenticación.                                                        |
+
+**Ubicación:** `Fepp.ContaOps.UnitTests`
+
+Las pruebas utilizan **xUnit** y verifican el comportamiento de Application, las reglas de configuración de Identity y los contratos HTTP sin requerir una base de datos PostgreSQL ni un servidor SMTP real.
+
+Las clases `Fake` son implementaciones privadas utilizadas exclusivamente dentro de las pruebas.
+
+#### Métodos y funciones principales
+
+**1. Pruebas de autorización y configuración**
+
+| Clase                  | Método                                                     | Responsabilidad                                                                                  |
+| ---------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `AdminOnlyPolicyTests` | `AdminOnlyPolicy_RequiresAdminRole()`                      | Comprueba que la política `AdminOnly` esté registrada y contenga el requisito del rol `Admin`.   |
+| `IdentityOptionsTests` | `PasswordOptions_DefaultsAreSecure()`                      | Verifica los valores predeterminados de la política de contraseñas.                              |
+| `IdentityOptionsTests` | `PasswordOptions_InvalidUniqueCharacterLimit_IsRejected()` | Comprueba que se rechace una cantidad mínima de caracteres únicos superior a la longitud mínima. |
+| `IdentityOptionsTests` | `LockoutOptions_DefaultsAreSecure()`                       | Verifica los valores predeterminados de bloqueo de cuentas.                                      |
+| `IdentityOptionsTests` | `LockoutOptions_NonPositiveValues_AreRejected()`           | Comprueba que se rechacen límites de bloqueo iguales a cero.                                     |
+
+**2. Pruebas de casos de uso**
+
+| Clase                    | Método                                                         | Responsabilidad                                                                             |
+| ------------------------ | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `InvitationUseCaseTests` | `CreateInvitation_NotifiesAfterRegistration()`                 | Verifica que una invitación se notifique después de registrarse correctamente.              |
+| `InvitationUseCaseTests` | `CreateInvitation_WhenNotifierFails_PropagatesDeliveryError()` | Comprueba que los errores de entrega de correo se propaguen al consumidor del caso de uso.  |
+| `InvitationUseCaseTests` | `ActivateUser_DelegatesToInvitationService()`                  | Verifica que el caso de uso transmita el token y la contraseña al servicio de invitaciones. |
+| `InvitationUseCaseTests` | `ResendInvitation_NotifiesNewInvitation()`                     | Comprueba que el reenvío solicite la notificación de la nueva invitación.                   |
+
+**3. Pruebas de validación HTTP**
+
+| Clase                       | Método                                                   | Responsabilidad                                                                             |
+| --------------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `InvitationValidationTests` | `CreateInvitation_ValidEmail_IsAccepted()`               | Comprueba que un correo electrónico válido sea aceptado.                                    |
+| `InvitationValidationTests` | `CreateInvitation_EmailOverLimit_IsRejected()`           | Verifica que se rechacen correos que superan la longitud permitida.                         |
+| `InvitationValidationTests` | `ActivateUser_ValidTransport_IsAccepted()`               | Comprueba que los datos de activación válidos cumplan las restricciones de transporte.      |
+| `InvitationValidationTests` | `ActivateUser_DoesNotDuplicateIdentityComplexityRules()` | Verifica que la API no aplique las reglas de complejidad de contraseña propias de Identity. |
+| `InvitationValidationTests` | `ActivateUser_InvalidIdentifierAndToken_AreRejected()`   | Comprueba el rechazo de identificadores inválidos y tokens vacíos.                          |
+
+**4. Pruebas de autenticación**
+
+| Clase            | Método                                                     | Responsabilidad                                                                                              |
+| ---------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `LoginUserTests` | `ValidCredentials_ReturnsToken()`                          | Comprueba que unas credenciales válidas permitan obtener un token.                                           |
+| `LoginUserTests` | `UnknownUser_ReturnsInvalidCredentials()`                  | Verifica que un usuario inexistente genere el error `invalid_credentials`.                                   |
+| `LoginUserTests` | `InvalidPassword_ReturnsInvalidCredentials()`              | Comprueba que una contraseña incorrecta genere `invalid_credentials`.                                        |
+| `LoginUserTests` | `NonAuthenticableAccountStates_ReturnInvalidCredentials()` | Verifica que una comprobación de credenciales fallida produzca un error uniforme para los estados evaluados. |
+
+**5. Pruebas de errores HTTP**
+
+| Clase                                | Método                                                             | Responsabilidad                                                                                        |
+| ------------------------------------ | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------ |
+| `ProblemDetailsResponseFactoryTests` | `CreateValidationResult_ReturnsUniformProblemDetails()`            | Comprueba que los errores de validación incluyan código, campos y `traceId`.                           |
+| `ProblemDetailsResponseFactoryTests` | `CreateApplicationErrorResult_NotFound_Returns404()`               | Verifica que un recurso inexistente se traduzca a HTTP 404 sin exponer su identificador en el detalle. |
+| `ProblemDetailsResponseFactoryTests` | `CreateApplicationErrorResult_InvalidActivationToken_Returns400()` | Comprueba que un token de activación inválido genere HTTP 400.                                         |
+| `ProblemDetailsResponseFactoryTests` | `EmailDeliveryUnavailable_Returns503ProblemDetails()`              | Verifica que los errores de entrega de correo generen HTTP 503.                                        |
+| `ProblemDetailsResponseFactoryTests` | `CancelledRequest_Returns499()`                                    | Comprueba que una cancelación del cliente no se convierta en HTTP 500.                                 |
+
+#### Pruebas de autorización
+
+**Componente:** `AdminOnlyPolicyTests`
+
+La prueba utiliza una configuración JWT en memoria y registra los servicios de Presentation mediante `AddApi()`.
+
+```csharp
+IAuthorizationPolicyProvider policyProvider = provider
+    .GetRequiredService<IAuthorizationPolicyProvider>();
+
+AuthorizationPolicy? policy =
+    await policyProvider.GetPolicyAsync("AdminOnly");
+
+Assert.NotNull(policy);
+
+RolesAuthorizationRequirement requirement =
+    Assert.IsType<RolesAuthorizationRequirement>(
+        Assert.Single(policy!.Requirements));
+
+Assert.Contains("Admin", requirement.AllowedRoles);
+```
+
+| Verificación                                | Resultado esperado               |
+| ------------------------------------------- | -------------------------------- |
+| Existe la política `AdminOnly`.             | La política no es nula.          |
+| La política contiene un requisito de roles. | `RolesAuthorizationRequirement`. |
+| El requisito incluye el rol `Admin`.        | `AllowedRoles` contiene `Admin`. |
+
+**Relación con el paso 5:**
+
+La prueba verifica la definición de la política registrada en `DependencyInjection.AddApi()`.
+
+No comprueba la ejecución de una solicitud HTTP real ni la validación de un token JWT.
+
+#### Pruebas de configuración de Identity
+
+**Componente:** `IdentityOptionsTests`
+
+Se verifican los valores predeterminados y las restricciones de los modelos configurables implementados en el paso 8.
+
+**1. Política de contraseñas**
+
+| Propiedad                | Valor esperado |
+| ------------------------ | -------------- |
+| `RequiredLength`         | `12`           |
+| `RequireUppercase`       | `true`         |
+| `RequireLowercase`       | `true`         |
+| `RequireDigit`           | `true`         |
+| `RequireNonAlphanumeric` | `true`         |
+| `RequiredUniqueChars`    | `6`            |
+| `IsValid()`              | `true`         |
+
+Adicionalmente, se comprueba que una configuración con `RequiredLength = 5` y `RequiredUniqueChars = 6` sea rechazada.
+
+**2. Política de bloqueo**
+
+| Propiedad                       | Valor esperado |
+| ------------------------------- | -------------- |
+| `AllowedForNewUsers`            | `true`         |
+| `MaxFailedAccessAttempts`       | `5`            |
+| `DefaultLockoutTimeSpanMinutes` | `15`           |
+| `IsValid()`                     | `true`         |
+
+También se comprueba que los parámetros de intentos fallidos y duración de bloqueo iguales a cero sean rechazados.
+
+Estas pruebas verifican las clases de configuración, no la ejecución real del bloqueo de cuentas por ASP.NET Core Identity.
+
+#### Pruebas de casos de uso
+
+**Componente:** `InvitationUseCaseTests`
+
+Los casos de uso se prueban utilizando implementaciones simuladas de los contratos de Application.
+
+| Caso de uso            | Dependencias simuladas                            | Comportamiento verificado                                                 |
+| ---------------------- | ------------------------------------------------- | ------------------------------------------------------------------------- |
+| `CreateUserInvitation` | `FakeInvitationService`, `FakeInvitationNotifier` | Registra la invitación y solicita su notificación.                        |
+| `CreateUserInvitation` | `FakeInvitationService`, `FakeInvitationNotifier` | Propaga `EmailDeliveryUnavailableException` cuando falla la notificación. |
+| `ActivateUser`         | `FakeInvitationService`                           | Transmite el token y la contraseña al servicio de invitaciones.           |
+| `ResendUserInvitation` | `FakeInvitationService`, `FakeInvitationNotifier` | Solicita la notificación de la invitación generada.                       |
+
+**Implementaciones simuladas:**
+
+| Componente               | Interfaz implementada    | Responsabilidad                                                                |
+| ------------------------ | ------------------------ | ------------------------------------------------------------------------------ |
+| `FakeInvitationService`  | `IUserInvitationService` | Devuelve resultados configurados y registra determinados parámetros recibidos. |
+| `FakeInvitationNotifier` | `IInvitationNotifier`    | Registra la invitación notificada y permite simular una excepción de entrega.  |
+
+**Ejemplo: propagación de errores de correo**
+
+```csharp
+FakeInvitationService service = new(
+    Result<UserInvitationResult>.Success(CreateInvitation()));
+
+FakeInvitationNotifier notifier = new(
+    new EmailDeliveryUnavailableException());
+
+CreateUserInvitation useCase = new(service, notifier);
+
+await Assert.ThrowsAsync<EmailDeliveryUnavailableException>(
+    () => useCase.ExecuteAsync(
+        new CreateUserInvitationInput("user@example.com")));
+```
+
+Esta prueba confirma que el caso de uso no oculta los errores operativos producidos durante la entrega de invitaciones.
+
+La excepción puede ser procesada posteriormente por `GlobalExceptionHandler`, documentado en el paso 6.
+
+#### Pruebas de validación HTTP
+
+**Componente:** `InvitationValidationTests`
+
+Se prueban directamente los validadores de los contratos HTTP.
+
+| Validador                              | Escenario                                                     | Resultado esperado |
+| -------------------------------------- | ------------------------------------------------------------- | ------------------ |
+| `CreateUserInvitationRequestValidator` | Correo electrónico válido.                                    | Aceptado.          |
+| `CreateUserInvitationRequestValidator` | Correo electrónico que supera el límite.                      | Rechazado.         |
+| `ActivateUserRequestValidator`         | Identificador GUID, token y contraseña no vacíos.             | Aceptado.          |
+| `ActivateUserRequestValidator`         | Contraseña simple que cumple las restricciones de transporte. | Aceptado.          |
+| `ActivateUserRequestValidator`         | Identificador inválido y token vacío.                         | Rechazado.         |
+
+**Separación de responsabilidades:**
+
+Las pruebas confirman que los validadores HTTP no duplican las políticas de complejidad de contraseña de ASP.NET Core Identity.
+
+| Capa           | Responsabilidad                                               |
+| -------------- | ------------------------------------------------------------- |
+| Presentation   | Validar la estructura y los límites de los datos recibidos.   |
+| Infrastructure | Aplicar las políticas de contraseña configuradas en Identity. |
+
+**Ejemplo:**
+
+```csharp
+ActivateUserRequestValidator validator = new();
+
+var result = await validator.ValidateAsync(
+    new ActivateUserRequest
+    {
+        UserId = "00000000-0000-0000-0000-000000000001",
+        Token = "opaque-token",
+        NewPassword = "simple"
+    });
+
+Assert.True(result.IsValid);
+```
+
+La prueba demuestra que una contraseña simple puede superar la validación HTTP.
+
+Esto no significa que Identity acepte esa contraseña durante la activación.
+
+Las implementaciones de los validadores no se incluyen en los archivos proporcionados, por lo que sus reglas completas no pueden verificarse directamente.
+
+#### Pruebas de autenticación
+
+**Componente:** `LoginUserTests`
+
+El caso de uso `LoginUser` se prueba sin utilizar ASP.NET Core Identity ni PostgreSQL.
+
+**Dependencias simuladas:**
+
+| Componente              | Interfaz implementada    | Responsabilidad                                             |
+| ----------------------- | ------------------------ | ----------------------------------------------------------- |
+| `FakeUserRepository`    | `IUserRepository`        | Devuelve un usuario configurado o `null`.                   |
+| `FakeCredentialService` | `IUserCredentialService` | Devuelve un resultado booleano de verificación.             |
+| `FakeTokenIssuer`       | `ITokenIssuer`           | Devuelve un token de prueba con una expiración configurada. |
+
+**Escenarios implementados:**
+
+| Escenario                                                            | Resultado esperado           |
+| -------------------------------------------------------------------- | ---------------------------- |
+| Usuario existente con credenciales válidas.                          | Resultado exitoso con token. |
+| Usuario inexistente.                                                 | Error `invalid_credentials`. |
+| Contraseña incorrecta.                                               | Error `invalid_credentials`. |
+| Usuario `PendingActivation` cuya verificación de credenciales falla. | Error `invalid_credentials`. |
+| Usuario `Active` cuya verificación de credenciales falla.            | Error `invalid_credentials`. |
+
+**Ejemplo de autenticación exitosa:**
+
+```csharp
+User user = new(
+    new UserId("user-1"),
+    "user@example.com",
+    ["User"]);
+
+LoginUser login = new(
+    new FakeUserRepository(user),
+    new FakeCredentialService(true),
+    new FakeTokenIssuer());
+
+var result = await login.ExecuteAsync(
+    new LoginUserInput(
+        "user@example.com",
+        "Password123!"));
+
+Assert.True(result.IsSuccess);
+Assert.Equal("token", result.Value!.AccessToken);
+Assert.Equal(900, result.Value.ExpiresIn);
+```
+
+**Consideración sobre estados de usuario:**
+
+La prueba `NonAuthenticableAccountStates_ReturnInvalidCredentials()` utiliza `FakeCredentialService(false)` tanto para `PendingActivation` como para `Active`.
+
+Por tanto, verifica que una comprobación de credenciales fallida devuelve `invalid_credentials` en ambos escenarios.
+
+No demuestra por sí sola que `LoginUser` rechace una cuenta pendiente cuando el servicio de credenciales devuelve `true`.
+
+La restricción efectiva del estado `PendingActivation` en `IdentityCredentialService` se documentó en el paso 11.
+
+#### Pruebas de errores HTTP
+
+**Componente:** `ProblemDetailsResponseFactoryTests`
+
+Se verifican los contratos de respuesta de errores y el tratamiento de excepciones.
+
+| Escenario                           | Estado HTTP esperado | Código de error                                   |
+| ----------------------------------- | -------------------- | ------------------------------------------------- |
+| Error de validación.                | `400`                | `validation_error`                                |
+| Recurso inexistente.                | `404`                | `resource_not_found`                              |
+| Token de activación inválido.       | `400`                | `invalid_activation_token`                        |
+| Error de entrega de correo.         | `503`                | Definido por `EmailDeliveryUnavailableException`. |
+| Solicitud cancelada por el cliente. | `499`                | No se verifica el cuerpo de la respuesta.         |
+
+**Validaciones adicionales:**
+
+- Los errores de validación incluyen `traceId`.
+- Los errores de validación incorporan la extensión `errors`.
+- Los errores de recurso inexistente no incluyen el identificador solicitado en `ProblemDetails.Detail`.
+- Los errores de correo utilizan el tipo de contenido `application/problem+json`.
+- Las cancelaciones del cliente no se convierten en errores HTTP 500.
+
+**Ejemplo: token de activación inválido**
+
+```csharp
+ObjectResult result =
+    ProblemDetailsResponseFactory.CreateApplicationErrorResult(
+        CreateHttpContext(),
+        InvalidActivationTokenError.Instance);
+
+ProblemDetails problemDetails =
+    Assert.IsType<ProblemDetails>(result.Value);
+
+Assert.Equal(
+    StatusCodes.Status400BadRequest,
+    result.StatusCode);
+
+Assert.Equal(
+    "invalid_activation_token",
+    problemDetails.Extensions["code"]);
+```
+
+Esta prueba verifica el mapeo incorporado en el paso 6.
+
+#### Componentes de .NET y proveedores externos
+
+| Componente / Método                | Origen                                   | Función                                                                |
+| ---------------------------------- | ---------------------------------------- | ---------------------------------------------------------------------- |
+| `[Fact]`                           | xUnit                                    | Identifica una prueba individual.                                      |
+| `[Theory]`                         | xUnit                                    | Define una prueba parametrizada.                                       |
+| `[InlineData]`                     | xUnit                                    | Proporciona valores para ejecutar una prueba parametrizada.            |
+| `Assert.Equal()`                   | xUnit                                    | Comprueba la igualdad entre valores.                                   |
+| `Assert.True()` / `Assert.False()` | xUnit                                    | Comprueba resultados booleanos.                                        |
+| `Assert.ThrowsAsync<T>()`          | xUnit                                    | Verifica que una operación asincrónica lance una excepción específica. |
+| `Assert.IsType<T>()`               | xUnit                                    | Comprueba el tipo exacto de un objeto.                                 |
+| `Assert.Contains()`                | xUnit                                    | Verifica la presencia de un elemento o valor.                          |
+| `ConfigurationBuilder`             | Microsoft.Extensions.Configuration       | Construye configuraciones para las pruebas.                            |
+| `AddInMemoryCollection()`          | Microsoft.Extensions.Configuration       | Proporciona valores de configuración sin utilizar archivos externos.   |
+| `ServiceCollection`                | Microsoft.Extensions.DependencyInjection | Permite registrar servicios para las pruebas.                          |
+| `BuildServiceProvider()`           | Microsoft.Extensions.DependencyInjection | Construye el proveedor de servicios.                                   |
+| `IAuthorizationPolicyProvider`     | ASP.NET Core Authorization               | Permite recuperar políticas de autorización registradas.               |
+| `RolesAuthorizationRequirement`    | ASP.NET Core Authorization               | Representa un requisito de autorización basado en roles.               |
+| `DefaultHttpContext`               | ASP.NET Core                             | Proporciona un contexto HTTP para pruebas.                             |
+| `NullLogger<T>`                    | Microsoft.Extensions.Logging             | Proporciona un logger que descarta los mensajes registrados.           |
+| `Task.FromResult()`                | .NET                                     | Devuelve una tarea completada con un resultado.                        |
+| `Task.FromException()`             | .NET                                     | Devuelve una tarea fallida con una excepción específica.               |
+
+#### Cobertura funcional de las pruebas
+
+| Funcionalidad                       | Clase de pruebas                     | Verificación                                             |
+| ----------------------------------- | ------------------------------------ | -------------------------------------------------------- |
+| Política administrativa `AdminOnly` | `AdminOnlyPolicyTests`               | Definición de la política y rol requerido.               |
+| Política de contraseñas             | `IdentityOptionsTests`               | Valores predeterminados y validaciones de configuración. |
+| Bloqueo de cuentas                  | `IdentityOptionsTests`               | Valores predeterminados y restricciones numéricas.       |
+| Crear invitación                    | `InvitationUseCaseTests`             | Coordinación del registro y notificación.                |
+| Propagar errores de correo          | `InvitationUseCaseTests`             | Propagación de `EmailDeliveryUnavailableException`.      |
+| Activar usuario                     | `InvitationUseCaseTests`             | Delegación de token y contraseña.                        |
+| Reenviar invitación                 | `InvitationUseCaseTests`             | Solicitud de notificación.                               |
+| Validar invitación                  | `InvitationValidationTests`          | Formato y longitud del correo.                           |
+| Validar activación                  | `InvitationValidationTests`          | Identificador, token y límites HTTP.                     |
+| Login exitoso                       | `LoginUserTests`                     | Resultado con token de acceso.                           |
+| Login fallido                       | `LoginUserTests`                     | Error uniforme `invalid_credentials`.                    |
+| Errores de validación               | `ProblemDetailsResponseFactoryTests` | Contrato HTTP 400.                                       |
+| Recurso inexistente                 | `ProblemDetailsResponseFactoryTests` | Contrato HTTP 404.                                       |
+| Token inválido                      | `ProblemDetailsResponseFactoryTests` | Contrato HTTP 400.                                       |
+| Error de correo                     | `ProblemDetailsResponseFactoryTests` | Contrato HTTP 503.                                       |
+| Cancelación del cliente             | `ProblemDetailsResponseFactoryTests` | Estado HTTP 499.                                         |
+
+**Alcance:**
+
+Las pruebas son principalmente unitarias y utilizan dependencias simuladas.
+
+No comprueban directamente:
+
+- La persistencia real en PostgreSQL.
+- El envío de correos mediante SMTP.
+- La ejecución completa de endpoints HTTP.
+- La validación criptográfica de tokens de invitación.
+- El bloqueo efectivo después de varios intentos fallidos de autenticación.
+- La creación y activación completas de cuentas utilizando una base de datos real.
+
+Estos comportamientos requieren pruebas de integración.
+
+#### Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    subgraph Tests["Tests - Fepp.ContaOps.UnitTests"]
+        AUTH["AdminOnlyPolicyTests"]
+        OPTIONS["IdentityOptionsTests"]
+        INVITATION["InvitationUseCaseTests"]
+        VALIDATION["InvitationValidationTests"]
+        LOGIN["LoginUserTests"]
+        PROBLEMS["ProblemDetailsResponseFactoryTests"]
+
+        FAKES["FakeInvitationService / FakeInvitationNotifier"]
+        LOGINFAKES["FakeUserRepository / FakeCredentialService / FakeTokenIssuer"]
+    end
+
+    subgraph Presentation
+        POLICY["AdminOnly"]
+        VALIDATORS["Request Validators"]
+        HTTPERROR["ProblemDetailsResponseFactory"]
+        HANDLER["GlobalExceptionHandler"]
+    end
+
+    subgraph Application
+        USECASES["CreateUserInvitation / ActivateUser / ResendUserInvitation"]
+        LOGINUC["LoginUser"]
+        PORTS["Interfaces de Application"]
+    end
+
+    subgraph Infrastructure
+        IDENTITY["IdentityPasswordOptions / IdentityLockoutOptions"]
+    end
+
+    AUTH --> POLICY
+    OPTIONS --> IDENTITY
+
+    VALIDATION --> VALIDATORS
+    PROBLEMS --> HTTPERROR
+    PROBLEMS --> HANDLER
+
+    INVITATION --> USECASES
+    LOGIN --> LOGINUC
+
+    FAKES -.->|"Implementan"| PORTS
+    LOGINFAKES -.->|"Implementan"| PORTS
+
+    USECASES --> PORTS
+    LOGINUC --> PORTS
+```
+
+**Interpretación:**
+
+- **Tests:** contiene pruebas organizadas por funcionalidad y componentes simulados.
+- **Presentation:** se verifican las políticas de autorización, validadores y contratos de errores HTTP.
+- **Application:** se comprueba la coordinación de los casos de uso mediante interfaces.
+- **Infrastructure:** se verifican los modelos de configuración de seguridad sin ejecutar sus adaptadores contra servicios reales.
+- **Dependencias simuladas:** permiten comprobar los casos de uso de forma aislada, sin requerir Identity, PostgreSQL ni SMTP.
+
+#### Resultado
+
+Se incorporaron seis clases de pruebas unitarias que cubren autorización administrativa, políticas de seguridad, casos de uso de invitaciones, validaciones HTTP, autenticación y manejo uniforme de errores.
+
+Las pruebas utilizan implementaciones simuladas de los contratos de Application para verificar el comportamiento de los casos de uso sin depender de servicios externos.
+
+También comprueban el mapeo de errores HTTP 400, 404, 503 y 499, así como los requisitos de la política `AdminOnly`.
+
+Con esta implementación se establece una base de pruebas automatizadas para detectar regresiones funcionales en el ciclo de invitaciones y autenticación de FEPP ContaOps.
+
+**Nota:** Los archivos proporcionados contienen las pruebas implementadas, pero no los resultados de su ejecución. Por tanto, no puede afirmarse que todas hayan finalizado correctamente sin consultar la salida de `dotnet test`.
+
 ---
 
 ### 13. Agregar pruebas de integración.
