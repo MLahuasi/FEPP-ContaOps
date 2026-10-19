@@ -6,6 +6,7 @@ using Fepp.ContaOps.Application.Results;
 using Fepp.ContaOps.Application.Users.CreateUserInvitation;
 using Fepp.ContaOps.Application.Users.ResendUserInvitation;
 using Fepp.ContaOps.Domain.Users;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 namespace Fepp.ContaOps.Api.Controllers;
@@ -15,6 +16,7 @@ namespace Fepp.ContaOps.Api.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/users")]
+[Authorize(Policy = "AdminOnly")]
 public sealed class UserInvitationsController : ControllerBase
 {
     /// <summary>

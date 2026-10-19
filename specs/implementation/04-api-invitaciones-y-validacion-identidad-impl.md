@@ -746,6 +746,281 @@ Esta implementación establece la comunicación entre los clientes HTTP y los pr
 
 ### 5. Aplicar política AdminOnly.
 
+#### Componentes implementados
+
+| Componente                  | Acción      | Tipo           | Capa           | Responsabilidad                                                                                                                  |
+| --------------------------- | ----------- | -------------- | -------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `UserInvitationsController` | Update      | class          | Presentation   | Aplica la política `AdminOnly` a los endpoints de creación y reenvío de invitaciones.                                            |
+| `DependencyInjection`       | Update      | class (static) | Presentation   | Configura la autenticación JWT, registra la política de autorización `AdminOnly` y personaliza las respuestas HTTP de seguridad. |
+| `IdentitySeeder`            | Reutilizado | class          | Infrastructure | Proporciona la constante `AdminRole`, utilizada para identificar el rol administrativo requerido.                                |
+
+**Ubicaciones:**
+
+- `Fepp.ContaOps.Api.Controllers.UserInvitationsController`
+- `Fepp.ContaOps.Api.DependencyInjection`
+- `Fepp.ContaOps.Infrastructure.Identity.IdentitySeeder`
+
+La implementación separa la **definición de la política** de su **aplicación a los endpoints HTTP**.
+
+#### Definición y aplicación de AdminOnly
+
+**1. Definición de la política**
+
+La política `AdminOnly` se registra en el método `AddApi()` de la clase `DependencyInjection`, perteneciente a Presentation.
+
+```csharp
+services.AddAuthorization(options =>
+{
+    options.AddPolicy("AdminOnly", policy =>
+        policy.RequireRole(IdentitySeeder.AdminRole));
+});
+```
+
+| Elemento                      | Responsabilidad                                                          |
+| ----------------------------- | ------------------------------------------------------------------------ |
+| `AddAuthorization()`          | Registra y configura los servicios de autorización de ASP.NET Core.      |
+| `AddPolicy("AdminOnly", ...)` | Define una política de autorización denominada `AdminOnly`.              |
+| `RequireRole()`               | Exige que el usuario autenticado pertenezca al rol especificado.         |
+| `IdentitySeeder.AdminRole`    | Proporciona el nombre del rol administrativo definido en Infrastructure. |
+
+La política utiliza autorización basada en roles (**Role-Based Access Control, RBAC**).
+
+**2. Aplicación de la política**
+
+En `UserInvitationsController` se incorpora:
+
+```csharp
+[ApiController]
+[Route("api/users")]
+[Authorize(Policy = "AdminOnly")]
+public sealed class UserInvitationsController : ControllerBase
+```
+
+El atributo `[Authorize]` aplica la política a todas las acciones del controlador.
+
+**Endpoints protegidos:**
+
+| Método | Endpoint                      | Operación           | Política    |
+| ------ | ----------------------------- | ------------------- | ----------- |
+| POST   | `/api/users/invitations`      | Crear invitación    | `AdminOnly` |
+| POST   | `/api/users/{id}/invitations` | Reenviar invitación | `AdminOnly` |
+
+Los endpoints de autenticación y activación de `AuthController` mantienen sus atributos `[AllowAnonymous]` y no están sujetos a esta política.
+
+#### Métodos y funciones principales
+
+| Clase                       | Método                            | Responsabilidad                                                                               |
+| --------------------------- | --------------------------------- | --------------------------------------------------------------------------------------------- |
+| `DependencyInjection`       | `AddApi()`                        | Registra los servicios HTTP, configura la autenticación JWT y define la política `AdminOnly`. |
+| `DependencyInjection`       | `WriteAuthenticationErrorAsync()` | Genera respuestas uniformes `ProblemDetails` para errores HTTP 401 y 403.                     |
+| `UserInvitationsController` | `CreateInvitation()`              | Ejecuta la creación de invitaciones cuando la solicitud está autorizada.                      |
+| `UserInvitationsController` | `ResendInvitation()`              | Ejecuta el reenvío de invitaciones cuando la solicitud está autorizada.                       |
+
+#### Configuración de autenticación JWT
+
+La autenticación se configura dentro de `DependencyInjection.AddApi()` mediante:
+
+```csharp
+services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
+    {
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidIssuer = jwtOptions.Issuer,
+
+            ValidateAudience = true,
+            ValidAudience = jwtOptions.Audience,
+
+            ValidateIssuerSigningKey = true,
+            IssuerSigningKey = new SymmetricSecurityKey(
+                Encoding.UTF8.GetBytes(jwtOptions.SigningKey)),
+
+            ValidateLifetime = true,
+            ClockSkew = TimeSpan.Zero,
+
+            NameClaimType = JwtRegisteredClaimNames.Email,
+            RoleClaimType = ClaimTypes.Role
+        };
+    });
+```
+
+**Parámetros relevantes:**
+
+| Parámetro                  | Configuración                   | Responsabilidad                                                           |
+| -------------------------- | ------------------------------- | ------------------------------------------------------------------------- |
+| `ValidateIssuer`           | `true`                          | Comprueba que el token provenga del emisor configurado.                   |
+| `ValidateAudience`         | `true`                          | Comprueba que el token esté destinado a la API.                           |
+| `ValidateIssuerSigningKey` | `true`                          | Habilita la validación de la clave utilizada para verificar la firma.     |
+| `IssuerSigningKey`         | `SymmetricSecurityKey`          | Establece la clave simétrica de validación.                               |
+| `ValidateLifetime`         | `true`                          | Comprueba la vigencia del token.                                          |
+| `ClockSkew`                | `TimeSpan.Zero`                 | Elimina la tolerancia adicional de tiempo durante la validación.          |
+| `NameClaimType`            | `JwtRegisteredClaimNames.Email` | Identifica el claim utilizado como nombre del usuario.                    |
+| `RoleClaimType`            | `ClaimTypes.Role`               | Identifica el tipo de claim utilizado para evaluar los roles del usuario. |
+
+**Relación entre JWT y AdminOnly:**
+
+La política `AdminOnly` utiliza los roles presentes en la identidad autenticada.
+
+ASP.NET Core interpreta los claims de rol según `RoleClaimType` y los compara con el valor definido en `IdentitySeeder.AdminRole`.
+
+Por tanto, para superar la autorización, el usuario debe estar autenticado y tener asignado el rol administrativo requerido.
+
+El código proporcionado no incluye la generación del JWT, por lo que no permite verificar cómo se incorporan originalmente los claims de rol al token.
+
+#### Manejo de errores de autenticación y autorización
+
+La configuración de JWT incorpora dos eventos:
+
+| Evento        | Estado HTTP        | Código de error           | Responsabilidad                                                              |
+| ------------- | ------------------ | ------------------------- | ---------------------------------------------------------------------------- |
+| `OnChallenge` | `401 Unauthorized` | `authentication_required` | Genera una respuesta cuando se requiere autenticación y no se ha satisfecho. |
+| `OnForbidden` | `403 Forbidden`    | `forbidden`               | Genera una respuesta cuando el usuario no tiene permisos suficientes.        |
+
+Ambos eventos utilizan `WriteAuthenticationErrorAsync()`.
+
+**Implementación:**
+
+```csharp
+private static Task WriteAuthenticationErrorAsync(
+    HttpContext httpContext,
+    int statusCode,
+    string detail,
+    string code)
+{
+    httpContext.Response.StatusCode = statusCode;
+    httpContext.Response.ContentType = "application/problem+json";
+
+    string responseBody = JsonSerializer.Serialize(
+        ProblemDetailsResponseFactory.Create(
+            httpContext,
+            statusCode,
+            statusCode == StatusCodes.Status401Unauthorized
+                ? "Authentication failed."
+                : "Access forbidden.",
+            detail,
+            code));
+
+    return httpContext.Response.WriteAsync(responseBody);
+}
+```
+
+El método reutiliza `ProblemDetailsResponseFactory`, implementado en el paso 3, para mantener un formato consistente de errores HTTP.
+
+**Comportamiento:**
+
+| Condición                                     | Resultado                                      |
+| --------------------------------------------- | ---------------------------------------------- |
+| Solicitud sin autenticación válida            | `401 Unauthorized`                             |
+| Usuario autenticado sin el rol requerido      | `403 Forbidden`                                |
+| Usuario autenticado con el rol administrativo | Se permite ejecutar la acción del controlador. |
+
+**Ejemplo de respuesta HTTP 403:**
+
+```json
+{
+  "type": "https://httpstatuses.com/403",
+  "title": "Access forbidden.",
+  "status": 403,
+  "detail": "You do not have permission to access this resource.",
+  "instance": "/api/users/invitations",
+  "code": "forbidden",
+  "traceId": "0HN123456789"
+}
+```
+
+La ruta y el identificador de trazabilidad son ilustrativos.
+
+#### Componentes de .NET y proveedores externos
+
+| Componente / Método          | Origen                         | Función                                                       |
+| ---------------------------- | ------------------------------ | ------------------------------------------------------------- |
+| `[Authorize]`                | ASP.NET Core Authorization     | Exige el cumplimiento de una política de autorización.        |
+| `AddAuthorization()`         | ASP.NET Core Authorization     | Registra y configura los servicios de autorización.           |
+| `AddPolicy()`                | ASP.NET Core Authorization     | Define una política de autorización por nombre.               |
+| `RequireRole()`              | ASP.NET Core Authorization     | Establece como requisito la pertenencia a un rol.             |
+| `AddAuthentication()`        | ASP.NET Core Authentication    | Configura el esquema de autenticación predeterminado.         |
+| `AddJwtBearer()`             | ASP.NET Core JWT Bearer        | Configura la autenticación mediante tokens JWT.               |
+| `TokenValidationParameters`  | Microsoft.IdentityModel.Tokens | Define las reglas de validación del token.                    |
+| `SymmetricSecurityKey`       | Microsoft.IdentityModel.Tokens | Representa una clave criptográfica simétrica.                 |
+| `ClaimTypes.Role`            | .NET                           | Identifica el tipo de claim utilizado para representar roles. |
+| `JwtBearerEvents`            | ASP.NET Core JWT Bearer        | Permite personalizar eventos de autenticación y autorización. |
+| `JsonSerializer.Serialize()` | System.Text.Json               | Serializa la respuesta `ProblemDetails` a JSON.               |
+
+#### Flujo funcional o relaciones
+
+| Orden | Operación                                                            | Componente responsable      |
+| ----- | -------------------------------------------------------------------- | --------------------------- |
+| 1     | El cliente envía una solicitud HTTP con un token JWT Bearer.         | Cliente HTTP                |
+| 2     | ASP.NET Core valida firma, emisor, audiencia y vigencia del token.   | JWT Bearer Authentication   |
+| 3     | Se construye la identidad autenticada con sus claims.                | ASP.NET Core Authentication |
+| 4     | Se identifica la política `AdminOnly` aplicada al controlador.       | ASP.NET Core Authorization  |
+| 5     | Se comprueba que el usuario tenga el rol `IdentitySeeder.AdminRole`. | `RequireRole()`             |
+| 6     | Si falta autenticación válida, se devuelve HTTP 401.                 | `OnChallenge`               |
+| 7     | Si el usuario no cumple la política, se devuelve HTTP 403.           | `OnForbidden`               |
+| 8     | Si cumple los requisitos, se ejecuta la acción solicitada.           | `UserInvitationsController` |
+| 9     | El controlador delega la operación al caso de uso correspondiente.   | Application                 |
+
+#### Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    CLIENT["Cliente HTTP"]
+
+    subgraph Presentation["Presentation - API"]
+        JWT["JWT Bearer Authentication"]
+        POLICY["Política AdminOnly"]
+        CONTROLLER["UserInvitationsController"]
+        ERRORS["ProblemDetailsResponseFactory"]
+        HTTP401["401 Unauthorized"]
+        HTTP403["403 Forbidden"]
+    end
+
+    subgraph Infrastructure
+        ROLE["IdentitySeeder.AdminRole"]
+    end
+
+    subgraph Application
+        CREATE["CreateUserInvitation"]
+        RESEND["ResendUserInvitation"]
+    end
+
+    CLIENT -->|"Bearer Token"| JWT
+
+    JWT -->|"Token válido"| POLICY
+    JWT -->|"Token inválido o ausente"| HTTP401
+
+    ROLE -.->|"Rol requerido"| POLICY
+
+    POLICY -->|"Rol autorizado"| CONTROLLER
+    POLICY -->|"Rol insuficiente"| HTTP403
+
+    HTTP401 --> ERRORS
+    HTTP403 --> ERRORS
+
+    CONTROLLER --> CREATE
+    CONTROLLER --> RESEND
+```
+
+**Interpretación:**
+
+- **Presentation:** configura la autenticación JWT, define `AdminOnly` y protege los endpoints administrativos.
+- **Infrastructure:** proporciona el identificador del rol administrativo mediante `IdentitySeeder.AdminRole`.
+- **Application:** ejecuta los casos de uso de invitaciones una vez superada la autorización.
+- **ProblemDetailsResponseFactory:** proporciona el contrato uniforme utilizado para las respuestas de autenticación y autorización.
+
+La autorización se ejecuta en el adaptador HTTP, evitando incorporar dependencias de ASP.NET Core en los casos de uso de Application.
+
+#### Resultado
+
+Se implementó la política de autorización `AdminOnly` mediante `DependencyInjection.AddApi()` y se aplicó a `UserInvitationsController`.
+
+La política exige que el usuario autenticado pertenezca al rol administrativo definido por `IdentitySeeder.AdminRole`.
+
+Adicionalmente, se configuró la validación de tokens JWT y la generación de respuestas uniformes `401 Unauthorized` y `403 Forbidden`.
+
+Con estos cambios, la creación y el reenvío de invitaciones quedan protegidos mediante autorización basada en roles, manteniendo la separación de responsabilidades establecida por Clean Architecture.
+
 ---
 
 ### 6. Completar mapeo de errores HTTP.
