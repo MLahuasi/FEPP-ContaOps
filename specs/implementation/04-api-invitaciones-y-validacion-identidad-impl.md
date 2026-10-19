@@ -1025,6 +1025,267 @@ Con estos cambios, la creación y el reenvío de invitaciones quedan protegidos 
 
 ### 6. Completar mapeo de errores HTTP.
 
+#### Componentes implementados
+
+| Componente                      | Acción         | Tipo           | Capa         | Responsabilidad                                                                                                                 |
+| ------------------------------- | -------------- | -------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------- |
+| `GlobalExceptionHandler`        | No verificable | class          | Presentation | Captura excepciones no controladas y genera respuestas HTTP uniformes y seguras.                                                |
+| `ProblemDetailsResponseFactory` | Update         | class (static) | Presentation | Incorpora el tratamiento de `InvalidActivationTokenError` y mantiene la conversión de errores de Application a respuestas HTTP. |
+
+**Ubicaciones:**
+
+- `Fepp.ContaOps.Api.Exceptions.GlobalExceptionHandler`
+- `Fepp.ContaOps.Api.Validation.ProblemDetailsResponseFactory`
+
+La implementación distingue dos categorías de errores:
+
+- **Errores esperados:** representados mediante `ApplicationError` y transformados por `ProblemDetailsResponseFactory`.
+- **Excepciones:** procesadas mediante `GlobalExceptionHandler`, que registra información de diagnóstico y devuelve respuestas HTTP seguras.
+
+El código permite verificar la actualización de `ProblemDetailsResponseFactory` respecto al paso 3, pero no determina si `GlobalExceptionHandler` fue creado o modificado.
+
+#### Métodos y funciones principales
+
+| Clase                           | Método                                                 | Responsabilidad                                                                                                 |
+| ------------------------------- | ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------- |
+| `GlobalExceptionHandler`        | `TryHandleAsync()`                                     | Captura excepciones, identifica su categoría, registra el incidente y genera la respuesta HTTP correspondiente. |
+| `GlobalExceptionHandler`        | `WriteProblemDetailsAsync()`                           | Serializa y escribe una respuesta `ProblemDetails` sin exponer información interna de la excepción.             |
+| `ProblemDetailsResponseFactory` | `CreateApplicationErrorResult()`                       | Convierte errores tipados de Application en respuestas HTTP, incluyendo errores de tokens de activación.        |
+| `ProblemDetailsResponseFactory` | `CreateValidationResult(ValidationResult)`             | Agrupa errores de FluentValidation por propiedad.                                                               |
+| `ProblemDetailsResponseFactory` | `CreateModelStateValidationResult()`                   | Convierte errores de model binding en respuestas HTTP 400.                                                      |
+| `ProblemDetailsResponseFactory` | `CreateValidationResult(Dictionary<string, string[]>)` | Construye respuestas uniformes para errores de validación.                                                      |
+| `ProblemDetailsResponseFactory` | `Create()`                                             | Genera la estructura común de `ProblemDetails`, incluyendo código de error y trazabilidad.                      |
+
+#### Mapeo de errores HTTP
+
+**1. Errores esperados de Application**
+
+La factoría utiliza una expresión `switch` para determinar el código HTTP a partir del tipo de error.
+
+| Error de Application          | Estado HTTP                 | Detalle de respuesta                                       |
+| ----------------------------- | --------------------------- | ---------------------------------------------------------- |
+| `ValidationError`             | `400 Bad Request`           | `One or more validation errors occurred.`                  |
+| `InvalidActivationTokenError` | `400 Bad Request`           | Mensaje definido en `InvalidActivationTokenError.Message`. |
+| `AuthenticationError`         | `401 Unauthorized`          | `The supplied credentials are invalid.`                    |
+| `ResourceNotFoundError`       | `404 Not Found`             | Mensaje definido en `ResourceNotFoundError.Message`.       |
+| `ConflictError`               | `409 Conflict`              | Mensaje definido en `ConflictError.Message`.               |
+| Otros errores                 | `500 Internal Server Error` | `The request could not be completed.`                      |
+
+**Cambio principal:**
+
+Se incorpora el tratamiento explícito de `InvalidActivationTokenError`:
+
+```csharp
+int status = error switch
+{
+    ValidationError => StatusCodes.Status400BadRequest,
+    InvalidActivationTokenError => StatusCodes.Status400BadRequest,
+    AuthenticationError => StatusCodes.Status401Unauthorized,
+    ResourceNotFoundError => StatusCodes.Status404NotFound,
+    ConflictError => StatusCodes.Status409Conflict,
+    _ => StatusCodes.Status500InternalServerError
+};
+```
+
+Este cambio permite representar un token de activación inválido mediante un error HTTP 400, sin clasificarlo como un error interno del servidor.
+
+El código de error enviado al cliente se obtiene de `ApplicationError.Code`.
+
+**2. Excepciones procesadas globalmente**
+
+`GlobalExceptionHandler` implementa un mapeo independiente para excepciones.
+
+| Excepción                                            | Estado HTTP                 | Código de error                               | Descripción                                                        |
+| ---------------------------------------------------- | --------------------------- | --------------------------------------------- | ------------------------------------------------------------------ |
+| `EmailDeliveryUnavailableException`                  | `503 Service Unavailable`   | `EmailDeliveryUnavailableException.ErrorCode` | El servicio no pudo entregar la invitación por correo electrónico. |
+| `OperationCanceledException` con solicitud cancelada | `499`                       | `request_cancelled`                           | El cliente canceló la solicitud HTTP.                              |
+| Otras excepciones                                    | `500 Internal Server Error` | `unexpected_error`                            | Ocurrió un error inesperado durante el procesamiento.              |
+
+**Consideraciones:**
+
+- `503` permite identificar específicamente problemas de disponibilidad del servicio de correo.
+- `500` representa excepciones que no tienen un tratamiento específico.
+- `499` identifica una solicitud cancelada por el cliente; es un código no estándar de HTTP.
+- Las excepciones se registran mediante `ILogger<GlobalExceptionHandler>`.
+- Los detalles internos de las excepciones no se incluyen en las respuestas HTTP.
+
+#### Manejo de excepciones no controladas
+
+**1. Excepciones del servicio de correo**
+
+Cuando se captura una `EmailDeliveryUnavailableException`, se devuelve:
+
+| Propiedad | Valor                                         |
+| --------- | --------------------------------------------- |
+| `Status`  | `503`                                         |
+| `Title`   | `Email delivery is unavailable.`              |
+| `Detail`  | `The invitation could not be delivered.`      |
+| `Code`    | `EmailDeliveryUnavailableException.ErrorCode` |
+
+Esto permite diferenciar los errores de entrega de invitaciones de otros errores inesperados.
+
+**2. Excepciones inesperadas**
+
+Para cualquier excepción sin tratamiento específico:
+
+| Propiedad | Valor                                 |
+| --------- | ------------------------------------- |
+| `Status`  | `500`                                 |
+| `Title`   | `An unexpected error occurred.`       |
+| `Detail`  | `The request could not be completed.` |
+| `Code`    | `unexpected_error`                    |
+
+El handler registra la excepción completa, pero devuelve únicamente información genérica al consumidor de la API.
+
+**3. Cancelación de solicitudes**
+
+Cuando ocurre una `OperationCanceledException` y `HttpContext.RequestAborted.IsCancellationRequested` es verdadero:
+
+1. Se registra un mensaje informativo mediante `LogInformation()`.
+2. Se establece el código HTTP `499`.
+3. Se devuelve `true`, indicando que la excepción fue gestionada.
+
+**Observación técnica:**
+
+La condición interna que intenta escribir `ProblemDetails` cuando `RequestAborted.IsCancellationRequested` es falso no se cumple dentro de esta rama, porque previamente se exigió que fuera verdadero.
+
+Por tanto, en el código proporcionado, las solicitudes canceladas por el cliente establecen el estado `499`, pero no llegan a escribir el cuerpo JSON `ProblemDetails`.
+
+#### Contrato HTTP de errores
+
+Los errores utilizan el modelo `ProblemDetails`, generado mediante `ProblemDetailsResponseFactory.Create()`.
+
+| Propiedad  | Tipo                           | Responsabilidad                                                            |
+| ---------- | ------------------------------ | -------------------------------------------------------------------------- |
+| `type`     | `string`                       | Referencia asociada al estado HTTP.                                        |
+| `title`    | `string`                       | Descripción breve del error.                                               |
+| `status`   | `int`                          | Código HTTP correspondiente.                                               |
+| `detail`   | `string`                       | Descripción segura del error.                                              |
+| `instance` | `string`                       | Ruta de la solicitud que produjo el error.                                 |
+| `code`     | `string`                       | Código estable que permite identificar el error.                           |
+| `traceId`  | `string`                       | Identificador utilizado para correlacionar la solicitud con los registros. |
+| `errors`   | `Dictionary<string, string[]>` | Errores agrupados por campo, cuando corresponde.                           |
+
+**Ejemplo: error de entrega de invitación**
+
+```json
+{
+  "type": "https://httpstatuses.com/503",
+  "title": "Email delivery is unavailable.",
+  "status": 503,
+  "detail": "The invitation could not be delivered.",
+  "instance": "/api/users/invitations",
+  "code": "<EmailDeliveryUnavailableException.ErrorCode>",
+  "traceId": "0HN123456789"
+}
+```
+
+El ejemplo es ilustrativo. El valor concreto de `EmailDeliveryUnavailableException.ErrorCode` no aparece definido en los archivos proporcionados.
+
+#### Componentes de .NET y proveedores externos
+
+| Componente / Método          | Origen                       | Función                                                                      |
+| ---------------------------- | ---------------------------- | ---------------------------------------------------------------------------- |
+| `IExceptionHandler`          | ASP.NET Core Diagnostics     | Define un contrato para gestionar excepciones durante el procesamiento HTTP. |
+| `TryHandleAsync()`           | ASP.NET Core Diagnostics     | Permite procesar una excepción y determinar si fue gestionada.               |
+| `ILogger<T>`                 | Microsoft.Extensions.Logging | Proporciona registro estructurado de eventos y errores.                      |
+| `LogInformation()`           | Microsoft.Extensions.Logging | Registra eventos informativos, como solicitudes canceladas.                  |
+| `LogError()`                 | Microsoft.Extensions.Logging | Registra excepciones junto con información de diagnóstico.                   |
+| `HttpContext`                | ASP.NET Core                 | Proporciona acceso a la solicitud y respuesta HTTP.                          |
+| `RequestAborted`             | ASP.NET Core                 | Expone el token de cancelación asociado a la solicitud HTTP.                 |
+| `ProblemDetails`             | ASP.NET Core MVC             | Representa errores HTTP mediante una estructura estandarizada.               |
+| `JsonSerializer.Serialize()` | System.Text.Json             | Convierte objetos .NET en contenido JSON.                                    |
+| `HttpResponse.WriteAsync()`  | ASP.NET Core                 | Escribe el contenido de la respuesta HTTP.                                   |
+| `OperationCanceledException` | .NET                         | Representa la cancelación de una operación.                                  |
+| `CancellationToken`          | .NET                         | Permite propagar solicitudes de cancelación.                                 |
+| `ValueTask<T>`               | .NET                         | Representa una operación asincrónica que devuelve un valor.                  |
+
+#### Flujo funcional o relaciones
+
+**1. Errores esperados de Application**
+
+| Orden | Operación                                                    | Componente responsable                   |
+| ----- | ------------------------------------------------------------ | ---------------------------------------- |
+| 1     | Un caso de uso devuelve un `Result<T>` fallido.              | Application                              |
+| 2     | El controlador identifica que la operación no fue exitosa.   | Controller                               |
+| 3     | El controlador delega la conversión del error.               | `ApplicationErrorProblemDetailsMapper`   |
+| 4     | Se determina el estado HTTP según el tipo de error.          | `ProblemDetailsResponseFactory`          |
+| 5     | Se construye la respuesta `ProblemDetails`.                  | `ProblemDetailsResponseFactory.Create()` |
+| 6     | Se devuelve una respuesta HTTP con el error correspondiente. | Presentation                             |
+
+La implementación de `ApplicationErrorProblemDetailsMapper` no está incluida en este paso, por lo que su delegación interna a la factoría no puede verificarse directamente.
+
+**2. Excepciones no controladas**
+
+| Orden | Operación                                                                                | Componente responsable                    |
+| ----- | ---------------------------------------------------------------------------------------- | ----------------------------------------- |
+| 1     | Se produce una excepción durante el procesamiento de una solicitud.                      | Componente que ejecuta la operación       |
+| 2     | El mecanismo global de excepciones invoca el handler, si está registrado.                | ASP.NET Core                              |
+| 3     | Se identifica si corresponde a una cancelación del cliente.                              | `GlobalExceptionHandler.TryHandleAsync()` |
+| 4     | Se registra la excepción o la cancelación.                                               | `ILogger<GlobalExceptionHandler>`         |
+| 5     | Se determina el estado HTTP y el código de error.                                        | `GlobalExceptionHandler`                  |
+| 6     | Se construye una respuesta `ProblemDetails`, excepto en la rama de cancelación descrita. | `ProblemDetailsResponseFactory.Create()`  |
+| 7     | Se serializa y escribe la respuesta HTTP.                                                | `WriteProblemDetailsAsync()`              |
+
+#### Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    CLIENT["Cliente HTTP"]
+
+    subgraph Presentation["Presentation - API"]
+        CONTROLLER["Controllers"]
+        MAPPER["ApplicationErrorProblemDetailsMapper"]
+        HANDLER["GlobalExceptionHandler"]
+        FACTORY["ProblemDetailsResponseFactory"]
+        HTTP["Respuesta HTTP"]
+    end
+
+    subgraph Application
+        RESULT["Result / ApplicationError"]
+        TOKEN["InvalidActivationTokenError"]
+        EMAIL["EmailDeliveryUnavailableException"]
+    end
+
+    CLIENT --> CONTROLLER
+
+    CONTROLLER -->|"Resultado fallido"| MAPPER
+    MAPPER -.->|"Conversión de errores"| FACTORY
+
+    RESULT --> MAPPER
+    TOKEN --> FACTORY
+
+    CONTROLLER -.->|"Excepción no controlada"| HANDLER
+    EMAIL -->|"503"| HANDLER
+
+    HANDLER -->|"Construir ProblemDetails"| FACTORY
+
+    FACTORY --> HTTP
+    HANDLER -->|"Escribir respuesta"| HTTP
+
+    HTTP --> CLIENT
+```
+
+**Interpretación:**
+
+- **Application:** define los errores esperados que representan resultados fallidos de los casos de uso.
+- **Presentation:** transforma los errores de Application en respuestas HTTP mediante sus componentes de mapeo.
+- **GlobalExceptionHandler:** procesa excepciones no controladas y registra información de diagnóstico.
+- **ProblemDetailsResponseFactory:** centraliza la construcción del contrato de errores HTTP.
+- **Cliente HTTP:** recibe respuestas con estados y códigos de error que permiten identificar el resultado de la operación.
+
+`EmailDeliveryUnavailableException` se utiliza como excepción del flujo de entrega de invitaciones. Su namespace y definición no están incluidos en los fragmentos proporcionados.
+
+#### Resultado
+
+Se amplió el mapeo de errores HTTP incorporando el tratamiento específico de tokens de activación inválidos y excepciones de entrega de correo electrónico.
+
+La implementación permite representar errores esperados de Application mediante estados HTTP específicos y gestionar excepciones no controladas utilizando respuestas `ProblemDetails`.
+
+Además, incorpora registro estructurado de excepciones y trazabilidad mediante `traceId`, manteniendo los detalles internos de los errores fuera de las respuestas públicas de la API.
+
+La conexión efectiva del handler global al pipeline HTTP deberá verificarse en la configuración de servicios y middleware, ya que no aparece en los archivos de este paso.
+
 ---
 
 ### 7. Traducir errores de contraseña de Identity.

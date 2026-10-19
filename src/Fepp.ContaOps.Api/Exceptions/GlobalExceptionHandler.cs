@@ -1,4 +1,5 @@
 using Fepp.ContaOps.Api.Validation;
+using Fepp.ContaOps.Application.Results;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
@@ -63,12 +64,28 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
             httpContext.Request.Method,
             httpContext.Request.Path);
 
+        (int status, string title, string detail, string code) = exception switch
+        {
+            EmailDeliveryUnavailableException =>
+                (
+                    StatusCodes.Status503ServiceUnavailable,
+                    "Email delivery is unavailable.",
+                    "The invitation could not be delivered.",
+                    EmailDeliveryUnavailableException.ErrorCode),
+            _ =>
+                (
+                    StatusCodes.Status500InternalServerError,
+                    "An unexpected error occurred.",
+                    "The request could not be completed.",
+                    "unexpected_error")
+        };
+
         await WriteProblemDetailsAsync(
             httpContext,
-            StatusCodes.Status500InternalServerError,
-            "An unexpected error occurred.",
-            "The request could not be completed.",
-            "unexpected_error",
+            status,
+            title,
+            detail,
+            code,
             cancellationToken);
         return true;
     }
