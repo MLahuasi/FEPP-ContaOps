@@ -276,6 +276,200 @@ Esta estructura permite integrar los endpoints de Presentation sin acoplarlos di
 
 ### 3. Implementar validación uniforme.
 
+#### Componentes implementados
+
+| Componente                      | Acción         | Tipo           | Capa         | Responsabilidad                                                                                                  |
+| ------------------------------- | -------------- | -------------- | ------------ | ---------------------------------------------------------------------------------------------------------------- |
+| `ProblemDetailsResponseFactory` | No verificable | class (static) | Presentation | Centraliza la construcción de respuestas HTTP de error mediante un contrato uniforme basado en `ProblemDetails`. |
+
+**Ubicación:** `Fepp.ContaOps.Api.Validation`
+
+La clase permite representar de manera consistente los errores provenientes de Application, FluentValidation y el proceso de model binding de ASP.NET Core.
+
+El código proporcionado no permite verificar si el componente fue creado o modificado.
+
+#### Métodos y funciones principales
+
+| Clase                           | Método                                                 | Responsabilidad                                                                                      |
+| ------------------------------- | ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
+| `ProblemDetailsResponseFactory` | `CreateApplicationErrorResult()`                       | Convierte errores tipados de Application en respuestas HTTP con el código de estado correspondiente. |
+| `ProblemDetailsResponseFactory` | `CreateValidationResult(ValidationResult)`             | Agrupa los errores de FluentValidation por propiedad y elimina mensajes duplicados.                  |
+| `ProblemDetailsResponseFactory` | `CreateModelStateValidationResult()`                   | Convierte errores de model binding y deserialización JSON en respuestas HTTP uniformes.              |
+| `ProblemDetailsResponseFactory` | `CreateValidationResult(Dictionary<string, string[]>)` | Construye una respuesta HTTP 400 con los errores agrupados por campo.                                |
+| `ProblemDetailsResponseFactory` | `Create()`                                             | Genera la estructura común de `ProblemDetails`, incluyendo código de error y trazabilidad.           |
+
+**Visibilidad de los métodos:**
+
+- `CreateApplicationErrorResult()`: público.
+- `CreateValidationResult(ValidationResult)`: público.
+- `CreateModelStateValidationResult()`: público.
+- `CreateValidationResult(Dictionary<string, string[]>)`: privado.
+- `Create()`: público.
+
+#### Modelos de datos
+
+**1. `ProblemDetails`**
+
+Modelo proporcionado por ASP.NET Core para representar errores HTTP mediante una estructura estandarizada.
+
+| Propiedad               | Tipo                           | Descripción                                      |
+| ----------------------- | ------------------------------ | ------------------------------------------------ |
+| `Type`                  | `string`                       | Referencia asociada al código de estado HTTP.    |
+| `Title`                 | `string`                       | Descripción breve del tipo de error.             |
+| `Status`                | `int`                          | Código HTTP de la respuesta.                     |
+| `Detail`                | `string`                       | Descripción del error.                           |
+| `Instance`              | `string`                       | Ruta HTTP donde ocurrió el error.                |
+| `Extensions["code"]`    | `string`                       | Código identificador del error.                  |
+| `Extensions["traceId"]` | `string`                       | Identificador de trazabilidad de la solicitud.   |
+| `Extensions["errors"]`  | `Dictionary<string, string[]>` | Errores agrupados por campo, cuando corresponde. |
+
+**2. Errores de Application**
+
+| Error                   | Estado HTTP                 | Código       |
+| ----------------------- | --------------------------- | ------------ |
+| `ValidationError`       | `400 Bad Request`           | `error.Code` |
+| `AuthenticationError`   | `401 Unauthorized`          | `error.Code` |
+| `ResourceNotFoundError` | `404 Not Found`             | `error.Code` |
+| `ConflictError`         | `409 Conflict`              | `error.Code` |
+| Otros errores           | `500 Internal Server Error` | `error.Code` |
+
+Los errores tipados pertenecen a Application y son transformados en respuestas HTTP por Presentation.
+
+**3. Errores de validación**
+
+| Origen               | Estado HTTP       | Código             |
+| -------------------- | ----------------- | ------------------ |
+| FluentValidation     | `400 Bad Request` | `validation_error` |
+| Model binding / JSON | `400 Bad Request` | `validation_error` |
+
+Ambos mecanismos utilizan la misma estructura de respuesta.
+
+#### Componentes de .NET y proveedores externos
+
+| Componente / Método      | Origen           | Función                                                                           |
+| ------------------------ | ---------------- | --------------------------------------------------------------------------------- |
+| `ProblemDetails`         | ASP.NET Core MVC | Representa errores HTTP mediante un contrato estandarizado.                       |
+| `ObjectResult`           | ASP.NET Core MVC | Devuelve un objeto serializado con un estado HTTP configurable.                   |
+| `BadRequestObjectResult` | ASP.NET Core MVC | Devuelve una respuesta HTTP 400 con contenido.                                    |
+| `HttpContext`            | ASP.NET Core     | Proporciona información de la solicitud HTTP actual.                              |
+| `StatusCodes`            | ASP.NET Core     | Define constantes para códigos de estado HTTP.                                    |
+| `ModelStateDictionary`   | ASP.NET Core MVC | Contiene errores del proceso de model binding.                                    |
+| `ValidationResult`       | FluentValidation | Contiene los errores producidos durante la validación.                            |
+| `GroupBy()`              | LINQ / .NET      | Agrupa errores según el nombre de la propiedad.                                   |
+| `ToDictionary()`         | LINQ / .NET      | Convierte los errores agrupados en un diccionario.                                |
+| `Distinct()`             | LINQ / .NET      | Elimina mensajes de error duplicados.                                             |
+| `StringComparer.Ordinal` | .NET             | Compara cadenas mediante reglas ordinales, distinguiendo mayúsculas y minúsculas. |
+
+#### Flujo funcional o relaciones
+
+**1. Errores provenientes de Application**
+
+| Orden | Operación                                                                | Componente responsable           |
+| ----- | ------------------------------------------------------------------------ | -------------------------------- |
+| 1     | Recibir un `ApplicationError`.                                           | `CreateApplicationErrorResult()` |
+| 2     | Determinar el código HTTP según el tipo de error.                        | `CreateApplicationErrorResult()` |
+| 3     | Seleccionar el título y detalle de la respuesta.                         | `CreateApplicationErrorResult()` |
+| 4     | Construir el objeto `ProblemDetails`.                                    | `Create()`                       |
+| 5     | Incorporar los errores por campo cuando corresponda a `ValidationError`. | `CreateApplicationErrorResult()` |
+| 6     | Devolver un `ObjectResult` con contenido `application/problem+json`.     | `CreateApplicationErrorResult()` |
+
+**2. Errores de FluentValidation**
+
+| Orden | Operación                               | Componente responsable                    |
+| ----- | --------------------------------------- | ----------------------------------------- |
+| 1     | Recibir un `ValidationResult`.          | `CreateValidationResult()`                |
+| 2     | Agrupar los errores por `PropertyName`. | `GroupBy()`                               |
+| 3     | Eliminar mensajes duplicados.           | `Distinct()`                              |
+| 4     | Construir la respuesta HTTP 400.        | `CreateValidationResult(Dictionary<...>)` |
+| 5     | Devolver `application/problem+json`.    | `BadRequestObjectResult`                  |
+
+**3. Errores de ModelState**
+
+| Orden | Operación                                                | Componente responsable                    |
+| ----- | -------------------------------------------------------- | ----------------------------------------- |
+| 1     | Recibir un `ModelStateDictionary`.                       | `CreateModelStateValidationResult()`      |
+| 2     | Extraer los errores asociados a cada campo.              | `CreateModelStateValidationResult()`      |
+| 3     | Reemplazar mensajes vacíos por una descripción genérica. | `CreateModelStateValidationResult()`      |
+| 4     | Eliminar mensajes duplicados.                            | `Distinct()`                              |
+| 5     | Construir la respuesta HTTP 400 uniforme.                | `CreateValidationResult(Dictionary<...>)` |
+
+#### Contrato HTTP de errores
+
+**Ejemplo de respuesta de validación:**
+
+```json
+{
+  "type": "https://httpstatuses.com/400",
+  "title": "Request validation failed.",
+  "status": 400,
+  "detail": "One or more request fields are invalid.",
+  "instance": "/api/users/invitations",
+  "code": "validation_error",
+  "traceId": "0HN123456789",
+  "errors": {
+    "Email": ["The email address is invalid."]
+  }
+}
+```
+
+El ejemplo representa la estructura generada por la factoría. La ruta, el identificador de trazabilidad y el mensaje de validación son ilustrativos.
+
+**Características del contrato:**
+
+- Utiliza el tipo de contenido `application/problem+json`.
+- Mantiene una estructura común para diferentes categorías de errores.
+- Incluye un código de error identificable por los consumidores de la API.
+- Incorpora `traceId` para facilitar la correlación de solicitudes.
+- Permite representar varios errores asociados a una misma propiedad.
+- Evita mensajes duplicados en las respuestas de validación.
+
+#### Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    subgraph Presentation["Presentation - API"]
+        API["Controllers / Endpoints"]
+        FACTORY["ProblemDetailsResponseFactory"]
+        MODEL["ModelStateDictionary"]
+        PROBLEM["ProblemDetails"]
+        HTTP["ObjectResult / BadRequestObjectResult"]
+    end
+
+    subgraph Application
+        ERROR["ApplicationError"]
+    end
+
+    subgraph External["FluentValidation"]
+        VALIDATION["ValidationResult"]
+    end
+
+    API -.->|"Integración prevista"| FACTORY
+
+    ERROR -->|"CreateApplicationErrorResult"| FACTORY
+    VALIDATION -->|"CreateValidationResult"| FACTORY
+    MODEL -->|"CreateModelStateValidationResult"| FACTORY
+
+    FACTORY --> PROBLEM
+    PROBLEM --> HTTP
+```
+
+**Interpretación:**
+
+- **Application:** proporciona errores tipados independientes de HTTP.
+- **FluentValidation:** proporciona los resultados de validación de los datos.
+- **ASP.NET Core:** proporciona los errores detectados durante el model binding.
+- **Presentation:** transforma estas fuentes de error en respuestas HTTP uniformes mediante `ProblemDetailsResponseFactory`.
+
+La integración de la factoría con los controladores o filtros HTTP no aparece implementada en el código proporcionado.
+
+#### Resultado
+
+Se dispone de una factoría centralizada para construir respuestas HTTP de error mediante `ProblemDetails`.
+
+El componente unifica la representación de errores de Application, FluentValidation y ASP.NET Core, estableciendo un contrato consistente para los consumidores de la API.
+
+Esta implementación mantiene la separación entre los errores de negocio definidos en Application y su representación HTTP, responsabilidad exclusiva de Presentation.
+
 ---
 
 ### 4. Crear controllers.
