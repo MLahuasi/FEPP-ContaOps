@@ -2467,6 +2467,350 @@ Este cambio complementa las políticas de contraseña definidas en el paso 8 y f
 
 ### 11. Verificar login uniforme.
 
+#### Componentes implementados
+
+| Componente                  | Acción         | Tipo  | Capa           | Responsabilidad                                                                                                                                   |
+| --------------------------- | -------------- | ----- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `LoginRequestValidator`     | No verificable | class | Presentation   | Valida los campos del request HTTP de autenticación mediante FluentValidation.                                                                    |
+| `IdentityCredentialService` | Update         | class | Infrastructure | Verifica las credenciales mediante ASP.NET Core Identity, comprueba el estado del usuario y aplica el mecanismo de bloqueo por intentos fallidos. |
+
+**Ubicaciones:**
+
+- `Fepp.ContaOps.Api.Validation.LoginRequestValidator`
+- `Fepp.ContaOps.Infrastructure.Identity.IdentityCredentialService`
+
+El código permite verificar la implementación actual, pero no determina si `LoginRequestValidator` fue creado o modificado. En `IdentityCredentialService` se identifica la integración del mecanismo de bloqueo configurado en el paso 8.
+
+Este paso integra dos mecanismos complementarios:
+
+- **Validación HTTP:** comprueba la estructura y los valores del request antes de procesar la autenticación.
+- **Verificación de credenciales:** utiliza ASP.NET Core Identity para comprobar la contraseña y aplicar las restricciones de acceso de la cuenta.
+
+#### Métodos y funciones principales
+
+| Clase                       | Método                                | Responsabilidad                                                                                               |
+| --------------------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `LoginRequestValidator`     | Constructor `LoginRequestValidator()` | Define las reglas de validación para el correo electrónico y la contraseña.                                   |
+| `IdentityCredentialService` | `VerifyPasswordAsync()`               | Comprueba que el usuario esté activo, tenga una contraseña configurada y supere la autenticación de Identity. |
+
+**Dependencias de `IdentityCredentialService`:**
+
+| Dependencia                              | Origen                | Responsabilidad                                                           |
+| ---------------------------------------- | --------------------- | ------------------------------------------------------------------------- |
+| `IUserCredentialService`                 | Application           | Define el contrato de verificación de credenciales.                       |
+| `UserManager<ApplicationIdentityUser>`   | ASP.NET Core Identity | Permite localizar la cuenta técnica del usuario.                          |
+| `SignInManager<ApplicationIdentityUser>` | ASP.NET Core Identity | Comprueba contraseñas y aplica las reglas de bloqueo de inicio de sesión. |
+| `User`                                   | Domain                | Proporciona el identificador y estado funcional del usuario.              |
+
+`IdentityCredentialService` implementa el contrato `IUserCredentialService`, manteniendo la dependencia de Application hacia una abstracción independiente de ASP.NET Core Identity.
+
+#### Validación HTTP de credenciales
+
+**1. `LoginRequestValidator`**
+
+El validador hereda de `AbstractValidator<LoginRequest>` y define reglas mediante FluentValidation.
+
+```csharp
+public sealed class LoginRequestValidator : AbstractValidator<LoginRequest>
+{
+    public LoginRequestValidator()
+    {
+        RuleFor(request => request.Email)
+            .NotEmpty()
+            .EmailAddress()
+            .MaximumLength(256);
+
+        RuleFor(request => request.Password)
+            .NotEmpty()
+            .MaximumLength(256);
+    }
+}
+```
+
+**Reglas implementadas:**
+
+| Campo      | Regla                | Responsabilidad                              |
+| ---------- | -------------------- | -------------------------------------------- |
+| `Email`    | `NotEmpty()`         | Exige un correo electrónico no vacío.        |
+| `Email`    | `EmailAddress()`     | Comprueba el formato del correo electrónico. |
+| `Email`    | `MaximumLength(256)` | Limita su longitud a 256 caracteres.         |
+| `Password` | `NotEmpty()`         | Exige una contraseña no vacía.               |
+| `Password` | `MaximumLength(256)` | Limita su longitud a 256 caracteres.         |
+
+**Consideraciones:**
+
+- Las reglas pertenecen a Presentation porque validan los datos recibidos mediante HTTP.
+- No se aplican las reglas de complejidad de contraseñas durante el login.
+- La complejidad de la contraseña se comprueba al establecerla, como se documentó en los pasos 7 y 8.
+- La validación HTTP no comprueba si las credenciales son correctas.
+- El registro automático del validador se encuentra contemplado en `DependencyInjection.AddApi()` mediante `AddValidatorsFromAssembly()`.
+
+**Relación con la validación uniforme:**
+
+Cuando el validador detecta errores, el mecanismo de validación de Presentation puede utilizar `ProblemDetailsResponseFactory` para construir una respuesta HTTP 400.
+
+La implementación específica de `ValidationFilter` no se incluye en este paso, por lo que no puede verificarse directamente su comportamiento.
+
+#### Verificación de credenciales
+
+**1. `IdentityCredentialService`**
+
+El servicio implementa `IUserCredentialService` y delega la comprobación de contraseñas a ASP.NET Core Identity.
+
+```csharp
+public async Task<bool> VerifyPasswordAsync(
+    User user,
+    string password,
+    CancellationToken cancellationToken = default)
+{
+    if (user.Status != UserStatus.Active)
+    {
+        return false;
+    }
+
+    ApplicationIdentityUser? identityUser =
+        await _userManager.FindByIdAsync(user.Id.Value);
+
+    if (identityUser is null || string.IsNullOrEmpty(identityUser.PasswordHash))
+    {
+        return false;
+    }
+
+    SignInResult result =
+        await _signInManager.CheckPasswordSignInAsync(
+            identityUser,
+            password,
+            lockoutOnFailure: true);
+
+    return result.Succeeded;
+}
+```
+
+**Validaciones realizadas:**
+
+| Orden | Validación                                                                 | Resultado cuando falla |
+| ----- | -------------------------------------------------------------------------- | ---------------------- |
+| 1     | El usuario debe tener estado `Active`.                                     | `false`                |
+| 2     | El usuario técnico debe existir en Identity.                               | `false`                |
+| 3     | El usuario debe tener una contraseña configurada.                          | `false`                |
+| 4     | La cuenta debe superar las comprobaciones de inicio de sesión de Identity. | `false`                |
+| 5     | La contraseña proporcionada debe ser correcta.                             | `false`                |
+
+Cuando todas las condiciones se cumplen, el método devuelve `true`.
+
+**Características:**
+
+- Los usuarios con estado `PendingActivation` no pueden autenticarse.
+- Las cuentas sin contraseña configurada no pueden autenticarse.
+- La comprobación utiliza `SignInManager` en lugar de comparar directamente los hashes de contraseña.
+- El método no devuelve información que permita identificar cuál de las validaciones falló.
+- Los resultados negativos de Identity se representan mediante `false`, independientemente de su causa.
+
+#### Aplicación del bloqueo de cuentas
+
+**Cambio principal:**
+
+La comprobación de contraseña utiliza:
+
+```csharp
+SignInResult result =
+    await _signInManager.CheckPasswordSignInAsync(
+        identityUser,
+        password,
+        lockoutOnFailure: true);
+```
+
+El parámetro `lockoutOnFailure: true` permite que ASP.NET Core Identity registre intentos fallidos de contraseña y aplique las restricciones de bloqueo configuradas.
+
+**Relación con el paso 8:**
+
+| Configuración                   | Valor predeterminado | Comportamiento                              |
+| ------------------------------- | -------------------- | ------------------------------------------- |
+| `AllowedForNewUsers`            | `true`               | Permite bloquear cuentas nuevas.            |
+| `MaxFailedAccessAttempts`       | `5`                  | Establece el umbral de intentos fallidos.   |
+| `DefaultLockoutTimeSpanMinutes` | `15`                 | Establece la duración del bloqueo temporal. |
+
+**Resultados de Identity:**
+
+| Resultado           | Significado                                     | Valor devuelto por `VerifyPasswordAsync()` |
+| ------------------- | ----------------------------------------------- | ------------------------------------------ |
+| `Succeeded`         | Autenticación correcta.                         | `true`                                     |
+| `Failed`            | Credenciales incorrectas.                       | `false`                                    |
+| `IsLockedOut`       | Cuenta bloqueada temporalmente.                 | `false`                                    |
+| `IsNotAllowed`      | Inicio de sesión no permitido por Identity.     | `false`                                    |
+| `RequiresTwoFactor` | Se requiere un segundo factor de autenticación. | `false`                                    |
+
+El servicio únicamente utiliza `result.Succeeded`, por lo que no diferencia públicamente los motivos del fallo.
+
+**Importante:**
+
+El bloqueo se aplica a las verificaciones que alcanzan `CheckPasswordSignInAsync()`.
+
+Las solicitudes rechazadas previamente por estado inactivo, inexistencia del usuario técnico o ausencia de contraseña no llegan a esta operación.
+
+#### Relación con el contrato de autenticación
+
+El flujo de autenticación utiliza los componentes documentados en los pasos anteriores.
+
+| Componente                  | Capa           | Responsabilidad                                                        |
+| --------------------------- | -------------- | ---------------------------------------------------------------------- |
+| `LoginRequest`              | Presentation   | Recibe el correo electrónico y la contraseña.                          |
+| `LoginRequestValidator`     | Presentation   | Valida la estructura y los valores del request.                        |
+| `AuthController`            | Presentation   | Ejecuta el caso de uso de autenticación y construye la respuesta HTTP. |
+| `LoginUser`                 | Application    | Coordina el proceso de autenticación.                                  |
+| `IUserCredentialService`    | Application    | Define el contrato para comprobar credenciales.                        |
+| `IdentityCredentialService` | Infrastructure | Implementa la verificación mediante ASP.NET Core Identity.             |
+| `User`                      | Domain         | Proporciona el estado funcional del usuario.                           |
+| `LoginResponse`             | Presentation   | Representa la respuesta HTTP con el token de acceso.                   |
+
+**Separación de responsabilidades:**
+
+| Responsabilidad                       | Componente                                         |
+| ------------------------------------- | -------------------------------------------------- |
+| Validar el formato del correo.        | `LoginRequestValidator`                            |
+| Comprobar campos obligatorios.        | `LoginRequestValidator`                            |
+| Coordinar la autenticación.           | `LoginUser`                                        |
+| Verificar el estado funcional.        | `IdentityCredentialService`                        |
+| Comprobar contraseña y bloqueo.       | `SignInManager`                                    |
+| Emitir un token JWT.                  | Mecanismo de emisión utilizado por `LoginUser`.    |
+| Construir la respuesta HTTP.          | `AuthController`                                   |
+| Convertir errores a `ProblemDetails`. | Componentes de validación y mapeo de Presentation. |
+
+La implementación de `LoginUser` no se incluye en este paso. Su integración con `IUserCredentialService` y el mecanismo de emisión de JWT corresponde a la arquitectura existente.
+
+#### Componentes de .NET y proveedores externos
+
+| Componente / Método          | Origen                | Función                                                       |
+| ---------------------------- | --------------------- | ------------------------------------------------------------- |
+| `AbstractValidator<T>`       | FluentValidation      | Clase base para definir validadores tipados.                  |
+| `RuleFor()`                  | FluentValidation      | Selecciona una propiedad para establecer reglas.              |
+| `NotEmpty()`                 | FluentValidation      | Comprueba que el valor no esté vacío.                         |
+| `EmailAddress()`             | FluentValidation      | Comprueba el formato de un correo electrónico.                |
+| `MaximumLength()`            | FluentValidation      | Establece la longitud máxima permitida.                       |
+| `UserManager<TUser>`         | ASP.NET Core Identity | Administra las cuentas técnicas de usuario.                   |
+| `FindByIdAsync()`            | ASP.NET Core Identity | Busca un usuario mediante su identificador.                   |
+| `SignInManager<TUser>`       | ASP.NET Core Identity | Gestiona las comprobaciones necesarias para iniciar sesión.   |
+| `CheckPasswordSignInAsync()` | ASP.NET Core Identity | Comprueba la contraseña y puede registrar intentos fallidos.  |
+| `SignInResult`               | ASP.NET Core Identity | Representa el resultado de una comprobación de autenticación. |
+| `String.IsNullOrEmpty()`     | .NET                  | Comprueba si una cadena es nula o vacía.                      |
+| `CancellationToken`          | .NET                  | Representa solicitudes de cancelación de operaciones.         |
+
+#### Flujo funcional o relaciones
+
+**1. Login con credenciales válidas**
+
+| Orden | Operación                                                       | Componente responsable      |
+| ----- | --------------------------------------------------------------- | --------------------------- |
+| 1     | El cliente envía correo electrónico y contraseña.               | Cliente HTTP                |
+| 2     | Se validan los campos del request.                              | `LoginRequestValidator`     |
+| 3     | Se ejecuta el caso de uso de autenticación.                     | `LoginUser`                 |
+| 4     | Se solicita la comprobación de credenciales.                    | `IUserCredentialService`    |
+| 5     | Se verifica que el usuario tenga estado `Active`.               | `IdentityCredentialService` |
+| 6     | Se busca la cuenta técnica y se comprueba que tenga contraseña. | `UserManager`               |
+| 7     | Se verifica la contraseña y el estado de bloqueo.               | `SignInManager`             |
+| 8     | Se devuelve `true` cuando Identity confirma la autenticación.   | `IdentityCredentialService` |
+| 9     | El caso de uso continúa con el proceso de autenticación.        | `LoginUser`                 |
+
+**2. Login con credenciales inválidas**
+
+| Orden | Operación                                                             | Componente responsable      |
+| ----- | --------------------------------------------------------------------- | --------------------------- |
+| 1     | Se recibe una solicitud con credenciales.                             | `AuthController`            |
+| 2     | Se validan los campos obligatorios y sus formatos.                    | `LoginRequestValidator`     |
+| 3     | Si falla la validación HTTP, se genera una respuesta de validación.   | Presentation                |
+| 4     | Si los datos son válidos, se ejecuta la comprobación de credenciales. | `IdentityCredentialService` |
+| 5     | Identity registra el intento fallido cuando corresponde.              | `SignInManager`             |
+| 6     | Si la autenticación falla, se devuelve `false`.                       | `IdentityCredentialService` |
+| 7     | Application procesa el resultado de la verificación.                  | `LoginUser`                 |
+
+**Resultado HTTP esperado:**
+
+| Condición                        | Respuesta                                                          |
+| -------------------------------- | ------------------------------------------------------------------ |
+| Request con campos inválidos.    | `400 Bad Request`, mediante el mecanismo de validación HTTP.       |
+| Credenciales incorrectas.        | `401 Unauthorized`, si `LoginUser` devuelve `AuthenticationError`. |
+| Usuario pendiente de activación. | Verificación de credenciales fallida (`false`).                    |
+| Cuenta bloqueada por Identity.   | Verificación de credenciales fallida (`false`).                    |
+| Autenticación exitosa.           | `200 OK`, con `LoginResponse`.                                     |
+
+La correspondencia completa entre `false` y `AuthenticationError` depende de la implementación de `LoginUser`, no incluida entre los archivos de este paso.
+
+#### Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    CLIENT["Cliente HTTP"]
+
+    subgraph Presentation
+        API["AuthController"]
+        VALIDATOR["LoginRequestValidator"]
+        RESPONSE["LoginResponse"]
+        ERROR["ProblemDetails"]
+    end
+
+    subgraph Application
+        LOGIN["LoginUser"]
+        PORT["IUserCredentialService"]
+    end
+
+    subgraph Domain
+        USER["User"]
+        STATUS["UserStatus"]
+    end
+
+    subgraph Infrastructure
+        SERVICE["IdentityCredentialService"]
+        USERMANAGER["UserManager"]
+        SIGNIN["SignInManager"]
+        IDENTITY["ASP.NET Core Identity"]
+    end
+
+    CLIENT --> API
+    API -.->|"Validación HTTP"| VALIDATOR
+
+    VALIDATOR -->|"Request válido"| LOGIN
+    VALIDATOR -->|"Request inválido"| ERROR
+
+    API --> LOGIN
+    LOGIN --> PORT
+
+    SERVICE -.->|"Implementa"| PORT
+
+    SERVICE --> USER
+    USER --> STATUS
+
+    SERVICE --> USERMANAGER
+    SERVICE --> SIGNIN
+
+    USERMANAGER --> IDENTITY
+    SIGNIN -->|"lockoutOnFailure = true"| IDENTITY
+
+    LOGIN -.->|"Autenticación exitosa"| RESPONSE
+    LOGIN -.->|"Error esperado"| ERROR
+
+    RESPONSE --> CLIENT
+    ERROR --> CLIENT
+```
+
+**Interpretación:**
+
+- **Presentation:** valida el request de autenticación y representa los resultados mediante respuestas HTTP.
+- **Application:** coordina el login mediante contratos independientes de infraestructura.
+- **Domain:** proporciona el estado funcional utilizado para determinar si una cuenta puede autenticarse.
+- **Infrastructure:** verifica las credenciales y aplica el mecanismo de bloqueo mediante ASP.NET Core Identity.
+
+La implementación mantiene la separación entre validación HTTP, coordinación del caso de uso y verificación técnica de credenciales.
+
+#### Resultado
+
+Se dispone de una validación HTTP uniforme para las solicitudes de inicio de sesión mediante `LoginRequestValidator`.
+
+Además, `IdentityCredentialService` verifica que las cuentas estén activas, tengan una contraseña configurada y superen las comprobaciones de ASP.NET Core Identity.
+
+La utilización de `CheckPasswordSignInAsync()` con `lockoutOnFailure: true` integra el proceso de autenticación con las políticas de bloqueo configuradas en el paso 8.
+
+El servicio devuelve un resultado booleano sin exponer detalles específicos del fallo, manteniendo la verificación de contraseñas y las restricciones de acceso dentro de Infrastructure.
+
 ---
 
 ### 12. Agregar pruebas unitarias.
