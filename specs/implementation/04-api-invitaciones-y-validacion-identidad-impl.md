@@ -3273,6 +3273,407 @@ Con esta implementación se establece una base de pruebas automatizadas para det
 
 ### 13. Agregar pruebas de integración.
 
+#### Componentes implementados
+
+| Componente                   | Acción | Tipo  | Capa  | Responsabilidad                                                                                                            |
+| ---------------------------- | ------ | ----- | ----- | -------------------------------------------------------------------------------------------------------------------------- |
+| `InvitationIntegrationTests` | Create | class | Tests | Verifica los flujos HTTP de invitaciones, activación y autenticación utilizando PostgreSQL real en un contenedor temporal. |
+| `TestApiFactory`             | Create | class | Tests | Configura una instancia de la API para las pruebas, con configuración específica y un notificador de correo simulado.      |
+| `FakeInvitationNotifier`     | Create | class | Tests | Sustituye el envío real de correos y conserva las invitaciones generadas para verificar los flujos de activación.          |
+
+**Ubicación:** `Fepp.ContaOps.IntegrationTests`
+
+Las pruebas utilizan **xUnit, ASP.NET Core WebApplicationFactory y Testcontainers** para comprobar el comportamiento de la API mediante solicitudes HTTP reales contra un servidor de pruebas.
+
+A diferencia de las pruebas unitarias del paso 12, estas pruebas integran los componentes de Presentation, Application, Infrastructure y la persistencia PostgreSQL.
+
+El servicio de notificación de correo se sustituye por una implementación en memoria para evitar dependencias de un servidor SMTP externo.
+
+#### Métodos y funciones principales
+
+**1. Pruebas de integración**
+
+| Clase                        | Método                                                   | Responsabilidad                                                                                 |
+| ---------------------------- | -------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `InvitationIntegrationTests` | `InitializeAsync()`                                      | Inicia el contenedor PostgreSQL antes de ejecutar las pruebas.                                  |
+| `InvitationIntegrationTests` | `DisposeAsync()`                                         | Libera los recursos del contenedor PostgreSQL al finalizar.                                     |
+| `InvitationIntegrationTests` | `AdminCreatesInvitation_ActivationAllowsLogin()`         | Verifica el flujo completo de creación, activación y autenticación de una cuenta invitada.      |
+| `InvitationIntegrationTests` | `InvitationEndpoints_RequireAdminRole()`                 | Comprueba que los endpoints administrativos exijan autenticación y el rol `Admin`.              |
+| `InvitationIntegrationTests` | `DuplicateEmail_ReturnsConflict()`                       | Verifica que registrar dos veces el mismo correo produzca HTTP 409.                             |
+| `InvitationIntegrationTests` | `ResendInvitation_InvalidatesPreviousToken()`            | Comprueba que reenviar una invitación invalide el token anterior.                               |
+| `InvitationIntegrationTests` | `NotificationFailure_Returns503AndKeepsPendingAccount()` | Verifica que un fallo de notificación produzca HTTP 503 y que la cuenta permanezca sin activar. |
+
+**2. Métodos auxiliares**
+
+| Clase                        | Método               | Responsabilidad                                                                                    |
+| ---------------------------- | -------------------- | -------------------------------------------------------------------------------------------------- |
+| `InvitationIntegrationTests` | `CreateFactory()`    | Crea una instancia de `TestApiFactory` utilizando la conexión PostgreSQL del contenedor.           |
+| `InvitationIntegrationTests` | `LoginAsync()`       | Ejecuta el endpoint de autenticación y obtiene el token JWT de la respuesta.                       |
+| `InvitationIntegrationTests` | `SendAsAdminAsync()` | Envía solicitudes HTTP incorporando un token Bearer en el encabezado `Authorization`.              |
+| `InvitationIntegrationTests` | `ReadCodeAsync()`    | Extrae el código de error del cuerpo JSON de una respuesta HTTP.                                   |
+| `InvitationIntegrationTests` | `UniqueEmail()`      | Genera correos electrónicos únicos para evitar conflictos entre escenarios de prueba.              |
+| `TestApiFactory`             | `ConfigureWebHost()` | Configura la conexión PostgreSQL, JWT, administrador inicial, invitaciones y notificador simulado. |
+| `FakeInvitationNotifier`     | `NotifyAsync()`      | Registra la invitación recibida y permite simular errores de entrega.                              |
+
+#### Infraestructura de pruebas
+
+**1. PostgreSQL mediante Testcontainers**
+
+La clase `InvitationIntegrationTests` implementa `IAsyncLifetime` para administrar el ciclo de vida del contenedor.
+
+```csharp
+private readonly PostgreSqlContainer _database =
+    new PostgreSqlBuilder("postgres:16-alpine").Build();
+
+public Task InitializeAsync()
+{
+    return _database.StartAsync();
+}
+
+public Task DisposeAsync()
+{
+    return _database.DisposeAsync().AsTask();
+}
+```
+
+| Componente              | Responsabilidad                                                       |
+| ----------------------- | --------------------------------------------------------------------- |
+| `PostgreSqlBuilder`     | Configura el contenedor PostgreSQL utilizado durante las pruebas.     |
+| `PostgreSqlContainer`   | Representa la instancia temporal de PostgreSQL.                       |
+| `InitializeAsync()`     | Inicia PostgreSQL antes de ejecutar las pruebas del objeto de prueba. |
+| `DisposeAsync()`        | Elimina el contenedor y libera sus recursos.                          |
+| `GetConnectionString()` | Obtiene la cadena de conexión de la instancia PostgreSQL creada.      |
+
+**Configuración:**
+
+| Parámetro              | Valor                |
+| ---------------------- | -------------------- |
+| Motor de base de datos | PostgreSQL           |
+| Imagen Docker          | `postgres:16-alpine` |
+| Administración         | Testcontainers       |
+| Persistencia           | PostgreSQL temporal  |
+| Ciclo de vida          | `IAsyncLifetime`     |
+
+Las pruebas utilizan una instancia real de PostgreSQL administrada por Docker.
+
+Esto permite verificar operaciones de Identity y persistencia sin utilizar la base de datos de desarrollo o producción.
+
+**2. API mediante WebApplicationFactory**
+
+La clase `TestApiFactory` hereda de `WebApplicationFactory<Program>`.
+
+```csharp
+private sealed class TestApiFactory : WebApplicationFactory<Program>
+{
+    private readonly string _connectionString;
+
+    public TestApiFactory(string connectionString)
+    {
+        _connectionString = connectionString;
+    }
+
+    protected override void ConfigureWebHost(IWebHostBuilder builder)
+    {
+        builder.UseSetting(
+            "ConnectionStrings:Default",
+            _connectionString);
+
+        // Configuración específica de pruebas.
+
+        builder.ConfigureServices(services =>
+        {
+            services.RemoveAll<IInvitationNotifier>();
+
+            services.AddSingleton<FakeInvitationNotifier>();
+
+            services.AddSingleton<IInvitationNotifier>(provider =>
+                provider.GetRequiredService<FakeInvitationNotifier>());
+        });
+    }
+}
+```
+
+**Responsabilidades:**
+
+| Configuración               | Función                                                                           |
+| --------------------------- | --------------------------------------------------------------------------------- |
+| `ConnectionStrings:Default` | Conecta la API con el PostgreSQL temporal.                                        |
+| `Jwt`                       | Configura la generación y validación de tokens durante las pruebas.               |
+| `BootstrapAdmin`            | Define el administrador inicial utilizado para operaciones protegidas.            |
+| `UserInvitation`            | Configura la vigencia del token y la URL de activación.                           |
+| `Email:Smtp`                | Proporciona valores de configuración válidos sin realizar conexiones SMTP reales. |
+| `IInvitationNotifier`       | Sustituye el adaptador de correo por una implementación en memoria.               |
+
+La fábrica permite ejecutar solicitudes HTTP contra una instancia de la aplicación sin desplegar un servidor externo.
+
+#### Simulación del envío de invitaciones
+
+**Componente:** `FakeInvitationNotifier`
+
+```csharp
+public sealed class FakeInvitationNotifier : IInvitationNotifier
+{
+    public UserInvitationResult? LastInvitation { get; private set; }
+
+    public bool ThrowOnNotify { get; set; }
+
+    public Task NotifyAsync(
+        UserInvitationResult invitation,
+        CancellationToken cancellationToken = default)
+    {
+        LastInvitation = invitation;
+
+        if (ThrowOnNotify)
+        {
+            throw new EmailDeliveryUnavailableException();
+        }
+
+        return Task.CompletedTask;
+    }
+}
+```
+
+| Propiedad / Método | Responsabilidad                                                             |
+| ------------------ | --------------------------------------------------------------------------- |
+| `LastInvitation`   | Conserva la última invitación recibida, incluyendo su token de activación.  |
+| `ThrowOnNotify`    | Permite configurar un fallo simulado durante la notificación.               |
+| `NotifyAsync()`    | Registra la invitación o lanza una excepción de entrega cuando corresponde. |
+
+**Características:**
+
+- Implementa el contrato `IInvitationNotifier` de Application.
+- No establece conexiones SMTP.
+- Permite recuperar el token generado para ejecutar las pruebas de activación.
+- Facilita la simulación de errores operativos.
+- Se registra como `Singleton` dentro de la fábrica de pruebas.
+
+El token permanece accesible únicamente dentro de la infraestructura de pruebas.
+
+#### Escenarios de integración
+
+**1. Crear invitación, activar cuenta e iniciar sesión**
+
+Método: `AdminCreatesInvitation_ActivationAllowsLogin()`
+
+| Orden | Operación                                                        | Endpoint                      | Resultado esperado           |
+| ----- | ---------------------------------------------------------------- | ----------------------------- | ---------------------------- |
+| 1     | Autenticar al administrador.                                     | `POST /api/auth/login`        | `200 OK`                     |
+| 2     | Crear una invitación utilizando el token administrativo.         | `POST /api/users/invitations` | `201 Created`                |
+| 3     | Verificar que el response incluya el rol `User`.                 | Respuesta de invitación       | Rol correcto                 |
+| 4     | Comprobar que no se exponga el token ni el enlace de activación. | Respuesta de invitación       | Información sensible ausente |
+| 5     | Intentar iniciar sesión con la cuenta pendiente.                 | `POST /api/auth/login`        | `401 Unauthorized`           |
+| 6     | Activar la cuenta mediante su token.                             | `POST /api/auth/activate`     | `204 No Content`             |
+| 7     | Iniciar sesión con la cuenta activada.                           | `POST /api/auth/login`        | `200 OK`                     |
+
+**Validaciones principales:**
+
+- El administrador puede crear invitaciones.
+- La cuenta se registra inicialmente con el rol `User`.
+- La respuesta pública no contiene el token de activación.
+- Una cuenta pendiente no puede autenticarse.
+- La activación permite establecer la contraseña inicial.
+- Una cuenta activada puede iniciar sesión.
+
+Este escenario verifica la integración funcional de los componentes implementados desde SPEC 03.
+
+**2. Autorización administrativa**
+
+Método: `InvitationEndpoints_RequireAdminRole()`
+
+| Escenario                                              | Resultado esperado | Código                    |
+| ------------------------------------------------------ | ------------------ | ------------------------- |
+| Crear invitación sin token JWT.                        | `401 Unauthorized` | `authentication_required` |
+| Crear invitación utilizando una cuenta con rol `User`. | `403 Forbidden`    | `forbidden`               |
+
+**Flujo:**
+
+1. Se intenta crear una invitación sin autenticación.
+2. Se comprueba que la API devuelva HTTP 401.
+3. Se autentica al administrador.
+4. Se crea y activa una cuenta regular.
+5. Se obtiene un JWT del usuario regular.
+6. Se intenta crear una invitación utilizando ese token.
+7. Se comprueba que la API devuelva HTTP 403.
+
+La prueba verifica la aplicación efectiva de la política `AdminOnly` documentada en el paso 5.
+
+**3. Correo electrónico duplicado**
+
+Método: `DuplicateEmail_ReturnsConflict()`
+
+| Orden | Operación                                           | Resultado esperado  |
+| ----- | --------------------------------------------------- | ------------------- |
+| 1     | Crear una invitación para un correo nuevo.          | `201 Created`       |
+| 2     | Intentar crear otra invitación con el mismo correo. | `409 Conflict`      |
+| 3     | Consultar el código del error.                      | `resource_conflict` |
+
+La prueba comprueba que el registro de invitaciones rechace cuentas con correos electrónicos previamente registrados.
+
+**4. Invalidación del token anterior**
+
+Método: `ResendInvitation_InvalidatesPreviousToken()`
+
+| Orden | Operación                                                 | Resultado esperado          |
+| ----- | --------------------------------------------------------- | --------------------------- |
+| 1     | Crear una invitación para un usuario.                     | Invitación inicial generada |
+| 2     | Recuperar el primer token desde `FakeInvitationNotifier`. | Token inicial disponible    |
+| 3     | Solicitar el reenvío de la invitación.                    | `204 No Content`            |
+| 4     | Recuperar la nueva invitación.                            | Nuevo token disponible      |
+| 5     | Intentar activar la cuenta con el token anterior.         | `400 Bad Request`           |
+| 6     | Verificar el código del error.                            | `invalid_activation_token`  |
+| 7     | Activar la cuenta con el nuevo token.                     | `204 No Content`            |
+
+**Relación con SPEC 03:**
+
+Este escenario comprueba el comportamiento del mecanismo de invalidación basado en la actualización del Security Stamp de Identity.
+
+La prueba utiliza el servicio real de invitaciones y el proveedor de tokens configurado en Infrastructure.
+
+**5. Error de entrega de correo**
+
+Método: `NotificationFailure_Returns503AndKeepsPendingAccount()`
+
+| Orden | Operación                                                 | Resultado esperado                |
+| ----- | --------------------------------------------------------- | --------------------------------- |
+| 1     | Autenticar al administrador.                              | `200 OK`                          |
+| 2     | Configurar `FakeInvitationNotifier.ThrowOnNotify = true`. | Notificador preparado para fallar |
+| 3     | Solicitar la creación de una invitación.                  | `503 Service Unavailable`         |
+| 4     | Verificar el código del error.                            | `email_delivery_unavailable`      |
+| 5     | Intentar iniciar sesión con la cuenta invitada.           | `401 Unauthorized`                |
+
+**Consideración:**
+
+El flujo confirma que un fallo de notificación no permite autenticar a la cuenta creada.
+
+La implementación registra la cuenta pendiente antes de intentar notificarla, por lo que el error de entrega no implica automáticamente revertir su creación.
+
+La prueba comprueba el rechazo del login, pero no consulta directamente el estado almacenado en PostgreSQL.
+
+#### Componentes de .NET y proveedores externos
+
+| Componente / Método         | Origen                                              | Función                                                                       |
+| --------------------------- | --------------------------------------------------- | ----------------------------------------------------------------------------- |
+| `[Fact]`                    | xUnit                                               | Identifica una prueba individual.                                             |
+| `IAsyncLifetime`            | xUnit                                               | Administra la inicialización y liberación asincrónica de recursos de prueba.  |
+| `WebApplicationFactory<T>`  | Microsoft.AspNetCore.Mvc.Testing                    | Permite ejecutar una aplicación ASP.NET Core dentro de un entorno de pruebas. |
+| `ConfigureWebHost()`        | ASP.NET Core Testing                                | Personaliza la configuración de la aplicación durante las pruebas.            |
+| `HttpClient`                | .NET                                                | Ejecuta solicitudes HTTP contra la aplicación de pruebas.                     |
+| `HttpRequestMessage`        | .NET                                                | Representa una solicitud HTTP configurable.                                   |
+| `HttpResponseMessage`       | .NET                                                | Representa una respuesta HTTP.                                                |
+| `PostAsJsonAsync()`         | System.Net.Http.Json                                | Envía solicitudes HTTP POST con contenido JSON.                               |
+| `JsonContent.Create()`      | System.Net.Http.Json                                | Construye contenido HTTP serializado como JSON.                               |
+| `AuthenticationHeaderValue` | .NET                                                | Configura el encabezado HTTP de autenticación.                                |
+| `JsonDocument`              | System.Text.Json                                    | Permite consultar propiedades de documentos JSON.                             |
+| `PostgreSqlBuilder`         | Testcontainers.PostgreSql                           | Configura un contenedor PostgreSQL para pruebas.                              |
+| `PostgreSqlContainer`       | Testcontainers.PostgreSql                           | Administra el ciclo de vida del contenedor PostgreSQL.                        |
+| `RemoveAll<T>()`            | Microsoft.Extensions.DependencyInjection.Extensions | Elimina registros de servicios existentes.                                    |
+| `AddSingleton<T>()`         | Microsoft.Extensions.DependencyInjection            | Registra una instancia o servicio con ciclo de vida Singleton.                |
+| `Guid.NewGuid()`            | .NET                                                | Genera identificadores únicos para los datos de prueba.                       |
+
+#### Flujo funcional o relaciones
+
+| Operación                      | Componente responsable                 | Resultado                                   |
+| ------------------------------ | -------------------------------------- | ------------------------------------------- |
+| Iniciar PostgreSQL.            | `PostgreSqlContainer`                  | Base de datos temporal disponible.          |
+| Configurar la aplicación.      | `TestApiFactory`                       | API preparada con los parámetros de prueba. |
+| Sustituir el notificador SMTP. | `ConfigureWebHost()`                   | `FakeInvitationNotifier` registrado.        |
+| Crear cliente HTTP.            | `WebApplicationFactory.CreateClient()` | Cliente conectado al servidor de pruebas.   |
+| Autenticar administrador.      | `AuthController`                       | JWT administrativo.                         |
+| Crear invitación.              | `UserInvitationsController`            | Cuenta pendiente y token generado.          |
+| Activar usuario.               | `AuthController`                       | Cuenta activada.                            |
+| Autenticar usuario regular.    | `AuthController`                       | Token de acceso.                            |
+| Verificar errores HTTP.        | xUnit                                  | Comparación de estados y códigos de error.  |
+| Liberar PostgreSQL.            | `DisposeAsync()`                       | Recursos del contenedor liberados.          |
+
+#### Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    subgraph Tests["Tests - Integration"]
+        TESTS["InvitationIntegrationTests"]
+        FACTORY["TestApiFactory"]
+        HTTP["HttpClient"]
+        FAKE["FakeInvitationNotifier"]
+        CONTAINER["PostgreSqlContainer"]
+    end
+
+    subgraph Presentation
+        AUTH["AuthController"]
+        INV["UserInvitationsController"]
+        ERRORS["ProblemDetails"]
+    end
+
+    subgraph Application
+        LOGIN["LoginUser"]
+        CREATE["CreateUserInvitation"]
+        ACTIVATE["ActivateUser"]
+        RESEND["ResendUserInvitation"]
+        PORT["IInvitationNotifier"]
+    end
+
+    subgraph Infrastructure
+        IDENTITY["ASP.NET Core Identity"]
+        SERVICE["IdentityUserInvitationService"]
+        DB["AppDbContext"]
+    end
+
+    subgraph Database
+        POSTGRES["PostgreSQL 16"]
+    end
+
+    TESTS --> FACTORY
+    TESTS --> HTTP
+
+    FACTORY --> CONTAINER
+    CONTAINER --> POSTGRES
+
+    HTTP --> AUTH
+    HTTP --> INV
+
+    AUTH --> LOGIN
+    AUTH --> ACTIVATE
+
+    INV --> CREATE
+    INV --> RESEND
+
+    CREATE --> PORT
+    RESEND --> PORT
+
+    FAKE -.->|"Implementa"| PORT
+
+    CREATE --> SERVICE
+    ACTIVATE --> SERVICE
+    RESEND --> SERVICE
+
+    SERVICE --> IDENTITY
+    SERVICE --> DB
+
+    IDENTITY --> DB
+    DB --> POSTGRES
+
+    AUTH --> ERRORS
+    INV --> ERRORS
+```
+
+**Interpretación:**
+
+- **Tests:** inicia PostgreSQL, configura la API y ejecuta solicitudes HTTP.
+- **Presentation:** procesa autenticación, invitaciones, activación y errores HTTP.
+- **Application:** coordina los casos de uso y utiliza contratos independientes de infraestructura.
+- **Infrastructure:** ejecuta las operaciones reales de Identity y persistencia.
+- **Database:** almacena los usuarios, roles y datos necesarios para el proceso de invitación.
+- **FakeInvitationNotifier:** sustituye exclusivamente el transporte de notificaciones, manteniendo el resto del flujo integrado.
+
+#### Resultado
+
+Se incorporó una clase de pruebas de integración con cinco escenarios que verifican el ciclo de invitaciones y autenticación mediante una instancia real de PostgreSQL administrada por Testcontainers.
+
+Las pruebas comprueban la creación y activación de usuarios, la autorización administrativa, los conflictos por correos duplicados, la invalidación de tokens anteriores y el tratamiento de errores de entrega de correo.
+
+La combinación de `WebApplicationFactory`, PostgreSQL y un notificador simulado permite verificar la interacción entre Presentation, Application e Infrastructure sin depender de servicios SMTP externos.
+
+**Nota:** Los archivos proporcionados contienen la implementación de las pruebas, pero no los resultados de su ejecución. Para confirmar que todos los escenarios se completan correctamente es necesario consultar la salida de `dotnet test`.
+
 ---
 
 ### 14. Actualizar Swagger y documentación.
