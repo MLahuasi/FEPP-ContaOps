@@ -108,6 +108,170 @@ Se definieron tres contratos HTTP para los procesos de invitación y activación
 
 ### 2. Crear casos de uso de Application.
 
+#### Componentes implementados
+
+| Componente                  | Acción         | Tipo           | Capa        | Responsabilidad                                                           |
+| --------------------------- | -------------- | -------------- | ----------- | ------------------------------------------------------------------------- |
+| `DependencyInjection`       | Update         | class (static) | Application | Registra los casos de uso en el contenedor de dependencias.               |
+| `ActivateUser`              | No verificable | class          | Application | Coordina la activación de una cuenta mediante un token de invitación.     |
+| `ActivateUserInput`         | No verificable | record         | Application | Define los datos necesarios para activar una cuenta.                      |
+| `CreateUserInvitation`      | No verificable | class          | Application | Coordina el registro de una cuenta pendiente y el envío de su invitación. |
+| `CreateUserInvitationInput` | No verificable | record         | Application | Define el correo electrónico del usuario que será invitado.               |
+| `ResendUserInvitation`      | No verificable | class          | Application | Coordina la generación y notificación de una nueva invitación.            |
+| `ResendUserInvitationInput` | No verificable | record         | Application | Define el identificador del usuario que solicita una nueva invitación.    |
+
+**Nota:** Se verifica el registro de los tres casos de uso en `DependencyInjection`. Los fragmentos no permiten determinar si las demás clases fueron creadas o modificadas respecto al SPEC 03.
+
+#### Métodos y funciones principales
+
+| Clase                  | Método             | Responsabilidad                                                                         |
+| ---------------------- | ------------------ | --------------------------------------------------------------------------------------- |
+| `DependencyInjection`  | `AddApplication()` | Registra los casos de uso con ciclo de vida `Scoped`.                                   |
+| `ActivateUser`         | `ExecuteAsync()`   | Solicita la activación de una cuenta mediante `IUserInvitationService.ActivateAsync()`. |
+| `CreateUserInvitation` | `ExecuteAsync()`   | Registra una cuenta pendiente y solicita el envío de su invitación.                     |
+| `ResendUserInvitation` | `ExecuteAsync()`   | Solicita una nueva invitación y coordina su notificación.                               |
+
+**Comportamiento de los casos de uso:**
+
+| Caso de uso            | Dependencias                                    | Operaciones                                                                  |
+| ---------------------- | ----------------------------------------------- | ---------------------------------------------------------------------------- |
+| `ActivateUser`         | `IUserInvitationService`                        | Ejecuta `ActivateAsync()` y devuelve el resultado.                           |
+| `CreateUserInvitation` | `IUserInvitationService`, `IInvitationNotifier` | Ejecuta `RegisterPendingAsync()` y, si tiene éxito, llama a `NotifyAsync()`. |
+| `ResendUserInvitation` | `IUserInvitationService`, `IInvitationNotifier` | Ejecuta `ResendAsync()` y, si tiene éxito, llama a `NotifyAsync()`.          |
+
+Los casos de uso dependen de interfaces de **Application**, evitando referencias directas a las implementaciones de Infrastructure.
+
+#### Modelos de datos
+
+| Modelo                      | Propiedad     | Tipo     | Descripción                                     |
+| --------------------------- | ------------- | -------- | ----------------------------------------------- |
+| `ActivateUserInput`         | `UserId`      | `UserId` | Identificador de dominio del usuario.           |
+|                             | `Token`       | `string` | Token opaco de activación.                      |
+|                             | `NewPassword` | `string` | Contraseña inicial de la cuenta.                |
+| `CreateUserInvitationInput` | `Email`       | `string` | Correo electrónico del usuario invitado.        |
+| `ResendUserInvitationInput` | `UserId`      | `UserId` | Identificador de dominio del usuario pendiente. |
+
+**Modelos reutilizados:**
+
+| Modelo                 | Capa        | Responsabilidad                                        |
+| ---------------------- | ----------- | ------------------------------------------------------ |
+| `UserId`               | Domain      | Representa el identificador del usuario.               |
+| `User`                 | Domain      | Representa la entidad de usuario.                      |
+| `UserInvitationResult` | Application | Contiene el resultado interno de una invitación.       |
+| `Result<T>`            | Application | Representa el éxito o error esperado de una operación. |
+
+Los modelos `Input` pertenecen a Application y son independientes de los DTOs HTTP definidos en el paso 1.
+
+#### Componentes de .NET y proveedores externos
+
+| Componente / Método  | Origen                                   | Función                                                                           |
+| -------------------- | ---------------------------------------- | --------------------------------------------------------------------------------- |
+| `IServiceCollection` | Microsoft.Extensions.DependencyInjection | Representa la colección de servicios configurados para inyección de dependencias. |
+| `AddScoped<T>()`     | Microsoft.Extensions.DependencyInjection | Registra un servicio con ciclo de vida por ámbito (_scope_).                      |
+| `Task<T>`            | .NET                                     | Representa una operación asincrónica que devuelve un resultado.                   |
+| `CancellationToken`  | .NET                                     | Permite propagar solicitudes de cancelación.                                      |
+| `async` / `await`    | C#                                       | Permite ejecutar operaciones asincrónicas sin bloquear el hilo durante la espera. |
+| `record`             | C#                                       | Define modelos de datos con igualdad basada en valores.                           |
+
+No se incorporan nuevas dependencias externas en el código proporcionado.
+
+#### Flujo funcional o relaciones
+
+**1. Crear invitación**
+
+| Orden | Operación                                                       | Componente responsable                          |
+| ----- | --------------------------------------------------------------- | ----------------------------------------------- |
+| 1     | Recibir `CreateUserInvitationInput`.                            | `CreateUserInvitation`                          |
+| 2     | Registrar una cuenta pendiente.                                 | `IUserInvitationService.RegisterPendingAsync()` |
+| 3     | Verificar `Result.IsSuccess`.                                   | `CreateUserInvitation`                          |
+| 4     | Solicitar el envío de la invitación si el resultado es exitoso. | `IInvitationNotifier.NotifyAsync()`             |
+| 5     | Devolver `Result<UserInvitationResult>`.                        | `CreateUserInvitation`                          |
+
+**2. Activar usuario**
+
+| Orden | Operación                                          | Componente responsable                   |
+| ----- | -------------------------------------------------- | ---------------------------------------- |
+| 1     | Recibir `ActivateUserInput`.                       | `ActivateUser`                           |
+| 2     | Delegar la activación al servicio de invitaciones. | `IUserInvitationService.ActivateAsync()` |
+| 3     | Devolver `Result<User>`.                           | `ActivateUser`                           |
+
+**3. Reenviar invitación**
+
+| Orden | Operación                                             | Componente responsable                 |
+| ----- | ----------------------------------------------------- | -------------------------------------- |
+| 1     | Recibir `ResendUserInvitationInput`.                  | `ResendUserInvitation`                 |
+| 2     | Solicitar una nueva invitación.                       | `IUserInvitationService.ResendAsync()` |
+| 3     | Verificar `Result.IsSuccess`.                         | `ResendUserInvitation`                 |
+| 4     | Solicitar la notificación si el resultado es exitoso. | `IInvitationNotifier.NotifyAsync()`    |
+| 5     | Devolver `Result<UserInvitationResult>`.              | `ResendUserInvitation`                 |
+
+**Manejo de resultados:**
+
+- Cuando el servicio devuelve un resultado fallido, se propaga sin enviar notificaciones.
+- Cuando la operación tiene éxito, los casos de uso de creación y reenvío solicitan la notificación.
+- Las excepciones de `NotifyAsync()` no se capturan en estos casos de uso; se propagan al consumidor.
+- El código mostrado no implementa directamente validaciones de tokens, contraseñas ni persistencia. Estas operaciones se delegan a los servicios correspondientes.
+
+#### Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    subgraph Presentation
+        API["API / Controllers"]
+    end
+
+    subgraph Application
+        CREATE["CreateUserInvitation"]
+        ACTIVATE["ActivateUser"]
+        RESEND["ResendUserInvitation"]
+
+        SERVICE["IUserInvitationService"]
+        NOTIFIER["IInvitationNotifier"]
+    end
+
+    subgraph Domain
+        USER["User / UserId"]
+    end
+
+    subgraph Infrastructure
+        IDENTITY["IdentityUserInvitationService"]
+        EMAIL["InvitationEmailNotifier"]
+    end
+
+    API -.->|"Integración HTTP prevista"| CREATE
+    API -.->|"Integración HTTP prevista"| ACTIVATE
+    API -.->|"Integración HTTP prevista"| RESEND
+
+    CREATE --> SERVICE
+    CREATE --> NOTIFIER
+
+    ACTIVATE --> SERVICE
+
+    RESEND --> SERVICE
+    RESEND --> NOTIFIER
+
+    SERVICE -.-> USER
+
+    IDENTITY -.->|"Implementa"| SERVICE
+    EMAIL -.->|"Implementa"| NOTIFIER
+```
+
+**Interpretación:**
+
+- **Presentation:** utilizará los casos de uso para procesar solicitudes HTTP. Esta integración no se muestra implementada en los archivos del paso.
+- **Application:** coordina los procesos de invitación, activación y reenvío mediante interfaces.
+- **Domain:** proporciona los modelos de usuario utilizados por los contratos de Application.
+- **Infrastructure:** contiene los adaptadores implementados previamente en SPEC 03.
+- **Inyección de dependencias:** `AddApplication()` registra los casos de uso mediante `AddScoped<T>()`. Los adaptadores de Infrastructure se resuelven a través de sus respectivas interfaces.
+
+#### Resultado
+
+Se dispone de tres casos de uso de Application para coordinar la creación, activación y reenvío de invitaciones.
+
+Los casos de uso utilizan los contratos establecidos en SPEC 03 y se encuentran registrados mediante inyección de dependencias.
+
+Esta estructura permite integrar los endpoints de Presentation sin acoplarlos directamente a ASP.NET Core Identity, al transporte de correo o a los mecanismos de persistencia.
+
 ---
 
 ### 3. Implementar validación uniforme.
