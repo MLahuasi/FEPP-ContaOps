@@ -1290,6 +1290,277 @@ La conexión efectiva del handler global al pipeline HTTP deberá verificarse en
 
 ### 7. Traducir errores de contraseña de Identity.
 
+#### Componentes implementados
+
+| Componente                      | Acción | Tipo           | Capa           | Responsabilidad                                                                                                                                                   |
+| ------------------------------- | ------ | -------------- | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `IdentityUserInvitationService` | Update | class          | Infrastructure | Traduce los errores de validación de contraseñas de ASP.NET Core Identity a errores tipados de Application.                                                       |
+| `ToPasswordValidationError()`   | Create | Método privado | Infrastructure | Convierte los códigos de error de Identity en mensajes de validación seguros y asociados al campo `newPassword`.                                                  |
+| `ActivateAsync()`               | Update | Método público | Infrastructure | Incorpora el tratamiento de errores de contraseña durante la activación, devolviendo `ValidationError` cuando la contraseña no cumple las políticas configuradas. |
+
+**Ubicación:** `Fepp.ContaOps.Infrastructure.Identity.IdentityUserInvitationService`
+
+La implementación permite utilizar las reglas de contraseñas configuradas en ASP.NET Core Identity sin exponer directamente sus errores técnicos al consumidor de la API.
+
+#### Métodos y funciones principales
+
+| Clase                           | Método                        | Responsabilidad                                                                                                                     |
+| ------------------------------- | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `IdentityUserInvitationService` | `ActivateAsync()`             | Valida la invitación, intenta establecer la contraseña inicial y devuelve un error de validación si Identity rechaza la contraseña. |
+| `IdentityUserInvitationService` | `ToPasswordValidationError()` | Traduce los códigos de error de Identity en mensajes seguros y agrupados por campo.                                                 |
+| `IdentityUserInvitationService` | `EnsureSuccess()`             | Convierte otros resultados fallidos de Identity en excepciones de infraestructura.                                                  |
+
+#### Traducción de errores de contraseña
+
+**1. Validación mediante ASP.NET Core Identity**
+
+Durante la activación, el método `ActivateAsync()` utiliza:
+
+```csharp
+IdentityResult passwordResult = await _userManager.AddPasswordAsync(
+    identityUser,
+    newPassword);
+
+if (!passwordResult.Succeeded)
+{
+    await transaction.RollbackAsync(cancellationToken);
+    return Result<User>.Failure(ToPasswordValidationError(passwordResult));
+}
+```
+
+| Operación             | Componente                       | Responsabilidad                                                                      |
+| --------------------- | -------------------------------- | ------------------------------------------------------------------------------------ |
+| Establecer contraseña | `UserManager.AddPasswordAsync()` | Intenta asignar la contraseña inicial aplicando las reglas configuradas en Identity. |
+| Verificar resultado   | `IdentityResult.Succeeded`       | Indica si la operación fue exitosa.                                                  |
+| Revertir transacción  | `RollbackAsync()`                | Revierte la transacción cuando Identity rechaza la contraseña.                       |
+| Traducir errores      | `ToPasswordValidationError()`    | Convierte los errores técnicos en mensajes seguros.                                  |
+| Devolver resultado    | `Result<User>.Failure()`         | Devuelve el error tipado sin lanzar una excepción de validación.                     |
+
+**2. Mapeo de códigos de Identity**
+
+El método `ToPasswordValidationError()` traduce los códigos de ASP.NET Core Identity a mensajes controlados por la aplicación.
+
+| Código de Identity                | Mensaje devuelto                                          | Regla                                               |
+| --------------------------------- | --------------------------------------------------------- | --------------------------------------------------- |
+| `PasswordTooShort`                | `The password does not meet the minimum length.`          | Longitud mínima.                                    |
+| `PasswordRequiresUniqueChars`     | `The password does not contain enough unique characters.` | Cantidad mínima de caracteres diferentes.           |
+| `PasswordRequiresNonAlphanumeric` | `The password must contain a symbol.`                     | Presencia de caracteres especiales.                 |
+| `PasswordRequiresDigit`           | `The password must contain a digit.`                      | Presencia de números.                               |
+| `PasswordRequiresLower`           | `The password must contain a lowercase letter.`           | Presencia de letras minúsculas.                     |
+| `PasswordRequiresUpper`           | `The password must contain an uppercase letter.`          | Presencia de letras mayúsculas.                     |
+| Otros códigos                     | `The password does not meet the configured policy.`       | Incumplimiento de otra regla o error no reconocido. |
+
+**Implementación:**
+
+```csharp
+private static ValidationError ToPasswordValidationError(IdentityResult result)
+{
+    Dictionary<string, string[]> errors = new(StringComparer.Ordinal)
+    {
+        ["newPassword"] = result.Errors
+            .Select(error => error.Code switch
+            {
+                "PasswordTooShort" =>
+                    "The password does not meet the minimum length.",
+
+                "PasswordRequiresUniqueChars" =>
+                    "The password does not contain enough unique characters.",
+
+                "PasswordRequiresNonAlphanumeric" =>
+                    "The password must contain a symbol.",
+
+                "PasswordRequiresDigit" =>
+                    "The password must contain a digit.",
+
+                "PasswordRequiresLower" =>
+                    "The password must contain a lowercase letter.",
+
+                "PasswordRequiresUpper" =>
+                    "The password must contain an uppercase letter.",
+
+                _ => "The password does not meet the configured policy."
+            })
+            .Distinct(StringComparer.Ordinal)
+            .ToArray()
+    };
+
+    return new ValidationError(errors);
+}
+```
+
+**Características:**
+
+- Todos los mensajes se asocian al campo `newPassword`.
+- Los códigos internos de Identity no se devuelven directamente al cliente.
+- Los mensajes duplicados se eliminan mediante `Distinct()`.
+- Los errores no reconocidos utilizan un mensaje genérico.
+- Se devuelve un `ValidationError` definido en Application.
+- Las reglas efectivas de contraseña continúan siendo responsabilidad de ASP.NET Core Identity.
+
+#### Modelos de datos
+
+| Modelo            | Capa / Origen         | Responsabilidad                                                           |
+| ----------------- | --------------------- | ------------------------------------------------------------------------- |
+| `IdentityResult`  | ASP.NET Core Identity | Representa el resultado de una operación de Identity.                     |
+| `IdentityError`   | ASP.NET Core Identity | Contiene el código y la descripción de un error de Identity.              |
+| `ValidationError` | Application           | Representa errores de validación agrupados por campo.                     |
+| `Result<User>`    | Application           | Representa el resultado exitoso o fallido de la activación.               |
+| `User`            | Domain                | Representa la cuenta activada cuando la operación finaliza correctamente. |
+
+**Estructura de los errores traducidos:**
+
+| Campo         | Tipo       | Contenido                                                         |
+| ------------- | ---------- | ----------------------------------------------------------------- |
+| `newPassword` | `string[]` | Mensajes correspondientes a las reglas de contraseña incumplidas. |
+
+La estructura permite representar varias reglas incumplidas en una única respuesta de validación.
+
+#### Componentes de .NET y proveedores externos
+
+| Componente / Método        | Origen                | Función                                                                        |
+| -------------------------- | --------------------- | ------------------------------------------------------------------------------ |
+| `UserManager<TUser>`       | ASP.NET Core Identity | Administra las operaciones relacionadas con usuarios y contraseñas.            |
+| `AddPasswordAsync()`       | ASP.NET Core Identity | Establece la contraseña de un usuario y ejecuta las validaciones configuradas. |
+| `IdentityResult`           | ASP.NET Core Identity | Indica si una operación de Identity fue exitosa y proporciona sus errores.     |
+| `IdentityError.Code`       | ASP.NET Core Identity | Identifica mediante un código el motivo del error.                             |
+| `RollbackAsync()`          | Entity Framework Core | Revierte los cambios asociados a una transacción.                              |
+| `Dictionary<TKey, TValue>` | .NET                  | Almacena mensajes de validación asociados a campos.                            |
+| `Select()`                 | LINQ / .NET           | Transforma los códigos de Identity en mensajes de validación.                  |
+| `Distinct()`               | LINQ / .NET           | Elimina mensajes duplicados.                                                   |
+| `ToArray()`                | LINQ / .NET           | Convierte los mensajes en un arreglo.                                          |
+| `StringComparer.Ordinal`   | .NET                  | Compara cadenas utilizando reglas ordinales.                                   |
+
+#### Flujo funcional o relaciones
+
+**1. Activación con contraseña válida**
+
+| Orden | Operación                                                             | Componente responsable               |
+| ----- | --------------------------------------------------------------------- | ------------------------------------ |
+| 1     | Recibir identificador, token y contraseña inicial.                    | `ActivateAsync()`                    |
+| 2     | Validar el identificador y comprobar el estado pendiente del usuario. | `IdentityUserInvitationService`      |
+| 3     | Verificar el token de activación.                                     | `UserManager.VerifyUserTokenAsync()` |
+| 4     | Iniciar una transacción.                                              | `BeginTransactionAsync()`            |
+| 5     | Establecer la contraseña inicial.                                     | `UserManager.AddPasswordAsync()`     |
+| 6     | Confirmar el correo electrónico y cambiar el estado a `Active`.       | `IdentityUserInvitationService`      |
+| 7     | Actualizar el Security Stamp del usuario.                             | `UpdateSecurityStampAsync()`         |
+| 8     | Confirmar la transacción.                                             | `CommitAsync()`                      |
+| 9     | Devolver el usuario activado.                                         | `Result<User>.Success()`             |
+
+**2. Activación con contraseña inválida**
+
+| Orden | Operación                                                                                           | Componente responsable           |
+| ----- | --------------------------------------------------------------------------------------------------- | -------------------------------- |
+| 1     | Intentar establecer la contraseña.                                                                  | `UserManager.AddPasswordAsync()` |
+| 2     | Obtener un `IdentityResult` fallido.                                                                | ASP.NET Core Identity            |
+| 3     | Revertir la transacción.                                                                            | `RollbackAsync()`                |
+| 4     | Traducir los códigos de error.                                                                      | `ToPasswordValidationError()`    |
+| 5     | Agrupar los mensajes bajo `newPassword`.                                                            | `ValidationError`                |
+| 6     | Devolver `Result<User>.Failure()`.                                                                  | `ActivateAsync()`                |
+| 7     | Traducir el error a HTTP 400 mediante el mecanismo de Presentation documentado en pasos anteriores. | `ProblemDetailsResponseFactory`  |
+
+**Consideración sobre el estado de la cuenta:**
+
+Cuando la contraseña no supera las validaciones, el método retorna antes de ejecutar:
+
+- `identityUser.EmailConfirmed = true`
+- `identityUser.Status = UserStatus.Active`
+- `UpdateSecurityStampAsync()`
+- `CommitAsync()`
+
+Por tanto, el flujo no completa la activación cuando la contraseña es rechazada.
+
+#### Contrato HTTP de validación
+
+La traducción devuelve un `ValidationError` que puede representarse mediante el contrato `ProblemDetails` definido en los pasos anteriores.
+
+**Ejemplo de respuesta HTTP 400:**
+
+```json
+{
+  "type": "https://httpstatuses.com/400",
+  "title": "Request validation failed.",
+  "status": 400,
+  "detail": "One or more validation errors occurred.",
+  "instance": "/api/auth/activate",
+  "code": "validation_error",
+  "traceId": "0HN123456789",
+  "errors": {
+    "newPassword": [
+      "The password does not meet the minimum length.",
+      "The password must contain a digit.",
+      "The password must contain an uppercase letter."
+    ]
+  }
+}
+```
+
+El ejemplo representa una respuesta posible cuando Identity detecta varias reglas incumplidas.
+
+La ruta, el identificador de trazabilidad y las reglas incumplidas son ilustrativos.
+
+#### Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    subgraph Presentation
+        API["AuthController"]
+        HTTP["ProblemDetails HTTP 400"]
+    end
+
+    subgraph Application
+        UC["ActivateUser"]
+        PORT["IUserInvitationService"]
+        ERROR["ValidationError"]
+        RESULT["Result de User"]
+    end
+
+    subgraph Infrastructure
+        SERVICE["IdentityUserInvitationService"]
+        IDENTITY["UserManager"]
+        PASSWORD["ToPasswordValidationError"]
+        DB["AppDbContext"]
+    end
+
+    subgraph Domain
+        USER["User"]
+    end
+
+    API --> UC
+    UC --> PORT
+
+    SERVICE -.->|"Implementa"| PORT
+
+    SERVICE --> IDENTITY
+    SERVICE --> DB
+
+    IDENTITY -->|"Contraseña inválida"| PASSWORD
+    PASSWORD --> ERROR
+    ERROR --> RESULT
+    RESULT --> UC
+
+    UC -->|"Error de validación"| API
+    API --> HTTP
+
+    SERVICE -->|"Activación exitosa"| USER
+```
+
+**Interpretación:**
+
+- **Presentation:** recibe la solicitud de activación y convierte los errores esperados en respuestas HTTP.
+- **Application:** coordina la activación y define el contrato `ValidationError`, sin depender directamente de ASP.NET Core Identity.
+- **Infrastructure:** utiliza `UserManager` para validar la contraseña y traduce sus errores mediante `ToPasswordValidationError()`.
+- **Domain:** proporciona la entidad `User`, devuelta cuando la activación finaliza correctamente.
+
+La traducción permite aislar los códigos técnicos de Identity dentro de Infrastructure y mantener un contrato de errores independiente en Application.
+
+#### Resultado
+
+Se incorporó la traducción de errores de contraseña de ASP.NET Core Identity al contrato `ValidationError` de Application.
+
+Cuando una contraseña incumple las reglas configuradas, `IdentityUserInvitationService` revierte la transacción y devuelve mensajes seguros agrupados bajo el campo `newPassword`.
+
+Esta implementación permite comunicar al cliente las reglas de contraseña incumplidas mediante respuestas HTTP 400, sin exponer directamente los códigos internos de Identity ni completar la activación de una cuenta con una contraseña inválida.
+
 ---
 
 ### 8. Configurar políticas de contraseña y bloqueo.

@@ -126,9 +126,15 @@ public sealed class IdentityUserInvitationService : IUserInvitationService
 
         try
         {
-            EnsureSuccess(
-                await _userManager.AddPasswordAsync(identityUser, newPassword),
-                "The account password could not be established.");
+            IdentityResult passwordResult = await _userManager.AddPasswordAsync(
+                identityUser,
+                newPassword);
+            if (!passwordResult.Succeeded)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return Result<User>.Failure(ToPasswordValidationError(passwordResult));
+            }
+
             identityUser.EmailConfirmed = true;
             identityUser.Status = UserStatus.Active;
             EnsureSuccess(
@@ -212,6 +218,33 @@ public sealed class IdentityUserInvitationService : IUserInvitationService
             identityUser.Email ?? identityUser.UserName ?? string.Empty,
             roles,
             identityUser.Status);
+    }
+
+    /// <summary>
+    /// Traduce los códigos de política de contraseña de Identity a un error seguro.
+    /// </summary>
+    /// <param name="result">Resultado fallido de la operación de contraseña.</param>
+    /// <returns>Error de validación agrupado para el campo de contraseña.</returns>
+    private static ValidationError ToPasswordValidationError(IdentityResult result)
+    {
+        Dictionary<string, string[]> errors = new(StringComparer.Ordinal)
+        {
+            ["newPassword"] = result.Errors
+                .Select(error => error.Code switch
+                {
+                    "PasswordTooShort" => "The password does not meet the minimum length.",
+                    "PasswordRequiresUniqueChars" => "The password does not contain enough unique characters.",
+                    "PasswordRequiresNonAlphanumeric" => "The password must contain a symbol.",
+                    "PasswordRequiresDigit" => "The password must contain a digit.",
+                    "PasswordRequiresLower" => "The password must contain a lowercase letter.",
+                    "PasswordRequiresUpper" => "The password must contain an uppercase letter.",
+                    _ => "The password does not meet the configured policy."
+                })
+                .Distinct(StringComparer.Ordinal)
+                .ToArray()
+        };
+
+        return new ValidationError(errors);
     }
 
     /// <summary>
