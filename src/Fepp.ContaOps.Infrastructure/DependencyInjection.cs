@@ -85,33 +85,29 @@ public static class DependencyInjection
         services.AddSingleton<InvitationTemplateRenderer>();
         services.AddScoped<IInvitationNotifier, InvitationEmailNotifier>();
         services.AddSingleton<IEmailSender, MailKitSmtpEmailSender>();
-        IdentityPasswordOptions passwordOptions = configuration
-            .GetSection(IdentityPasswordOptions.SectionName)
-            .Get<IdentityPasswordOptions>()
-            ?? new IdentityPasswordOptions();
-        IdentityLockoutOptions lockoutOptions = configuration
-            .GetSection(IdentityLockoutOptions.SectionName)
-            .Get<IdentityLockoutOptions>()
-            ?? new IdentityLockoutOptions();
-
         services.AddIdentity<ApplicationIdentityUser, IdentityRole>(options =>
             {
-                options.Password.RequiredLength = passwordOptions.RequiredLength;
-                options.Password.RequireUppercase = passwordOptions.RequireUppercase;
-                options.Password.RequireLowercase = passwordOptions.RequireLowercase;
-                options.Password.RequireDigit = passwordOptions.RequireDigit;
-                options.Password.RequireNonAlphanumeric = passwordOptions.RequireNonAlphanumeric;
-                options.Password.RequiredUniqueChars = passwordOptions.RequiredUniqueChars;
-                options.Lockout.DefaultLockoutTimeSpan = TimeSpan.FromMinutes(
-                    lockoutOptions.DefaultLockoutTimeSpanMinutes);
-                options.Lockout.MaxFailedAccessAttempts = lockoutOptions.MaxFailedAccessAttempts;
-                options.Lockout.AllowedForNewUsers = lockoutOptions.AllowedForNewUsers;
                 options.User.RequireUniqueEmail = true;
             })
             .AddEntityFrameworkStores<AppDbContext>()
             .AddTokenProvider<UserInvitationTokenProvider>(
                 IdentityUserInvitationService.TokenProviderName)
             .AddDefaultTokenProviders();
+        services.AddOptions<IdentityOptions>()
+            .Configure<IOptions<IdentityPasswordOptions>, IOptions<IdentityLockoutOptions>>(
+                (identityOptions, passwordOptions, lockoutOptions) =>
+                {
+                    identityOptions.Password.RequiredLength = passwordOptions.Value.RequiredLength;
+                    identityOptions.Password.RequireUppercase = passwordOptions.Value.RequireUppercase;
+                    identityOptions.Password.RequireLowercase = passwordOptions.Value.RequireLowercase;
+                    identityOptions.Password.RequireDigit = passwordOptions.Value.RequireDigit;
+                    identityOptions.Password.RequireNonAlphanumeric = passwordOptions.Value.RequireNonAlphanumeric;
+                    identityOptions.Password.RequiredUniqueChars = passwordOptions.Value.RequiredUniqueChars;
+                    identityOptions.Lockout.DefaultLockoutTimeSpan = TimeSpan.FromMinutes(
+                        lockoutOptions.Value.DefaultLockoutTimeSpanMinutes);
+                    identityOptions.Lockout.MaxFailedAccessAttempts = lockoutOptions.Value.MaxFailedAccessAttempts;
+                    identityOptions.Lockout.AllowedForNewUsers = lockoutOptions.Value.AllowedForNewUsers;
+                });
 
         services.AddScoped<IUserRepository, IdentityUserRepository>();
         services.AddScoped<IUserCredentialService, IdentityCredentialService>();

@@ -4302,15 +4302,319 @@ El archivo proporciona una plantilla centralizada para configurar diferentes ent
 
 ---
 
-### 16. Actualizar README.md.
+### 16. Consolidar configuración.
 
----
+#### Componentes implementados
 
-### 17. Actualizar AGENTS.md.
+| Componente            | Acción | Tipo           | Capa           | Responsabilidad                                                                                                                   |
+| --------------------- | ------ | -------------- | -------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `DependencyInjection` | Update | class (static) | Infrastructure | Centraliza el registro de adaptadores y la configuración de los servicios de infraestructura.                                     |
+| `AddInfrastructure()` | Update | Método público | Infrastructure | Configura ASP.NET Core Identity mediante opciones tipadas, eliminando la lectura manual de las políticas de contraseña y bloqueo. |
 
----
+**Ubicación:** `Fepp.ContaOps.Infrastructure.DependencyInjection`
 
-### 18. Consolidar configuración.
+El cambio principal consiste en consolidar la configuración de ASP.NET Core Identity mediante el **patrón Options de .NET**, reutilizando `IdentityPasswordOptions` e `IdentityLockoutOptions`.
+
+Anteriormente, los valores se obtenían directamente desde `IConfiguration` y se aplicaban dentro de `AddIdentity()`.
+
+Ahora se utiliza `IOptions<T>` para configurar `IdentityOptions`, manteniendo las políticas desacopladas de su origen de configuración.
+
+#### Métodos y funciones principales
+
+| Clase                 | Método                | Responsabilidad                                                                                                 |
+| --------------------- | --------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `DependencyInjection` | `AddInfrastructure()` | Registra los servicios de Infrastructure, configura Identity y vincula sus políticas mediante opciones tipadas. |
+
+**Componentes configurados:**
+
+| Componente                           | Responsabilidad                                                 |
+| ------------------------------------ | --------------------------------------------------------------- |
+| `IdentityPasswordOptions`            | Define y valida las políticas de contraseña.                    |
+| `IdentityLockoutOptions`             | Define y valida las políticas de bloqueo.                       |
+| `IdentityOptions`                    | Recibe las políticas y las proporciona a ASP.NET Core Identity. |
+| `UserInvitationOptions`              | Configura la vigencia de los tokens y la URL de activación.     |
+| `UserInvitationTokenProviderOptions` | Configura la duración efectiva de los tokens de invitación.     |
+| `EmailSmtpOptions`                   | Configura el transporte SMTP.                                   |
+| `EmailTemplatesOptions`              | Configura la ubicación de las plantillas de correo.             |
+| `JwtOptions`                         | Configura la generación de tokens JWT.                          |
+| `BootstrapAdminOptions`              | Configura el administrador inicial.                             |
+
+#### Cambios en la configuración de Identity
+
+**1. Configuración anterior**
+
+En el paso 8, las políticas se obtenían directamente desde `IConfiguration`:
+
+```csharp
+IdentityPasswordOptions passwordOptions = configuration
+    .GetSection(IdentityPasswordOptions.SectionName)
+    .Get<IdentityPasswordOptions>()
+    ?? new IdentityPasswordOptions();
+
+IdentityLockoutOptions lockoutOptions = configuration
+    .GetSection(IdentityLockoutOptions.SectionName)
+    .Get<IdentityLockoutOptions>()
+    ?? new IdentityLockoutOptions();
+```
+
+Posteriormente, se asignaban sus propiedades dentro de `AddIdentity()`.
+
+**2. Configuración actual**
+
+Se simplifica el registro inicial de Identity:
+
+```csharp
+services.AddIdentity<ApplicationIdentityUser, IdentityRole>(options =>
+    {
+        options.User.RequireUniqueEmail = true;
+    })
+    .AddEntityFrameworkStores<AppDbContext>()
+    .AddTokenProvider<UserInvitationTokenProvider>(
+        IdentityUserInvitationService.TokenProviderName)
+    .AddDefaultTokenProviders();
+```
+
+Las políticas se configuran mediante un registro independiente:
+
+```csharp
+services.AddOptions<IdentityOptions>()
+    .Configure<IOptions<IdentityPasswordOptions>, IOptions<IdentityLockoutOptions>>(
+        (identityOptions, passwordOptions, lockoutOptions) =>
+        {
+            identityOptions.Password.RequiredLength =
+                passwordOptions.Value.RequiredLength;
+
+            identityOptions.Password.RequireUppercase =
+                passwordOptions.Value.RequireUppercase;
+
+            identityOptions.Password.RequireLowercase =
+                passwordOptions.Value.RequireLowercase;
+
+            identityOptions.Password.RequireDigit =
+                passwordOptions.Value.RequireDigit;
+
+            identityOptions.Password.RequireNonAlphanumeric =
+                passwordOptions.Value.RequireNonAlphanumeric;
+
+            identityOptions.Password.RequiredUniqueChars =
+                passwordOptions.Value.RequiredUniqueChars;
+
+            identityOptions.Lockout.DefaultLockoutTimeSpan =
+                TimeSpan.FromMinutes(
+                    lockoutOptions.Value.DefaultLockoutTimeSpanMinutes);
+
+            identityOptions.Lockout.MaxFailedAccessAttempts =
+                lockoutOptions.Value.MaxFailedAccessAttempts;
+
+            identityOptions.Lockout.AllowedForNewUsers =
+                lockoutOptions.Value.AllowedForNewUsers;
+        });
+```
+
+**Diferencias principales:**
+
+| Característica           | Configuración anterior         | Configuración actual                |
+| ------------------------ | ------------------------------ | ----------------------------------- |
+| Lectura de configuración | `IConfiguration.Get<T>()`      | `IOptions<T>`                       |
+| Aplicación de políticas  | Dentro de `AddIdentity()`      | Mediante `Configure<...>()`         |
+| Opciones de contraseña   | Instancia obtenida manualmente | `IOptions<IdentityPasswordOptions>` |
+| Opciones de bloqueo      | Instancia obtenida manualmente | `IOptions<IdentityLockoutOptions>`  |
+| Destino de las políticas | `IdentityOptions`              | `IdentityOptions`                   |
+| Validación               | `ValidateOnStart()`            | `ValidateOnStart()`                 |
+| Reglas de seguridad      | Sin cambios                    | Sin cambios                         |
+
+**Ventaja arquitectónica:**
+
+La configuración de Identity queda integrada en el sistema de opciones de .NET, evitando lecturas manuales duplicadas desde `IConfiguration`.
+
+#### Registro y validación de opciones
+
+Los modelos de configuración continúan registrándose mediante el patrón Options.
+
+| Modelo                    | Sección             | Validación                                                             |
+| ------------------------- | ------------------- | ---------------------------------------------------------------------- |
+| `UserInvitationOptions`   | `UserInvitation`    | Vigencia válida del token y URL HTTPS.                                 |
+| `IdentityPasswordOptions` | `Identity:Password` | Longitud mínima y cantidad de caracteres únicos coherentes.            |
+| `IdentityLockoutOptions`  | `Identity:Lockout`  | Intentos fallidos y duración de bloqueo mayores que cero.              |
+| `EmailSmtpOptions`        | `Email:Smtp`        | Configuración SMTP válida.                                             |
+| `EmailTemplatesOptions`   | `Email:Templates`   | Vinculación de configuración, sin validación explícita en este método. |
+| `JwtOptions`              | `Jwt`               | Emisor, audiencia, clave de firma y duración válidos.                  |
+| `BootstrapAdminOptions`   | `BootstrapAdmin`    | Credenciales administrativas válidas según `IsValid()`.                |
+
+**Operaciones utilizadas:**
+
+| Método                                    | Responsabilidad                                                            |
+| ----------------------------------------- | -------------------------------------------------------------------------- |
+| `AddOptions<T>()`                         | Registra un modelo de configuración tipado.                                |
+| `Bind()`                                  | Vincula una sección de configuración con el modelo.                        |
+| `Validate()`                              | Define las condiciones que deben cumplir los valores.                      |
+| `ValidateOnStart()`                       | Solicita validar las opciones durante el inicio de la aplicación.          |
+| `Configure<TDependency1, TDependency2>()` | Configura opciones utilizando otras opciones registradas en el contenedor. |
+
+La configuración continúa utilizando los valores predeterminados definidos en los modelos cuando no se proporcionan valores específicos para sus propiedades.
+
+#### Relación entre IdentityOptions y las políticas
+
+`IdentityOptions` es el objeto de configuración utilizado por ASP.NET Core Identity para administrar diferentes aspectos de seguridad.
+
+| Propiedad de `IdentityOptions`    | Origen                    | Responsabilidad                               |
+| --------------------------------- | ------------------------- | --------------------------------------------- |
+| `Password.RequiredLength`         | `IdentityPasswordOptions` | Longitud mínima de contraseña.                |
+| `Password.RequireUppercase`       | `IdentityPasswordOptions` | Requisito de mayúsculas.                      |
+| `Password.RequireLowercase`       | `IdentityPasswordOptions` | Requisito de minúsculas.                      |
+| `Password.RequireDigit`           | `IdentityPasswordOptions` | Requisito de números.                         |
+| `Password.RequireNonAlphanumeric` | `IdentityPasswordOptions` | Requisito de caracteres especiales.           |
+| `Password.RequiredUniqueChars`    | `IdentityPasswordOptions` | Cantidad mínima de caracteres diferentes.     |
+| `Lockout.DefaultLockoutTimeSpan`  | `IdentityLockoutOptions`  | Duración del bloqueo temporal.                |
+| `Lockout.MaxFailedAccessAttempts` | `IdentityLockoutOptions`  | Umbral de intentos fallidos.                  |
+| `Lockout.AllowedForNewUsers`      | `IdentityLockoutOptions`  | Habilitación del bloqueo para cuentas nuevas. |
+| `User.RequireUniqueEmail`         | `AddIdentity()`           | Exige correos electrónicos únicos.            |
+
+**Consideración:**
+
+Las políticas mantienen los valores predeterminados establecidos en el paso 8:
+
+| Política                  | Valor         |
+| ------------------------- | ------------- |
+| Longitud mínima           | 12 caracteres |
+| Mayúsculas                | Obligatorio   |
+| Minúsculas                | Obligatorio   |
+| Números                   | Obligatorio   |
+| Caracteres especiales     | Obligatorio   |
+| Caracteres únicos         | Mínimo 6      |
+| Intentos fallidos         | 5             |
+| Duración del bloqueo      | 15 minutos    |
+| Bloqueo de cuentas nuevas | Habilitado    |
+
+No se incorporan nuevas reglas de seguridad. El cambio modifica únicamente la forma en que se configuran y aplican.
+
+#### Relación con otros componentes de Infrastructure
+
+El método `AddInfrastructure()` mantiene el registro de los adaptadores utilizados por Application.
+
+| Interfaz / Servicio          | Implementación                  | Ciclo de vida |
+| ---------------------------- | ------------------------------- | ------------- |
+| `IUserRepository`            | `IdentityUserRepository`        | Scoped        |
+| `IUserCredentialService`     | `IdentityCredentialService`     | Scoped        |
+| `IUserInvitationService`     | `IdentityUserInvitationService` | Scoped        |
+| `IInvitationNotifier`        | `InvitationEmailNotifier`       | Scoped        |
+| `IEmailSender`               | `MailKitSmtpEmailSender`        | Singleton     |
+| `ITokenIssuer`               | `JwtTokenIssuer`                | Singleton     |
+| `InvitationTemplateCatalog`  | Implementación concreta         | Singleton     |
+| `InvitationTemplateRenderer` | Implementación concreta         | Singleton     |
+| `IdentitySeeder`             | Implementación concreta         | Scoped        |
+
+**Otros servicios configurados:**
+
+| Servicio                      | Responsabilidad                                                  |
+| ----------------------------- | ---------------------------------------------------------------- |
+| `AppDbContext`                | Persistencia mediante Entity Framework Core y PostgreSQL.        |
+| `ASP.NET Core Identity`       | Administración de usuarios, contraseñas, roles y bloqueos.       |
+| `Data Protection`             | Protección criptográfica utilizada por los tokens de invitación. |
+| `UserInvitationTokenProvider` | Generación y validación de tokens de invitación.                 |
+| `JwtTokenIssuer`              | Emisión de tokens JWT.                                           |
+
+Estos registros se mantienen respecto a los pasos anteriores.
+
+#### Componentes de .NET y proveedores externos
+
+| Componente / Método                       | Origen                                   | Función                                                            |
+| ----------------------------------------- | ---------------------------------------- | ------------------------------------------------------------------ |
+| `IServiceCollection`                      | Microsoft.Extensions.DependencyInjection | Representa el contenedor de registros de servicios.                |
+| `IConfiguration`                          | Microsoft.Extensions.Configuration       | Proporciona acceso a los valores de configuración.                 |
+| `IOptions<T>`                             | Microsoft.Extensions.Options             | Proporciona acceso a opciones tipadas.                             |
+| `AddOptions<T>()`                         | Microsoft.Extensions.Options             | Registra y configura modelos de opciones.                          |
+| `Configure<TDependency1, TDependency2>()` | Microsoft.Extensions.Options             | Permite configurar opciones mediante dos dependencias registradas. |
+| `Bind()`                                  | Microsoft.Extensions.Configuration       | Vincula las propiedades con valores de configuración.              |
+| `ValidateOnStart()`                       | Microsoft.Extensions.Options             | Ejecuta la validación de opciones al iniciar la aplicación.        |
+| `IdentityOptions`                         | ASP.NET Core Identity                    | Centraliza las políticas de administración de usuarios.            |
+| `AddIdentity<TUser, TRole>()`             | ASP.NET Core Identity                    | Registra los servicios de administración de usuarios y roles.      |
+| `AddEntityFrameworkStores<TContext>()`    | ASP.NET Core Identity                    | Integra Identity con Entity Framework Core.                        |
+| `AddTokenProvider<T>()`                   | ASP.NET Core Identity                    | Registra un proveedor de tokens personalizado.                     |
+| `AddDefaultTokenProviders()`              | ASP.NET Core Identity                    | Registra los proveedores predeterminados de tokens.                |
+| `TimeSpan.FromMinutes()`                  | .NET                                     | Convierte minutos en un intervalo de tiempo.                       |
+
+#### Flujo funcional o relaciones
+
+| Orden | Operación                                                                | Componente responsable                                                             |
+| ----- | ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------- |
+| 1     | Obtener los valores de configuración.                                    | `IConfiguration`                                                                   |
+| 2     | Registrar las opciones de contraseña y bloqueo.                          | `AddOptions<T>()`                                                                  |
+| 3     | Vincular los valores de configuración.                                   | `Bind()`                                                                           |
+| 4     | Registrar las validaciones de configuración.                             | `Validate()`                                                                       |
+| 5     | Configurar su validación al iniciar la aplicación.                       | `ValidateOnStart()`                                                                |
+| 6     | Registrar ASP.NET Core Identity.                                         | `AddIdentity()`                                                                    |
+| 7     | Registrar la configuración complementaria de `IdentityOptions`.          | `Configure<IOptions<IdentityPasswordOptions>, IOptions<IdentityLockoutOptions>>()` |
+| 8     | Resolver las opciones tipadas cuando se construye `IdentityOptions`.     | Sistema Options de .NET                                                            |
+| 9     | Aplicar los valores de contraseña y bloqueo.                             | `IdentityOptions`                                                                  |
+| 10    | Utilizar las políticas configuradas durante las operaciones de Identity. | ASP.NET Core Identity                                                              |
+
+**Consideración sobre el orden de configuración:**
+
+El registro de `IdentityOptions` se realiza después de `AddIdentity()`.
+
+Esto es válido porque la configuración de opciones se registra en el contenedor y se aplica cuando se resuelve el objeto correspondiente.
+
+No es necesario obtener manualmente los valores de las políticas antes de registrar Identity.
+
+#### Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    CONFIG["IConfiguration"]
+
+    subgraph Infrastructure["Infrastructure"]
+        DI["DependencyInjection.AddInfrastructure"]
+
+        PASSWORD["IdentityPasswordOptions"]
+        LOCKOUT["IdentityLockoutOptions"]
+
+        OPTIONS["IdentityOptions"]
+
+        IDENTITY["ASP.NET Core Identity"]
+
+        CREDENTIALS["IdentityCredentialService"]
+        INVITATIONS["IdentityUserInvitationService"]
+        SEEDER["IdentitySeeder"]
+    end
+
+    CONFIG -->|"Bind"| PASSWORD
+    CONFIG -->|"Bind"| LOCKOUT
+
+    DI -->|"Registra"| PASSWORD
+    DI -->|"Registra"| LOCKOUT
+
+    PASSWORD -->|"IOptions"| OPTIONS
+    LOCKOUT -->|"IOptions"| OPTIONS
+
+    DI -->|"AddIdentity"| IDENTITY
+
+    OPTIONS -->|"Configura políticas"| IDENTITY
+
+    IDENTITY --> CREDENTIALS
+    IDENTITY --> INVITATIONS
+    IDENTITY --> SEEDER
+```
+
+**Interpretación:**
+
+- **IConfiguration:** proporciona los valores definidos mediante las fuentes de configuración de .NET.
+- **IdentityPasswordOptions:** representa las políticas configurables de contraseñas.
+- **IdentityLockoutOptions:** representa los parámetros configurables de bloqueo.
+- **IdentityOptions:** integra ambas configuraciones en el modelo utilizado por ASP.NET Core Identity.
+- **Infrastructure:** mantiene el registro de adaptadores y la configuración técnica de Identity.
+
+La consolidación conserva las dependencias dentro de Infrastructure, sin introducir cambios en Application, Domain o Presentation.
+
+#### Resultado
+
+Se consolidó la configuración de ASP.NET Core Identity mediante el patrón Options de .NET.
+
+Las políticas de contraseña y bloqueo ahora se aplican a `IdentityOptions` utilizando `IOptions<IdentityPasswordOptions>` e `IOptions<IdentityLockoutOptions>`, eliminando la lectura manual duplicada desde `IConfiguration`.
+
+Se mantienen las reglas de seguridad, validaciones de configuración y registros de servicios definidos en pasos anteriores.
+
+#### Este cambio simplifica `DependencyInjection.AddInfrastructure()`, centraliza la configuración tipada y facilita el mantenimiento de las políticas de Identity sin modificar el comportamiento funcional de los casos de uso.
 
 ---
 
