@@ -3678,6 +3678,290 @@ La combinación de `WebApplicationFactory`, PostgreSQL y un notificador simulado
 
 ### 14. Actualizar Swagger y documentación.
 
+#### Componentes implementados
+
+| Componente                  | Acción | Tipo           | Capa         | Responsabilidad                                                                                                                  |
+| --------------------------- | ------ | -------------- | ------------ | -------------------------------------------------------------------------------------------------------------------------------- |
+| `DependencyInjection`       | Update | class (static) | Presentation | Centraliza el registro de servicios HTTP y la configuración de documentación OpenAPI/Swagger.                                    |
+| `AddSwaggerDocumentation()` | Update | Método público | Presentation | Actualiza la descripción de la API para incluir autenticación JWT, invitaciones administrativas y respuestas de error uniformes. |
+
+**Ubicación:** `Fepp.ContaOps.Api.DependencyInjection`
+
+El cambio principal consiste en actualizar la descripción del documento OpenAPI `v1`, incorporando las funcionalidades desarrolladas durante SPEC 04.
+
+Se mantienen las configuraciones existentes de autenticación JWT, validación HTTP y autorización `AdminOnly`.
+
+#### Métodos y funciones principales
+
+| Clase                 | Método                            | Responsabilidad                                                                                                                       |
+| --------------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `DependencyInjection` | `AddSwaggerDocumentation()`       | Registra Swagger, configura la información general de la API, incorpora comentarios XML y declara el esquema de autenticación Bearer. |
+| `DependencyInjection` | `AddApi()`                        | Registra controladores, validadores, filtros HTTP, autenticación JWT y autorización.                                                  |
+| `DependencyInjection` | `WriteAuthenticationErrorAsync()` | Genera respuestas uniformes `ProblemDetails` para errores de autenticación y autorización.                                            |
+
+La actualización documentada se concentra en `AddSwaggerDocumentation()`. Los demás métodos conservan las configuraciones establecidas en pasos anteriores.
+
+#### Configuración de Swagger y OpenAPI
+
+**1. Información general de la API**
+
+Se actualiza la descripción del documento OpenAPI:
+
+```csharp
+options.SwaggerDoc("v1", new OpenApiInfo
+{
+    Title = "FEPP-ContaOps API",
+    Version = "v1",
+    Description = "API para los procesos operativos contables de FEPP. "
+        + "Incluye autenticación JWT y el ciclo administrativo de invitaciones. "
+        + "Las respuestas de error usan application/problem+json con code y traceId."
+});
+```
+
+| Propiedad     | Valor                           | Responsabilidad                                                         |
+| ------------- | ------------------------------- | ----------------------------------------------------------------------- |
+| `Title`       | `FEPP-ContaOps API`             | Identifica la API en la documentación.                                  |
+| `Version`     | `v1`                            | Establece la versión del documento OpenAPI.                             |
+| `Description` | Descripción funcional de la API | Informa sobre autenticación JWT, invitaciones y errores HTTP uniformes. |
+
+**Información incorporada:**
+
+| Funcionalidad         | Descripción                                                              |
+| --------------------- | ------------------------------------------------------------------------ |
+| Autenticación JWT     | Identifica el mecanismo de autenticación utilizado por la API.           |
+| Ciclo de invitaciones | Describe la disponibilidad de operaciones administrativas de invitación. |
+| Errores HTTP          | Indica el uso del formato `application/problem+json`.                    |
+| Código de error       | Documenta la extensión `code` del contrato `ProblemDetails`.             |
+| Trazabilidad          | Documenta la extensión `traceId` utilizada para identificar solicitudes. |
+
+La modificación amplía la descripción general del documento OpenAPI, sin cambiar el comportamiento de los endpoints.
+
+#### Documentación mediante comentarios XML
+
+La configuración mantiene la incorporación de comentarios XML del ensamblado de la API.
+
+```csharp
+string documentationFile = Path.Combine(
+    AppContext.BaseDirectory,
+    $"{Assembly.GetExecutingAssembly().GetName().Name}.xml");
+
+if (File.Exists(documentationFile))
+{
+    options.IncludeXmlComments(documentationFile);
+}
+```
+
+| Operación                            | Componente responsable            | Resultado                                               |
+| ------------------------------------ | --------------------------------- | ------------------------------------------------------- |
+| Obtener el directorio de ejecución.  | `AppContext.BaseDirectory`        | Ruta base de la aplicación.                             |
+| Identificar el ensamblado actual.    | `Assembly.GetExecutingAssembly()` | Nombre del ensamblado.                                  |
+| Construir la ruta del archivo XML.   | `Path.Combine()`                  | Ruta del archivo de documentación.                      |
+| Comprobar la existencia del archivo. | `File.Exists()`                   | Determina si el archivo está disponible.                |
+| Incorporar comentarios XML.          | `IncludeXmlComments()`            | Añade la documentación disponible al documento OpenAPI. |
+
+**Consideraciones:**
+
+- Se utilizan los comentarios XML definidos en controladores y otros componentes del ensamblado.
+- La incorporación del archivo es condicional.
+- Si el archivo XML no existe, Swagger continúa configurándose sin esos comentarios.
+- El código no demuestra que la generación del archivo XML esté habilitada en el proyecto `.csproj`.
+
+Esta configuración permite aprovechar los comentarios `<summary>`, `<param>` y `<returns>` utilizados en los controladores.
+
+#### Documentación de autenticación JWT
+
+Se mantiene la definición del esquema de seguridad denominado `Bearer`.
+
+```csharp
+options.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
+{
+    Name = "Authorization",
+    Type = SecuritySchemeType.Http,
+    Scheme = "bearer",
+    BearerFormat = "JWT",
+    In = ParameterLocation.Header,
+    Description = "Introduzca el token JWT como: Bearer {token}."
+});
+```
+
+| Propiedad          | Valor            | Responsabilidad                                                    |
+| ------------------ | ---------------- | ------------------------------------------------------------------ |
+| Nombre del esquema | `Bearer`         | Identifica el mecanismo de seguridad en OpenAPI.                   |
+| `Name`             | `Authorization`  | Identifica el encabezado HTTP utilizado.                           |
+| `Type`             | `Http`           | Declara autenticación basada en un esquema HTTP.                   |
+| `Scheme`           | `bearer`         | Identifica el esquema Bearer.                                      |
+| `BearerFormat`     | `JWT`            | Describe el formato esperado del token.                            |
+| `In`               | `Header`         | Indica que la credencial se transmite mediante un encabezado HTTP. |
+| `Description`      | `Bearer {token}` | Explica cómo proporcionar el token.                                |
+
+**Formato del encabezado HTTP:**
+
+```http
+Authorization: Bearer {token}
+```
+
+Esta definición permite que los consumidores de la documentación identifiquen el mecanismo de autenticación utilizado por los endpoints protegidos.
+
+#### Requisitos de seguridad en OpenAPI
+
+La configuración mantiene un requisito de seguridad asociado al esquema `Bearer`.
+
+```csharp
+options.AddSecurityRequirement(document => new OpenApiSecurityRequirement
+{
+    [new OpenApiSecuritySchemeReference("Bearer", document)] = []
+});
+```
+
+| Componente                       | Responsabilidad                                                              |
+| -------------------------------- | ---------------------------------------------------------------------------- |
+| `AddSecurityRequirement()`       | Incorpora un requisito de seguridad al documento OpenAPI.                    |
+| `OpenApiSecurityRequirement`     | Representa el requisito de autenticación.                                    |
+| `OpenApiSecuritySchemeReference` | Referencia el esquema `Bearer` definido previamente.                         |
+| `[]`                             | Define una colección vacía de scopes, apropiada para el esquema HTTP Bearer. |
+
+**Consideración:**
+
+El requisito se registra a nivel del documento OpenAPI.
+
+La configuración mostrada no diferencia los endpoints anónimos de los protegidos mediante la política `AdminOnly`.
+
+Por tanto, aunque los endpoints `Login` y `Activate` permiten acceso anónimo en tiempo de ejecución, la documentación puede presentar el esquema Bearer como requisito general.
+
+La autorización efectiva continúa dependiendo de los atributos y políticas configurados en ASP.NET Core.
+
+#### Relación con los endpoints de SPEC 04
+
+La documentación Swagger utiliza los controladores implementados anteriormente para describir las operaciones HTTP.
+
+| Método | Endpoint                      | Operación                           | Seguridad          |
+| ------ | ----------------------------- | ----------------------------------- | ------------------ |
+| POST   | `/api/auth/login`             | Autenticar usuario.                 | `[AllowAnonymous]` |
+| POST   | `/api/auth/activate`          | Activar cuenta mediante invitación. | `[AllowAnonymous]` |
+| POST   | `/api/users/invitations`      | Crear invitación.                   | `AdminOnly`        |
+| POST   | `/api/users/{id}/invitations` | Reenviar invitación.                | `AdminOnly`        |
+
+**Información procedente de los controladores:**
+
+| Elemento                      | Origen                                       |
+| ----------------------------- | -------------------------------------------- |
+| Rutas HTTP                    | `[Route]` y `[HttpPost]`                     |
+| Contratos de entrada          | Parámetros de las acciones y DTOs            |
+| Contratos de salida           | DTOs y atributos `[ProducesResponseType]`    |
+| Códigos HTTP declarados       | `[ProducesResponseType]`                     |
+| Descripciones de operaciones  | Comentarios XML, cuando estén disponibles    |
+| Restricciones de autorización | Atributos `[Authorize]` y `[AllowAnonymous]` |
+
+La configuración de Swagger complementa los contratos y atributos declarados en Presentation.
+
+No se agregan nuevos endpoints ni se modifican sus respuestas en este paso.
+
+#### Documentación de errores HTTP
+
+La descripción general del documento OpenAPI incorpora el formato uniforme utilizado por la API:
+
+`application/problem+json`
+
+**Estructura de referencia:**
+
+| Propiedad  | Tipo                           | Responsabilidad                                                        |
+| ---------- | ------------------------------ | ---------------------------------------------------------------------- |
+| `type`     | `string`                       | Identifica el tipo de problema mediante una referencia.                |
+| `title`    | `string`                       | Describe brevemente el error.                                          |
+| `status`   | `int`                          | Representa el código HTTP.                                             |
+| `detail`   | `string`                       | Proporciona una explicación segura del error.                          |
+| `instance` | `string`                       | Identifica la ruta de la solicitud.                                    |
+| `code`     | `string`                       | Proporciona un código estable para el consumidor.                      |
+| `traceId`  | `string`                       | Permite correlacionar la respuesta con los registros de la aplicación. |
+| `errors`   | `Dictionary<string, string[]>` | Contiene errores agrupados por campo cuando corresponde.               |
+
+Este contrato fue implementado mediante `ProblemDetailsResponseFactory` y `GlobalExceptionHandler` en pasos anteriores.
+
+**Alcance de la actualización:**
+
+La descripción de Swagger menciona el tipo de contenido y las extensiones `code` y `traceId`.
+
+No se observa en este archivo una definición explícita de un esquema OpenAPI personalizado para representar todas las extensiones de `ProblemDetails`.
+
+#### Componentes de .NET y proveedores externos
+
+| Componente / Método               | Origen                 | Función                                                           |
+| --------------------------------- | ---------------------- | ----------------------------------------------------------------- |
+| `AddSwaggerGen()`                 | Swashbuckle.AspNetCore | Registra y configura la generación de documentos Swagger/OpenAPI. |
+| `SwaggerDoc()`                    | Swashbuckle.AspNetCore | Define un documento OpenAPI con nombre y metadatos.               |
+| `OpenApiInfo`                     | Microsoft.OpenApi      | Representa la información general del documento OpenAPI.          |
+| `IncludeXmlComments()`            | Swashbuckle.AspNetCore | Incorpora comentarios XML a la documentación generada.            |
+| `AddSecurityDefinition()`         | Swashbuckle.AspNetCore | Declara un esquema de seguridad en OpenAPI.                       |
+| `OpenApiSecurityScheme`           | Microsoft.OpenApi      | Describe un mecanismo de autenticación.                           |
+| `OpenApiSecurityRequirement`      | Microsoft.OpenApi      | Define requisitos de seguridad asociados al documento.            |
+| `OpenApiSecuritySchemeReference`  | Microsoft.OpenApi      | Referencia un esquema de seguridad registrado.                    |
+| `Path.Combine()`                  | .NET                   | Construye rutas de archivos.                                      |
+| `AppContext.BaseDirectory`        | .NET                   | Obtiene el directorio base de ejecución.                          |
+| `Assembly.GetExecutingAssembly()` | .NET Reflection        | Obtiene información del ensamblado actual.                        |
+| `File.Exists()`                   | .NET                   | Comprueba si existe un archivo.                                   |
+
+#### Flujo funcional o relaciones
+
+| Orden | Operación                                                                 | Componente responsable      |
+| ----- | ------------------------------------------------------------------------- | --------------------------- |
+| 1     | Registrar los servicios de generación Swagger.                            | `AddSwaggerDocumentation()` |
+| 2     | Definir el documento OpenAPI `v1`.                                        | `SwaggerDoc()`              |
+| 3     | Incorporar la descripción de autenticación, invitaciones y errores.       | `OpenApiInfo`               |
+| 4     | Localizar el archivo de comentarios XML.                                  | `Assembly` / `Path`         |
+| 5     | Incorporar los comentarios cuando el archivo existe.                      | `IncludeXmlComments()`      |
+| 6     | Registrar el esquema de autenticación Bearer.                             | `AddSecurityDefinition()`   |
+| 7     | Asociar el requisito de seguridad al documento.                           | `AddSecurityRequirement()`  |
+| 8     | Utilizar la metadata de los controladores para describir las operaciones. | Generador Swagger/OpenAPI   |
+
+#### Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    subgraph Presentation["Presentation - API"]
+        DI["DependencyInjection"]
+        SWAGGER["AddSwaggerDocumentation"]
+        CONTROLLERS["AuthController / UserInvitationsController"]
+        XML["Comentarios XML"]
+        SECURITY["Esquema Bearer JWT"]
+        ERRORS["ProblemDetails"]
+    end
+
+    subgraph External["Swagger / OpenAPI"]
+        GENERATOR["SwaggerGen"]
+        DOCUMENT["Documento OpenAPI v1"]
+    end
+
+    DI --> SWAGGER
+
+    SWAGGER --> GENERATOR
+
+    CONTROLLERS -->|"Rutas y respuestas"| GENERATOR
+    XML -->|"Descripciones"| GENERATOR
+    SECURITY -->|"Autenticación"| GENERATOR
+    ERRORS -.->|"Contrato documentado"| DOCUMENT
+
+    GENERATOR --> DOCUMENT
+```
+
+**Interpretación:**
+
+- **Presentation:** proporciona los controladores, contratos HTTP y configuración de Swagger.
+- **SwaggerGen:** utiliza la metadata de ASP.NET Core y los comentarios XML disponibles para generar la documentación.
+- **OpenAPI:** describe las operaciones HTTP y el esquema de autenticación Bearer.
+- **ProblemDetails:** representa el contrato uniforme de errores cuya utilización se informa en la descripción general.
+
+La actualización pertenece exclusivamente a Presentation y no modifica las responsabilidades de Application, Domain o Infrastructure.
+
+#### Resultado
+
+Se actualizó la descripción del documento OpenAPI `v1` de FEPP ContaOps para incorporar las funcionalidades de autenticación JWT y administración de invitaciones implementadas en SPEC 04.
+
+La documentación identifica el formato uniforme de errores `application/problem+json` y las extensiones `code` y `traceId`.
+
+Se conservan la incorporación condicional de comentarios XML, la definición del esquema de autenticación Bearer y su requisito de seguridad en OpenAPI.
+
+Con estos cambios, la documentación Swagger proporciona información más completa sobre las operaciones de autenticación, invitaciones y manejo de errores, facilitando su consulta e integración por parte de los consumidores de la API.
+
 ---
 
 ### 15. Actualizar .env.example.
