@@ -74,6 +74,13 @@ public sealed class IdentitySeeder
         await EnsureRoleAsync(UserRole);
 
         ApplicationIdentityUser? admin = await _userManager.FindByEmailAsync(_options.Email);
+        ApplicationIdentityUser passwordValidationUser = admin ?? new ApplicationIdentityUser
+        {
+            UserName = _options.Email,
+            Email = _options.Email
+        };
+        await ValidateBootstrapPasswordAsync(passwordValidationUser, cancellationToken);
+
         if (admin is null)
         {
             admin = new ApplicationIdentityUser
@@ -94,6 +101,41 @@ public sealed class IdentitySeeder
             EnsureSuccess(roleResult, "The bootstrap administrator role could not be assigned.");
         }
 
+    }
+
+    /// <summary>
+    /// Valida la contraseña configurada contra todos los validadores efectivos de Identity.
+    /// </summary>
+    /// <param name="admin">Usuario utilizado como contexto de validación.</param>
+    /// <param name="cancellationToken">Token de cancelación del arranque.</param>
+    /// <returns>Una tarea que representa la validación de la contraseña.</returns>
+    private async Task ValidateBootstrapPasswordAsync(
+        ApplicationIdentityUser admin,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        List<IdentityError> errors = [];
+        foreach (IPasswordValidator<ApplicationIdentityUser> validator in _userManager.PasswordValidators)
+        {
+            IdentityResult result = await validator.ValidateAsync(
+                _userManager,
+                admin,
+                _options.Password);
+            if (!result.Succeeded)
+            {
+                errors.AddRange(result.Errors);
+            }
+        }
+
+        if (errors.Count == 0)
+        {
+            return;
+        }
+
+        string errorCodes = string.Join(", ", errors.Select(error => error.Code).Distinct(StringComparer.Ordinal));
+        throw new InvalidOperationException(
+            $"The bootstrap administrator password does not comply with the configured policy. Identity errors: {errorCodes}");
     }
 
     /// <summary>

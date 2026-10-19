@@ -2178,6 +2178,291 @@ Con este cambio, los usuarios regulares pasan a gestionarse mediante el flujo de
 
 ### 10. Endurecer el seed.
 
+#### Componentes implementados
+
+| Componente                         | Acción | Tipo           | Capa           | Responsabilidad                                                                                                                 |
+| ---------------------------------- | ------ | -------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `IdentitySeeder`                   | Update | class          | Infrastructure | Refuerza la inicialización del administrador validando su contraseña contra las políticas efectivas de ASP.NET Core Identity.   |
+| `ValidateBootstrapPasswordAsync()` | Create | Método privado | Infrastructure | Ejecuta todos los validadores de contraseña registrados en Identity y detiene la inicialización cuando detecta incumplimientos. |
+| `SeedAsync()`                      | Update | Método público | Infrastructure | Incorpora la validación obligatoria de la contraseña del administrador antes de crear la cuenta o verificar su rol.             |
+
+**Ubicación:** `Fepp.ContaOps.Infrastructure.Identity.IdentitySeeder`
+
+El cambio incorpora una validación preventiva de la contraseña configurada en `BootstrapAdminOptions`.
+
+**Objetivo:** impedir que la inicialización finalice correctamente cuando la contraseña del administrador no cumple las políticas de seguridad configuradas, incluso si la cuenta administrativa ya existe.
+
+#### Métodos y funciones principales
+
+| Clase            | Método                             | Responsabilidad                                                                                                                    |
+| ---------------- | ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `IdentitySeeder` | `SeedAsync()`                      | Inicializa el esquema, crea los roles necesarios, valida la contraseña administrativa y garantiza la existencia del administrador. |
+| `IdentitySeeder` | `ValidateBootstrapPasswordAsync()` | Ejecuta los validadores de contraseña registrados en `UserManager` y recopila los códigos de error encontrados.                    |
+| `IdentitySeeder` | `EnsureUserStatusColumnAsync()`    | Garantiza la existencia de la columna `Status` en `AspNetUsers`.                                                                   |
+| `IdentitySeeder` | `EnsureRoleAsync()`                | Crea un rol cuando todavía no existe.                                                                                              |
+| `IdentitySeeder` | `EnsureSuccess()`                  | Convierte resultados fallidos de Identity en excepciones con información técnica controlada.                                       |
+
+#### Validación de la contraseña administrativa
+
+**1. Incorporación de la validación en `SeedAsync()`**
+
+Después de inicializar el esquema y los roles, se obtiene el administrador existente o se construye una instancia temporal para validar la contraseña.
+
+```csharp
+ApplicationIdentityUser? admin =
+    await _userManager.FindByEmailAsync(_options.Email);
+
+ApplicationIdentityUser passwordValidationUser =
+    admin ?? new ApplicationIdentityUser
+    {
+        UserName = _options.Email,
+        Email = _options.Email
+    };
+
+await ValidateBootstrapPasswordAsync(
+    passwordValidationUser,
+    cancellationToken);
+```
+
+| Condición                              | Comportamiento                                                                                                        |
+| -------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| El administrador no existe             | Se construye una instancia temporal de `ApplicationIdentityUser` para validar la contraseña antes de crear la cuenta. |
+| El administrador existe                | Se utiliza la cuenta existente como contexto de validación.                                                           |
+| La contraseña cumple las políticas     | Continúa el proceso de inicialización.                                                                                |
+| La contraseña incumple alguna política | Se lanza `InvalidOperationException` y se interrumpe la ejecución de `SeedAsync()`.                                   |
+
+**Consideración importante:**
+
+La validación se ejecuta independientemente de que el administrador ya exista.
+
+Esto permite detectar contraseñas de configuración que dejaron de cumplir los requisitos después de modificar las políticas de seguridad.
+
+Sin embargo, cuando el administrador ya existe, se valida la contraseña definida en `BootstrapAdminOptions`, no la contraseña almacenada previamente en Identity.
+
+Por tanto, esta operación no modifica ni verifica directamente la contraseña actual del administrador existente.
+
+#### Ejecución de los validadores de Identity
+
+El nuevo método `ValidateBootstrapPasswordAsync()` utiliza los validadores registrados en `UserManager.PasswordValidators`.
+
+```csharp
+private async Task ValidateBootstrapPasswordAsync(
+    ApplicationIdentityUser admin,
+    CancellationToken cancellationToken)
+{
+    cancellationToken.ThrowIfCancellationRequested();
+
+    List<IdentityError> errors = [];
+
+    foreach (
+        IPasswordValidator<ApplicationIdentityUser> validator
+        in _userManager.PasswordValidators)
+    {
+        IdentityResult result = await validator.ValidateAsync(
+            _userManager,
+            admin,
+            _options.Password);
+
+        if (!result.Succeeded)
+        {
+            errors.AddRange(result.Errors);
+        }
+    }
+
+    if (errors.Count == 0)
+    {
+        return;
+    }
+
+    string errorCodes = string.Join(
+        ", ",
+        errors
+            .Select(error => error.Code)
+            .Distinct(StringComparer.Ordinal));
+
+    throw new InvalidOperationException(
+        "The bootstrap administrator password does not comply " +
+        "with the configured policy. Identity errors: " +
+        errorCodes);
+}
+```
+
+**Operaciones principales:**
+
+| Orden | Operación                                                       | Componente responsable                             |
+| ----- | --------------------------------------------------------------- | -------------------------------------------------- |
+| 1     | Comprobar si se solicitó cancelar la inicialización.            | `CancellationToken.ThrowIfCancellationRequested()` |
+| 2     | Obtener los validadores de contraseña registrados.              | `UserManager.PasswordValidators`                   |
+| 3     | Ejecutar cada validador contra la contraseña configurada.       | `IPasswordValidator.ValidateAsync()`               |
+| 4     | Recopilar los errores producidos.                               | `IdentityResult.Errors`                            |
+| 5     | Verificar si existen errores.                                   | `ValidateBootstrapPasswordAsync()`                 |
+| 6     | Extraer los códigos de error y eliminar duplicados.             | `Select()` / `Distinct()`                          |
+| 7     | Lanzar una excepción si la contraseña incumple alguna política. | `InvalidOperationException`                        |
+
+**Características:**
+
+- Utiliza los validadores efectivos registrados en ASP.NET Core Identity.
+- Permite ejecutar validadores adicionales si se incorporan a la configuración de Identity.
+- Recopila errores de todos los validadores, en lugar de detenerse después del primero.
+- Elimina códigos duplicados.
+- No incluye la contraseña en el mensaje de excepción.
+- Interrumpe la inicialización cuando se detecta una configuración de contraseña incompatible con las políticas.
+
+#### Relación con las políticas de contraseña del paso 8
+
+La validación utiliza las políticas configuradas previamente mediante `IdentityPasswordOptions`.
+
+| Configuración            | Valor predeterminado | Validación                                |
+| ------------------------ | -------------------- | ----------------------------------------- |
+| `RequiredLength`         | `12`                 | Longitud mínima de contraseña.            |
+| `RequireUppercase`       | `true`               | Presencia de mayúsculas.                  |
+| `RequireLowercase`       | `true`               | Presencia de minúsculas.                  |
+| `RequireDigit`           | `true`               | Presencia de números.                     |
+| `RequireNonAlphanumeric` | `true`               | Presencia de caracteres no alfanuméricos. |
+| `RequiredUniqueChars`    | `6`                  | Cantidad mínima de caracteres diferentes. |
+
+**Diferencia entre las validaciones:**
+
+| Componente                          | Responsabilidad                                                                        |
+| ----------------------------------- | -------------------------------------------------------------------------------------- |
+| `IdentityPasswordOptions.IsValid()` | Comprueba que los valores numéricos de configuración sean coherentes.                  |
+| `ValidateBootstrapPasswordAsync()`  | Comprueba que la contraseña administrativa cumpla las reglas configuradas en Identity. |
+| `UserManager.CreateAsync()`         | Crea el administrador y ejecuta las validaciones correspondientes durante su creación. |
+
+La nueva validación complementa la configuración del paso 8 y permite detectar incumplimientos antes de intentar crear el administrador.
+
+#### Manejo de errores
+
+Cuando uno o varios validadores rechazan la contraseña, el método lanza una excepción.
+
+**Ejemplo de mensaje:**
+
+```text
+The bootstrap administrator password does not comply with
+the configured policy. Identity errors:
+PasswordTooShort, PasswordRequiresUpper
+```
+
+| Elemento                    | Responsabilidad                                                              |
+| --------------------------- | ---------------------------------------------------------------------------- |
+| `InvalidOperationException` | Indica que la inicialización no puede continuar con la configuración actual. |
+| `IdentityError.Code`        | Identifica la regla de contraseña incumplida.                                |
+| `Distinct()`                | Evita repetir el mismo código de error.                                      |
+| Mensaje de excepción        | Proporciona información técnica para diagnosticar la configuración.          |
+
+A diferencia del proceso de activación de usuarios, donde los errores se traducen a `ValidationError`, los errores del seed generan una excepción.
+
+Esta diferencia responde al contexto de ejecución:
+
+| Proceso                          | Tipo de error                                             | Resultado                                                 |
+| -------------------------------- | --------------------------------------------------------- | --------------------------------------------------------- |
+| Activación de usuario            | Contraseña proporcionada mediante una solicitud HTTP.     | `ValidationError` y respuesta HTTP 400.                   |
+| Inicialización del administrador | Contraseña obtenida de la configuración de la aplicación. | `InvalidOperationException` que interrumpe `SeedAsync()`. |
+
+No se exponen los valores de la contraseña en los mensajes de excepción.
+
+#### Componentes de .NET y proveedores externos
+
+| Componente / Método                                | Origen                       | Función                                                                   |
+| -------------------------------------------------- | ---------------------------- | ------------------------------------------------------------------------- |
+| `UserManager<TUser>`                               | ASP.NET Core Identity        | Administra usuarios y proporciona acceso a los validadores de contraseña. |
+| `PasswordValidators`                               | ASP.NET Core Identity        | Contiene los validadores registrados para las contraseñas.                |
+| `IPasswordValidator<TUser>`                        | ASP.NET Core Identity        | Define el contrato para validar una contraseña.                           |
+| `ValidateAsync()`                                  | ASP.NET Core Identity        | Ejecuta las reglas de validación de contraseña.                           |
+| `IdentityResult`                                   | ASP.NET Core Identity        | Representa el resultado de la validación.                                 |
+| `IdentityError`                                    | ASP.NET Core Identity        | Contiene los códigos y descripciones de los errores.                      |
+| `IOptions<T>`                                      | Microsoft.Extensions.Options | Proporciona la configuración del administrador inicial.                   |
+| `CancellationToken.ThrowIfCancellationRequested()` | .NET                         | Interrumpe la operación cuando se solicita cancelación.                   |
+| `List<T>`                                          | .NET                         | Almacena los errores recopilados.                                         |
+| `AddRange()`                                       | .NET                         | Incorpora los errores de cada validador a la colección.                   |
+| `Select()`                                         | LINQ / .NET                  | Extrae los códigos de error.                                              |
+| `Distinct()`                                       | LINQ / .NET                  | Elimina códigos duplicados.                                               |
+| `string.Join()`                                    | .NET                         | Construye un mensaje a partir de los códigos de error.                    |
+| `InvalidOperationException`                        | .NET                         | Representa una operación que no puede continuar en el estado actual.      |
+
+#### Flujo funcional o relaciones
+
+| Orden | Operación                                                          | Componente responsable             |
+| ----- | ------------------------------------------------------------------ | ---------------------------------- |
+| 1     | Garantizar la creación del esquema necesario.                      | `AppDbContext`                     |
+| 2     | Garantizar la existencia de la columna `Status`.                   | `EnsureUserStatusColumnAsync()`    |
+| 3     | Garantizar los roles `Admin` y `User`.                             | `EnsureRoleAsync()`                |
+| 4     | Buscar el administrador configurado.                               | `UserManager.FindByEmailAsync()`   |
+| 5     | Obtener la instancia que se utilizará para validar la contraseña.  | `IdentitySeeder`                   |
+| 6     | Ejecutar todos los validadores de contraseña registrados.          | `ValidateBootstrapPasswordAsync()` |
+| 7     | Interrumpir el seed si existen errores de contraseña.              | `InvalidOperationException`        |
+| 8     | Crear el administrador cuando no existe y la contraseña es válida. | `UserManager.CreateAsync()`        |
+| 9     | Garantizar que el administrador pertenezca al rol `Admin`.         | `UserManager.AddToRoleAsync()`     |
+| 10    | Finalizar la inicialización.                                       | `SeedAsync()`                      |
+
+**Consideración sobre la idempotencia:**
+
+El proceso conserva la comprobación de existencia del administrador y sus roles antes de crearlos o asignarlos.
+
+La validación de contraseña se ejecuta en cada invocación de `SeedAsync()`, pero no modifica la contraseña del administrador existente.
+
+Además, como la validación se realiza después de asegurar el esquema y los roles, un error de contraseña puede ocurrir cuando esas operaciones ya se han ejecutado.
+
+#### Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    CONFIG["BootstrapAdminOptions"]
+
+    subgraph Infrastructure["Infrastructure"]
+        SEEDER["IdentitySeeder"]
+        VALIDATE["ValidateBootstrapPasswordAsync"]
+        USERMANAGER["UserManager"]
+        PASSWORDS["PasswordValidators"]
+        DB["AppDbContext"]
+        ROLES["RoleManager"]
+        ADMIN["ApplicationIdentityUser"]
+    end
+
+    CONFIG --> SEEDER
+
+    SEEDER --> DB
+    SEEDER --> ROLES
+    SEEDER --> USERMANAGER
+
+    USERMANAGER -->|"Buscar administrador"| ADMIN
+
+    SEEDER --> VALIDATE
+    VALIDATE --> PASSWORDS
+
+    PASSWORDS -->|"ValidateAsync"| RESULT{"Contraseña válida"}
+
+    RESULT -->|"No"| ERROR["InvalidOperationException"]
+    RESULT -->|"Sí"| EXISTS{"Administrador existe"}
+
+    EXISTS -->|"No"| CREATE["CreateAsync"]
+    EXISTS -->|"Sí"| CHECK["Verificar rol Admin"]
+
+    CREATE --> CHECK
+    CHECK --> FINISH["Finalizar SeedAsync"]
+```
+
+**Interpretación:**
+
+- **Infrastructure:** centraliza la inicialización del administrador y la validación de su contraseña.
+- **ASP.NET Core Identity:** proporciona los validadores efectivos y las operaciones necesarias para administrar la cuenta.
+- **BootstrapAdminOptions:** suministra la contraseña que será validada.
+- **IdentitySeeder:** coordina la validación antes de crear el administrador o verificar su rol.
+
+La implementación no introduce dependencias adicionales en Application ni en Domain.
+
+#### Resultado
+
+Se reforzó `IdentitySeeder` incorporando una validación obligatoria de la contraseña configurada para el administrador inicial.
+
+El nuevo método `ValidateBootstrapPasswordAsync()` ejecuta todos los validadores de ASP.NET Core Identity y recopila los códigos de las reglas incumplidas.
+
+Cuando la contraseña no satisface las políticas configuradas, el seed se interrumpe mediante una excepción, evitando continuar con una configuración de seguridad inválida.
+
+La validación se ejecuta tanto para administradores nuevos como existentes, sin modificar automáticamente la contraseña de las cuentas ya creadas.
+
+Este cambio complementa las políticas de contraseña definidas en el paso 8 y fortalece el proceso de inicialización de identidad de FEPP ContaOps.
+
 ---
 
 ### 11. Verificar login uniforme.
