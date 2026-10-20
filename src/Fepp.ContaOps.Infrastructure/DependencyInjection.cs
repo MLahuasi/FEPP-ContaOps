@@ -70,8 +70,7 @@ public static class DependencyInjection
             })
             .AddEntityFrameworkStores<AppDbContext>()
             .AddTokenProvider<HashedUserTokenProvider>(
-                IdentityUserInvitationService.TokenProviderName)
-            .AddDefaultTokenProviders();
+                IdentityUserInvitationService.TokenProviderName);
         services.AddOptions<IdentityOptions>()
             .Configure<IOptions<IdentityPasswordOptions>, IOptions<IdentityLockoutOptions>>(
                 (identityOptions, passwordOptions, lockoutOptions) =>

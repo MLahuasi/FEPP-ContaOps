@@ -121,6 +121,106 @@ Se elimina de `DependencyInjection` la configuración explícita de Data Protect
 
 ### 5. Registrar explícitamente solo los proveedores de Identity necesarios.
 
+#### 1. Componentes implementados
+
+| Componente                   | Acción      | Tipo                              | Capa           | Responsabilidad                                                                              |
+| ---------------------------- | ----------- | --------------------------------- | -------------- | -------------------------------------------------------------------------------------------- |
+| `DependencyInjection`        | Update      | Clase estática                    | Infrastructure | Configura ASP.NET Core Identity registrando únicamente el proveedor de tokens personalizado. |
+| `AddInfrastructure()`        | Update      | Método de extensión               | Infrastructure | Elimina el registro de proveedores de tokens predeterminados de Identity.                    |
+| `HashedUserTokenProvider`    | Sin cambios | Proveedor de tokens personalizado | Infrastructure | Proveedor registrado explícitamente para los tokens de invitación.                           |
+| `AddDefaultTokenProviders()` | Delete      | Registro de servicios             | Infrastructure | Elimina el registro automático de proveedores predeterminados de Identity.                   |
+
+#### 2. Métodos principales
+
+| Clase                 | Método                | Responsabilidad                                                                                     |
+| --------------------- | --------------------- | --------------------------------------------------------------------------------------------------- |
+| `DependencyInjection` | `AddInfrastructure()` | Registra Identity, sus almacenes de EF Core y el proveedor personalizado `HashedUserTokenProvider`. |
+
+**Cambio realizado:**
+
+```csharp
+services.AddIdentity<ApplicationIdentityUser, IdentityRole>(options =>
+    {
+        options.User.RequireUniqueEmail = true;
+    })
+    .AddEntityFrameworkStores<AppDbContext>()
+    .AddTokenProvider<HashedUserTokenProvider>(
+        IdentityUserInvitationService.TokenProviderName);
+```
+
+Se elimina `.AddDefaultTokenProviders()`, conservando únicamente el registro explícito del proveedor personalizado.
+
+#### 3. Componentes de .NET y bibliotecas externas
+
+| Componente / Método                               | Origen                                        | Función                                                                      | Uso en el proyecto                                                              |
+| ------------------------------------------------- | --------------------------------------------- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `AddIdentity<TUser, TRole>()`                     | ASP.NET Core Identity                         | Registra los servicios de administración de usuarios y roles.                | Configura Identity con `ApplicationIdentityUser` e `IdentityRole`.              |
+| `AddEntityFrameworkStores<TContext>()`            | ASP.NET Core Identity + Entity Framework Core | Integra los almacenes de Identity con EF Core.                               | Utiliza `AppDbContext` para la persistencia de identidad.                       |
+| `AddTokenProvider<TProvider>()`                   | ASP.NET Core Identity                         | Registra un proveedor de tokens con un nombre específico.                    | Registra `HashedUserTokenProvider` para invitaciones.                           |
+| `AddDefaultTokenProviders()`                      | ASP.NET Core Identity                         | Registra proveedores predeterminados para generación y validación de tokens. | Eliminado para evitar registrar proveedores que no se requieren explícitamente. |
+| `HashedUserTokenProvider`                         | Código propio del proyecto                    | Proveedor personalizado de tokens de Identity.                               | Permanece registrado para el flujo de invitaciones.                             |
+| `IdentityUserInvitationService.TokenProviderName` | Código propio del proyecto                    | Identifica el nombre del proveedor personalizado.                            | Se utiliza como clave de registro del proveedor.                                |
+| `IdentityRole`                                    | ASP.NET Core Identity                         | Representa un rol de Identity.                                               | Tipo de rol utilizado en la configuración.                                      |
+
+#### 4. Flujo funcional
+
+| Operación                                          | Antes                                                     | Después                                    |
+| -------------------------------------------------- | --------------------------------------------------------- | ------------------------------------------ |
+| Registro de Identity                               | `AddIdentity()`                                           | Se mantiene.                               |
+| Persistencia de usuarios y roles                   | `AddEntityFrameworkStores<AppDbContext>()`                | Se mantiene.                               |
+| Proveedor personalizado                            | `HashedUserTokenProvider`                                 | Se mantiene.                               |
+| Proveedores predeterminados                        | `AddDefaultTokenProviders()`                              | Eliminado.                                 |
+| Registro de proveedores basados en Data Protection | Podían registrarse mediante `AddDefaultTokenProviders()`. | Se elimina esa vía de registro automático. |
+
+**Alcance:** El cambio evita registrar automáticamente los proveedores predeterminados de Identity, incluidos los basados en Data Protection. No demuestra que otros componentes de la aplicación no registren o utilicen Data Protection.
+
+#### 5. Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    subgraph Application["Application - Código propio"]
+        IUIS["IUserInvitationService"]
+    end
+
+    subgraph Infrastructure["Infrastructure - Código propio"]
+        DI["DependencyInjection.AddInfrastructure()"]
+        UIS["IdentityUserInvitationService"]
+        HTP["HashedUserTokenProvider"]
+        DB["AppDbContext"]
+        AU["ApplicationIdentityUser"]
+    end
+
+    subgraph Identity["ASP.NET Core Identity"]
+        AI["AddIdentity()"]
+        EFS["AddEntityFrameworkStores()"]
+        ATP["AddTokenProvider()"]
+        IR["IdentityRole"]
+    end
+
+    subgraph Persistence["Persistencia externa"]
+        PG[("PostgreSQL")]
+    end
+
+    DI --> AI
+    AI --> AU
+    AI --> IR
+    DI --> EFS
+    EFS --> DB
+    DB --> PG
+
+    DI --> ATP
+    ATP --> HTP
+
+    IUIS -.->|Implementada por| UIS
+    UIS -.->|Nombre del proveedor| ATP
+```
+
+**Registro eliminado:** `AddDefaultTokenProviders()`.
+
+#### 6. Resultado
+
+Se elimina el registro automático de proveedores predeterminados de ASP.NET Core Identity, conservando `HashedUserTokenProvider` como único proveedor registrado explícitamente. Esto elimina una vía de incorporación de proveedores dependientes de Data Protection, sin modificar los servicios principales de Identity.
+
 ---
 
 ### 6. Eliminar DataProtection\_\_KeyRingPath de configuración/documentación, sin modificar secretos reales.
