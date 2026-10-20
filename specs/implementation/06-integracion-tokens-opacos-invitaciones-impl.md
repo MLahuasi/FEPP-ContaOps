@@ -738,7 +738,159 @@ Las pruebas también verifican la recuperación transaccional ante contraseñas 
 
 ---
 
-### 9. Agregar prueba de dos activaciones concurrentes, asegurando que solo una tenga éxito.
+### 9. Agregar prueba de dos activaciones concurrentes, asegurando que solo una tenga éxito
+
+Se incorpora una prueba de integración que ejecuta dos solicitudes HTTP concurrentes utilizando el mismo token de invitación, verificando que únicamente una activación sea aceptada.
+
+#### 1. Componentes implementados
+
+| Componente                                | Acción  | Tipo                        | Capa                    | Responsabilidad                                                                                         |
+| ----------------------------------------- | ------- | --------------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------- |
+| `InvitationIntegrationTests`              | Update  | Clase de pruebas            | IntegrationTests        | Incorpora la verificación de activaciones concurrentes.                                                 |
+| `ConcurrentActivations_OnlyOneSucceeds()` | Create  | Prueba de integración       | IntegrationTests        | Verifica que dos solicitudes concurrentes no puedan activar exitosamente una cuenta con el mismo token. |
+| `TestApiFactory`                          | Consume | Fábrica de pruebas          | IntegrationTests        | Ejecuta la API con PostgreSQL efímero y dependencias de prueba.                                         |
+| `FakeInvitationNotifier`                  | Consume | Servicio simulado           | IntegrationTests        | Permite obtener el token generado durante la creación de la invitación.                                 |
+| `IdentityUserInvitationService`           | Consume | Servicio de infraestructura | Infrastructure/Identity | Procesa las activaciones y coordina el consumo transaccional del token.                                 |
+| `OpaqueTokenStore`                        | Consume | Servicio de persistencia    | Infrastructure/Security | Implementa el consumo condicional del token mediante PostgreSQL.                                        |
+
+#### 2. Métodos principales
+
+| Clase                           | Método                                    | Responsabilidad                                                                       |
+| ------------------------------- | ----------------------------------------- | ------------------------------------------------------------------------------------- |
+| `InvitationIntegrationTests`    | `ConcurrentActivations_OnlyOneSucceeds()` | Envía dos solicitudes de activación concurrentes y verifica sus resultados.           |
+| `InvitationIntegrationTests`    | `CreateFactory()`                         | Inicializa el host de pruebas conectado a PostgreSQL.                                 |
+| `InvitationIntegrationTests`    | `CreateHttpsClient()`                     | Crea el cliente HTTP utilizado para ejecutar las solicitudes.                         |
+| `InvitationIntegrationTests`    | `LoginAsync()`                            | Obtiene el token de autenticación del administrador.                                  |
+| `InvitationIntegrationTests`    | `SendAsAdminAsync()`                      | Crea la invitación mediante una solicitud HTTP autenticada.                           |
+| `InvitationIntegrationTests`    | `ReadCodeAsync()`                         | Obtiene el código de error de la activación rechazada.                                |
+| `IdentityUserInvitationService` | `ActivateAsync()`                         | Coordina la validación, consumo del token y activación transaccional del usuario.     |
+| `OpaqueTokenStore`              | `ConsumeAsync()`                          | Intenta eliminar el token válido mediante una operación condicional en base de datos. |
+
+#### 3. Componentes de .NET y bibliotecas externas
+
+| Componente / Método              | Origen                                          | Función                                                 | Uso en el proyecto                                                    |
+| -------------------------------- | ----------------------------------------------- | ------------------------------------------------------- | --------------------------------------------------------------------- |
+| `[Fact]`                         | xUnit                                           | Identifica una prueba automatizada.                     | Ejecuta `ConcurrentActivations_OnlyOneSucceeds()`.                    |
+| `Assert.Equal()`                 | xUnit                                           | Compara valores esperados y obtenidos.                  | Verifica la cantidad de activaciones exitosas y rechazadas.           |
+| `Task.WhenAll()`                 | .NET / System.Threading.Tasks                   | Espera la finalización de varias tareas asíncronas.     | Permite mantener simultáneamente pendientes las dos solicitudes HTTP. |
+| `HttpClient.PostAsJsonAsync()`   | .NET / System.Net.Http.Json                     | Envía solicitudes POST con contenido JSON.              | Ejecuta dos activaciones utilizando el mismo token.                   |
+| `HttpResponseMessage`            | .NET / System.Net.Http                          | Representa una respuesta HTTP.                          | Permite inspeccionar y liberar las respuestas recibidas.              |
+| `HttpStatusCode`                 | .NET / System.Net                               | Define códigos de respuesta HTTP.                       | Comprueba `204 NoContent` y `400 BadRequest`.                         |
+| `Count()` / `Single()`           | .NET / LINQ                                     | Cuenta y selecciona elementos según condiciones.        | Verifica los resultados y obtiene la respuesta rechazada.             |
+| `Dispose()`                      | .NET / IDisposable                              | Libera recursos administrados por objetos descartables. | Libera las respuestas HTTP al finalizar las verificaciones.           |
+| `WebApplicationFactory<Program>` | ASP.NET Core / Microsoft.AspNetCore.Mvc.Testing | Ejecuta la aplicación en un host de integración.        | Permite invocar los endpoints reales de la API.                       |
+| `PostgreSqlContainer`            | Testcontainers.PostgreSql                       | Proporciona PostgreSQL mediante Docker.                 | Ejecuta las operaciones de persistencia en una base de datos efímera. |
+
+#### 4. Flujo funcional
+
+**Escenario: dos activaciones concurrentes con el mismo token**
+
+| Paso | Operación                                                                   | Resultado esperado                                         |
+| ---- | --------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| 1    | Inicializar `TestApiFactory` y `HttpClient`.                                | API y base de datos disponibles.                           |
+| 2    | Autenticar al administrador.                                                | Obtener JWT administrativo.                                |
+| 3    | Crear una invitación para un usuario nuevo.                                 | Usuario pendiente y token generado.                        |
+| 4    | Recuperar el token desde `FakeInvitationNotifier`.                          | Obtener el token que utilizarán ambas solicitudes.         |
+| 5    | Ejecutar dos llamadas a `PostAsJsonAsync()` sin esperarlas individualmente. | Iniciar dos solicitudes de activación con idénticos datos. |
+| 6    | Esperar ambas respuestas mediante `Task.WhenAll()`.                         | Obtener los resultados de las dos operaciones.             |
+| 7    | Contar respuestas `204 NoContent`.                                          | Exactamente una activación exitosa.                        |
+| 8    | Contar respuestas `400 BadRequest`.                                         | Exactamente una activación rechazada.                      |
+| 9    | Consultar el código de error de la respuesta rechazada.                     | `invalid_activation_token`.                                |
+| 10   | Liberar ambas respuestas HTTP.                                              | Finalizar la prueba.                                       |
+
+**Verificaciones implementadas**
+
+| Condición            | Validación                                                                      | Resultado esperado         |
+| -------------------- | ------------------------------------------------------------------------------- | -------------------------- |
+| Activación exitosa   | `responses.Count(response => response.StatusCode == HttpStatusCode.NoContent)`  | `1`                        |
+| Activación rechazada | `responses.Count(response => response.StatusCode == HttpStatusCode.BadRequest)` | `1`                        |
+| Error funcional      | `ReadCodeAsync(failedResponse)`                                                 | `invalid_activation_token` |
+
+**Relación con el consumo atómico del paso 6**
+
+La prueba utiliza el flujo de activación existente:
+
+1. `IdentityUserInvitationService.ActivateAsync()` valida el token.
+2. `OpaqueTokenStore.ConsumeAsync()` intenta consumirlo mediante `ExecuteDeleteAsync()`.
+3. El consumo exitoso permite continuar con la activación.
+4. Una segunda operación no debe poder consumir nuevamente el mismo token.
+
+**Alcance:** las dos solicitudes se inician sin esperar la finalización de la primera y se sincronizan con `Task.WhenAll()`. Esto permite probar su ejecución concurrente, aunque no garantiza que ambas alcancen exactamente al mismo tiempo la operación de consumo en PostgreSQL.
+
+El código define las aserciones esperadas, pero no incluye resultados de ejecución que permitan confirmar que la prueba pasó.
+
+#### 5. Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    subgraph Tests["IntegrationTests"]
+        TEST["ConcurrentActivations_OnlyOneSucceeds"]
+        FACTORY["TestApiFactory"]
+        NOTIFIER["FakeInvitationNotifier"]
+        CLIENT["HttpClient"]
+        WHENALL["Task.WhenAll"]
+        ASSERT["Assert.Equal"]
+    end
+
+    subgraph Presentation["Presentation - API"]
+        API["POST /api/auth/activate"]
+    end
+
+    subgraph Application["Application"]
+        IUS["IUserInvitationService"]
+        STORE_INTERFACE["IOpaqueTokenStore"]
+    end
+
+    subgraph Infrastructure["Infrastructure"]
+        SERVICE["IdentityUserInvitationService"]
+        PROVIDER["HashedUserTokenProvider"]
+        STORE["OpaqueTokenStore"]
+        DB["AppDbContext"]
+    end
+
+    subgraph Framework["ASP.NET Core / EF Core"]
+        MANAGER["UserManager"]
+        DELETE["ExecuteDeleteAsync"]
+    end
+
+    subgraph External["PostgreSQL"]
+        TOKENS["UserSecurityTokens"]
+    end
+
+    TEST --> FACTORY
+    TEST --> NOTIFIER
+    TEST --> CLIENT
+
+    CLIENT -->|"Solicitud A"| API
+    CLIENT -->|"Solicitud B"| API
+
+    API --> IUS
+    IUS -.->|Implementación| SERVICE
+
+    SERVICE -->|"VerifyUserTokenAsync"| MANAGER
+    MANAGER --> PROVIDER
+    PROVIDER --> STORE_INTERFACE
+
+    SERVICE -->|"ConsumeAsync"| STORE_INTERFACE
+    STORE_INTERFACE -.->|Implementación| STORE
+
+    STORE --> DB
+    STORE --> DELETE
+    DELETE -->|"DELETE condicional"| TOKENS
+    DB --> TOKENS
+
+    CLIENT --> WHENALL
+    WHENALL --> ASSERT
+
+    ASSERT -->|"1 respuesta 204"| SUCCESS["Activación exitosa"]
+    ASSERT -->|"1 respuesta 400"| FAILURE["invalid_activation_token"]
+```
+
+#### 6. Resultado
+
+Se incorporó una prueba de integración que verifica que dos solicitudes concurrentes con el mismo token produzcan exactamente una activación exitosa y una rechazada.
+
+La prueba cubre el comportamiento observable del consumo único de tokens opacos utilizando la API y PostgreSQL, sin modificar la implementación de producción.
 
 ---
 

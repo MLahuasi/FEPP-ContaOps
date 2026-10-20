@@ -267,6 +267,57 @@ public sealed class InvitationIntegrationTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// Comprueba que dos activaciones concurrentes no pueden consumir la misma invitación.
+    /// </summary>
+    [Fact]
+    public async Task ConcurrentActivations_OnlyOneSucceeds()
+    {
+        await using TestApiFactory factory = CreateFactory();
+        using HttpClient client = CreateHttpsClient(factory);
+        string adminToken = await LoginAsync(client, "admin@example.com", "AdminPassword123!");
+        string email = UniqueEmail();
+
+        await SendAsAdminAsync(
+            client,
+            adminToken,
+            HttpMethod.Post,
+            "/api/users/invitations",
+            JsonContent.Create(new { email }));
+        UserInvitationResult invitation = factory.Services
+            .GetRequiredService<FakeInvitationNotifier>()
+            .LastInvitation!;
+
+        Task<HttpResponseMessage> firstActivation = client.PostAsJsonAsync(
+            "/api/auth/activate",
+            new
+            {
+                userId = invitation.User.Id.Value,
+                token = invitation.ActivationToken,
+                newPassword = "Password123!"
+            });
+        Task<HttpResponseMessage> secondActivation = client.PostAsJsonAsync(
+            "/api/auth/activate",
+            new
+            {
+                userId = invitation.User.Id.Value,
+                token = invitation.ActivationToken,
+                newPassword = "Password123!"
+            });
+
+        HttpResponseMessage[] responses = await Task.WhenAll(firstActivation, secondActivation);
+        Assert.Equal(1, responses.Count(response => response.StatusCode == HttpStatusCode.NoContent));
+        Assert.Equal(1, responses.Count(response => response.StatusCode == HttpStatusCode.BadRequest));
+
+        HttpResponseMessage failedResponse = responses.Single(
+            response => response.StatusCode == HttpStatusCode.BadRequest);
+        Assert.Equal("invalid_activation_token", await ReadCodeAsync(failedResponse));
+        foreach (HttpResponseMessage response in responses)
+        {
+            response.Dispose();
+        }
+    }
+
+    /// <summary>
     /// Comprueba que una cuenta activa no puede recibir un reenvío.
     /// </summary>
     [Fact]
