@@ -267,6 +267,57 @@ public sealed class InvitationIntegrationTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// Comprueba que dos activaciones concurrentes no pueden consumir la misma invitación.
+    /// </summary>
+    [Fact]
+    public async Task ConcurrentActivations_OnlyOneSucceeds()
+    {
+        await using TestApiFactory factory = CreateFactory();
+        using HttpClient client = CreateHttpsClient(factory);
+        string adminToken = await LoginAsync(client, "admin@example.com", "AdminPassword123!");
+        string email = UniqueEmail();
+
+        await SendAsAdminAsync(
+            client,
+            adminToken,
+            HttpMethod.Post,
+            "/api/users/invitations",
+            JsonContent.Create(new { email }));
+        UserInvitationResult invitation = factory.Services
+            .GetRequiredService<FakeInvitationNotifier>()
+            .LastInvitation!;
+
+        Task<HttpResponseMessage> firstActivation = client.PostAsJsonAsync(
+            "/api/auth/activate",
+            new
+            {
+                userId = invitation.User.Id.Value,
+                token = invitation.ActivationToken,
+                newPassword = "Password123!"
+            });
+        Task<HttpResponseMessage> secondActivation = client.PostAsJsonAsync(
+            "/api/auth/activate",
+            new
+            {
+                userId = invitation.User.Id.Value,
+                token = invitation.ActivationToken,
+                newPassword = "Password123!"
+            });
+
+        HttpResponseMessage[] responses = await Task.WhenAll(firstActivation, secondActivation);
+        Assert.Equal(1, responses.Count(response => response.StatusCode == HttpStatusCode.NoContent));
+        Assert.Equal(1, responses.Count(response => response.StatusCode == HttpStatusCode.BadRequest));
+
+        HttpResponseMessage failedResponse = responses.Single(
+            response => response.StatusCode == HttpStatusCode.BadRequest);
+        Assert.Equal("invalid_activation_token", await ReadCodeAsync(failedResponse));
+        foreach (HttpResponseMessage response in responses)
+        {
+            response.Dispose();
+        }
+    }
+
+    /// <summary>
     /// Comprueba que una cuenta activa no puede recibir un reenvío.
     /// </summary>
     [Fact]
@@ -440,6 +491,90 @@ public sealed class InvitationIntegrationTests : IAsyncLifetime
             {
                 userId = invitation.User.Id.Value,
                 token = "invalid-token",
+                newPassword = "Password123!"
+            });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("invalid_activation_token", await ReadCodeAsync(response));
+    }
+
+    /// <summary>
+    /// Comprueba que un token vencido no puede activar una cuenta pendiente.
+    /// </summary>
+    [Fact]
+    public async Task ExpiredInvitationToken_ReturnsUniformError()
+    {
+        await using TestApiFactory factory = CreateFactory();
+        using HttpClient client = CreateHttpsClient(factory);
+        string adminToken = await LoginAsync(client, "admin@example.com", "AdminPassword123!");
+        string email = UniqueEmail();
+
+        await SendAsAdminAsync(
+            client,
+            adminToken,
+            HttpMethod.Post,
+            "/api/users/invitations",
+            JsonContent.Create(new { email }));
+        UserInvitationResult invitation = factory.Services
+            .GetRequiredService<FakeInvitationNotifier>()
+            .LastInvitation!;
+
+        await using AsyncServiceScope scope = factory.Services.CreateAsyncScope();
+        AppDbContext dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        HashedUserToken persistedToken = await dbContext.UserSecurityTokens
+            .SingleAsync(token => token.UserId == invitation.User.Id.Value);
+        persistedToken.ExpiresAtUtc = DateTimeOffset.UtcNow.AddMinutes(-1);
+        await dbContext.SaveChangesAsync();
+
+        HttpResponseMessage response = await client.PostAsJsonAsync(
+            "/api/auth/activate",
+            new
+            {
+                userId = invitation.User.Id.Value,
+                token = invitation.ActivationToken,
+                newPassword = "Password123!"
+            });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("invalid_activation_token", await ReadCodeAsync(response));
+    }
+
+    /// <summary>
+    /// Comprueba que un token no puede utilizarse con otra cuenta pendiente.
+    /// </summary>
+    [Fact]
+    public async Task InvitationTokenFromAnotherUser_ReturnsUniformError()
+    {
+        await using TestApiFactory factory = CreateFactory();
+        using HttpClient client = CreateHttpsClient(factory);
+        string adminToken = await LoginAsync(client, "admin@example.com", "AdminPassword123!");
+
+        await SendAsAdminAsync(
+            client,
+            adminToken,
+            HttpMethod.Post,
+            "/api/users/invitations",
+            JsonContent.Create(new { email = UniqueEmail() }));
+        UserInvitationResult firstInvitation = factory.Services
+            .GetRequiredService<FakeInvitationNotifier>()
+            .LastInvitation!;
+
+        await SendAsAdminAsync(
+            client,
+            adminToken,
+            HttpMethod.Post,
+            "/api/users/invitations",
+            JsonContent.Create(new { email = UniqueEmail() }));
+        UserInvitationResult secondInvitation = factory.Services
+            .GetRequiredService<FakeInvitationNotifier>()
+            .LastInvitation!;
+
+        HttpResponseMessage response = await client.PostAsJsonAsync(
+            "/api/auth/activate",
+            new
+            {
+                userId = secondInvitation.User.Id.Value,
+                token = firstInvitation.ActivationToken,
                 newPassword = "Password123!"
             });
 
