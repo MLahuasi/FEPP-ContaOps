@@ -463,6 +463,186 @@ La nueva sesión y el hash del refresh token se persisten en PostgreSQL; el toke
 
 ### 8. Implementar consumo, revocación y expiración.
 
+#### 1. Componentes implementados
+
+| Componente                      | Acción | Tipo                             | Capa                         | Responsabilidad                                                                                          |
+| ------------------------------- | ------ | -------------------------------- | ---------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `UserSessionStore`              | Update | Clase / Servicio de persistencia | Infrastructure / Security    | Incorpora operaciones transaccionales de consumo de refresh tokens, revocación y expiración de sesiones. |
+| `RefreshTokenConsumptionStatus` | Create | Enum                             | Infrastructure / Security    | Define los resultados del consumo: `Consumed`, `Invalid`, `Reused` y `Expired`.                          |
+| `UserSession`                   | Uso    | Entidad de persistencia          | Infrastructure / Persistence | Almacena los cambios de estado, fecha y motivo de revocación.                                            |
+| `UserRefreshToken`              | Uso    | Entidad de persistencia          | Infrastructure / Persistence | Registra el consumo o revocación de refresh tokens.                                                      |
+| `UserSessionStatus`             | Uso    | Enum                             | Infrastructure / Persistence | Representa los estados `Active`, `Revoked` y `Expired`.                                                  |
+
+**Estados de consumo:**
+
+| Estado     | Valor | Significado                                         |
+| ---------- | ----- | --------------------------------------------------- |
+| `Consumed` | 1     | Token consumido correctamente.                      |
+| `Invalid`  | 2     | Sesión o token inexistente, o hash no coincidente.  |
+| `Reused`   | 3     | Token previamente consumido o revocado.             |
+| `Expired`  | 4     | Sesión no activa, sesión expirada o token expirado. |
+
+#### 2. Métodos principales
+
+| Clase                     | Método                       | Responsabilidad                                                                             |
+| ------------------------- | ---------------------------- | ------------------------------------------------------------------------------------------- |
+| `UserSessionStore`        | `ConsumeRefreshTokenAsync()` | Valida y consume un refresh token dentro de una transacción serializable.                   |
+| `UserSessionStore`        | `RevokeSessionAsync()`       | Revoca una sesión y sus refresh tokens todavía utilizables.                                 |
+| `UserSessionStore`        | `ExpireSessionsAsync()`      | Marca como expiradas las sesiones activas cuya fecha de expiración ha transcurrido.         |
+| `UserSessionStore`        | `RevokeSessionStateAsync()`  | Actualiza el estado de revocación y revoca los tokens no consumidos ni revocados asociados. |
+| `UserSessionStore`        | `MarkSessionExpired()`       | Cambia una sesión de `Active` a `Expired` cuando su fecha de expiración ha transcurrido.    |
+| `UserSessionStore`        | `ValidateRequiredValue()`    | Rechaza argumentos de texto nulos o vacíos.                                                 |
+| `OpaqueTokenCryptography` | `Matches()`                  | Comprueba la correspondencia entre el refresh token recibido y el hash almacenado.          |
+
+**Métodos públicos incorporados:**
+
+| Método                       | Parámetros principales                                     | Retorno                               |
+| ---------------------------- | ---------------------------------------------------------- | ------------------------------------- |
+| `ConsumeRefreshTokenAsync()` | `sessionId`, `refreshToken`, `nowUtc`, `cancellationToken` | `Task<RefreshTokenConsumptionStatus>` |
+| `RevokeSessionAsync()`       | `sessionId`, `reason`, `revokedAtUtc`, `cancellationToken` | `Task`                                |
+| `ExpireSessionsAsync()`      | `nowUtc`, `cancellationToken`                              | `Task<int>`                           |
+
+#### 3. Componentes de .NET y bibliotecas externas
+
+| Componente / Método             | Origen                         | Función                                                               | Uso en el proyecto                                                          |
+| ------------------------------- | ------------------------------ | --------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| `BeginTransactionAsync()`       | Entity Framework Core          | Inicia una transacción de base de datos.                              | Agrupa las operaciones de consumo, revocación y expiración.                 |
+| `IsolationLevel.Serializable`   | .NET / System.Data             | Define el nivel de aislamiento serializable.                          | Se utiliza en consumo y revocación para controlar operaciones concurrentes. |
+| `IDbContextTransaction`         | Entity Framework Core          | Representa una transacción administrada por EF Core.                  | Permite confirmar o revertir las operaciones.                               |
+| `SingleOrDefaultAsync()`        | Entity Framework Core          | Obtiene un registro o `null`, exigiendo como máximo una coincidencia. | Consulta sesiones y refresh tokens.                                         |
+| `ToListAsync()`                 | Entity Framework Core          | Ejecuta consultas asíncronas.                                         | Obtiene sesiones expiradas y tokens pendientes de revocación.               |
+| `SaveChangesAsync()`            | Entity Framework Core          | Persiste modificaciones del contexto.                                 | Guarda consumos, revocaciones y cambios de estado.                          |
+| `CommitAsync()`                 | Entity Framework Core          | Confirma una transacción.                                             | Confirma las operaciones realizadas.                                        |
+| `RollbackAsync()`               | Entity Framework Core          | Revierte una transacción.                                             | Revierte modificaciones ante excepciones.                                   |
+| `DateTimeOffset`                | .NET / System                  | Representa fechas y horas con desplazamiento UTC.                     | Evalúa expiraciones y registra consumos o revocaciones.                     |
+| `CancellationToken`             | .NET / System.Threading        | Permite solicitar la cancelación de operaciones.                      | Se propaga a las consultas y transacciones.                                 |
+| `OpaqueTokenCryptography`       | Código propio / Infrastructure | Servicio de operaciones criptográficas sobre tokens.                  | Verifica el refresh token mediante `Matches()`.                             |
+| `RefreshTokenConsumptionStatus` | Código propio / Infrastructure | Enumeración de resultados.                                            | Comunica el resultado interno del consumo.                                  |
+
+#### 4. Flujo funcional
+
+**Consumo de refresh token: `ConsumeRefreshTokenAsync()`**
+
+| Paso | Condición / Operación                                        | Resultado                                                    |
+| ---- | ------------------------------------------------------------ | ------------------------------------------------------------ |
+| 1    | Validar el valor recibido del refresh token.                 | Rechaza valores nulos o vacíos.                              |
+| 2    | Iniciar transacción con aislamiento `Serializable`.          | Inicia operación transaccional.                              |
+| 3    | Consultar sesión y token asociado mediante `SessionId`.      | Obtiene registros persistidos.                               |
+| 4    | Sesión inexistente, token inexistente o hash no coincidente. | `Invalid`                                                    |
+| 5    | Token previamente consumido o revocado.                      | Revoca la sesión y sus tokens utilizables; retorna `Reused`. |
+| 6    | Sesión no activa o sesión/token expirado.                    | Ejecuta `MarkSessionExpired()` y retorna `Expired`.          |
+| 7    | Token válido y vigente.                                      | Establece `ConsumedAtUtc = nowUtc`.                          |
+| 8    | Persistir cambios y confirmar transacción.                   | `Consumed`                                                   |
+| 9    | Excepción durante la operación.                              | Ejecuta rollback y propaga la excepción.                     |
+
+**Revocación: `RevokeSessionAsync()`**
+
+| Operación                | Comportamiento                                                                      |
+| ------------------------ | ----------------------------------------------------------------------------------- |
+| Validación               | Comprueba que `reason` no sea nulo ni vacío.                                        |
+| Transacción              | Utiliza aislamiento `Serializable`.                                                 |
+| Sesión inexistente       | Finaliza sin modificar registros.                                                   |
+| Sesión existente         | Ejecuta `RevokeSessionStateAsync()`.                                                |
+| Actualización del estado | Cambia a `Revoked` si todavía no estaba revocada.                                   |
+| Registro de revocación   | Actualiza `RevokedAtUtc` y `RevocationReason` cuando corresponde cambiar el estado. |
+| Revocación de tokens     | Establece `RevokedAtUtc` en los tokens no consumidos ni revocados.                  |
+| Persistencia             | Guarda y confirma los cambios dentro de la transacción.                             |
+
+**Expiración: `ExpireSessionsAsync()`**
+
+| Operación     | Comportamiento                                                        |
+| ------------- | --------------------------------------------------------------------- |
+| Consulta      | Selecciona sesiones con `Status = Active` y `ExpiresAtUtc <= nowUtc`. |
+| Actualización | Cambia el estado de las sesiones encontradas a `Expired`.             |
+| Persistencia  | Guarda los cambios en una transacción.                                |
+| Resultado     | Devuelve la cantidad de sesiones actualizadas.                        |
+
+**Reglas relevantes:**
+
+| Regla                      | Implementación                                                        |
+| -------------------------- | --------------------------------------------------------------------- |
+| Consumo único              | Registra `ConsumedAtUtc` para impedir consumos posteriores exitosos.  |
+| Detección de reutilización | Identifica tokens consumidos o revocados y revoca la sesión asociada. |
+| Verificación criptográfica | Compara el token recibido con `TokenHash` mediante `Matches()`.       |
+| Revocación de sesión       | Revoca los tokens asociados que no estén consumidos ni revocados.     |
+| Expiración de sesión       | Cambia `Active` a `Expired` cuando `ExpiresAtUtc <= nowUtc`.          |
+| Atomicidad                 | Utiliza transacciones de EF Core para persistir cada operación.       |
+
+**Alcance de la implementación:**
+
+- `ConsumeRefreshTokenAsync()` consulta el token mediante `SessionId`, no mediante `TokenHash`. La configuración del paso 5 permite conservar varios tokens históricos por sesión; el código mostrado no filtra esos registros antes de utilizar `SingleOrDefaultAsync()`.
+- `MarkSessionExpired()` únicamente modifica sesiones activas cuya expiración ha transcurrido. No cambia a `Expired` una sesión revocada ni una sesión vigente cuyo refresh token haya expirado.
+- `ExpireSessionsAsync()` no modifica directamente los registros de refresh tokens.
+- No se implementa en este paso la generación de un nuevo refresh token después del consumo.
+
+#### 5. Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    subgraph Infrastructure["Infrastructure - Security / Código propio"]
+        STORE["UserSessionStore"]
+        CONSUME["ConsumeRefreshTokenAsync()"]
+        REVOKE["RevokeSessionAsync()"]
+        EXPIRE["ExpireSessionsAsync()"]
+        CRYPTO["OpaqueTokenCryptography.Matches()"]
+        REVOKESTATE["RevokeSessionStateAsync()"]
+        MARKEXPIRED["MarkSessionExpired()"]
+        STATUS["RefreshTokenConsumptionStatus"]
+    end
+
+    subgraph Persistence["Infrastructure - Persistence"]
+        DB["AppDbContext"]
+        SESSION["UserSession"]
+        TOKEN["UserRefreshToken"]
+        SESSIONSTATUS["UserSessionStatus"]
+    end
+
+    subgraph EFCore["Entity Framework Core"]
+        TX["BeginTransactionAsync()"]
+        QUERY["SingleOrDefaultAsync() / ToListAsync()"]
+        SAVE["SaveChangesAsync()"]
+        COMMIT["CommitAsync() / RollbackAsync()"]
+    end
+
+    subgraph Database["PostgreSQL"]
+        SESSIONS[("UserSessions")]
+        TOKENS[("UserRefreshTokens")]
+    end
+
+    STORE --> CONSUME
+    STORE --> REVOKE
+    STORE --> EXPIRE
+
+    CONSUME --> CRYPTO
+    CONSUME -->|"Token reutilizado"| REVOKESTATE
+    CONSUME -->|"Verificar expiración"| MARKEXPIRED
+    CONSUME --> STATUS
+
+    REVOKE --> REVOKESTATE
+    EXPIRE --> MARKEXPIRED
+
+    REVOKESTATE --> SESSION
+    REVOKESTATE --> TOKEN
+    MARKEXPIRED --> SESSION
+    SESSION --> SESSIONSTATUS
+
+    STORE --> DB
+    STORE --> TX
+
+    TX --> QUERY
+    QUERY --> SAVE
+    SAVE --> COMMIT
+
+    DB --> SESSIONS
+    DB --> TOKENS
+```
+
+#### 6. Resultado
+
+Se incorporan operaciones transaccionales para consumir refresh tokens, detectar reutilizaciones, revocar sesiones y registrar expiraciones.
+
+`UserSessionStore` centraliza estas operaciones mediante EF Core y `OpaqueTokenCryptography`, manteniendo los estados de sesiones y tokens en PostgreSQL.
+
 ---
 
 ### 9. Agregar pruebas unitarias.

@@ -136,6 +136,143 @@ public sealed class UserSessionStore
     }
 
     /// <summary>
+    /// Consume atómicamente el refresh token de una sesión activa.
+    /// </summary>
+    /// <param name="sessionId">Identificador de la sesión del token.</param>
+    /// <param name="refreshToken">Valor plano presentado por el cliente.</param>
+    /// <param name="nowUtc">Instante UTC usado para evaluar la vigencia.</param>
+    /// <param name="cancellationToken">Token para cancelar la operación.</param>
+    /// <returns>Resultado del intento de consumo.</returns>
+    public async Task<RefreshTokenConsumptionStatus> ConsumeRefreshTokenAsync(
+        Guid sessionId,
+        string refreshToken,
+        DateTimeOffset nowUtc,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateRequiredValue(refreshToken, nameof(refreshToken));
+
+        await using Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction transaction =
+            await _dbContext.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
+
+        try
+        {
+            UserSession? session = await _dbContext.UserSessions
+                .SingleOrDefaultAsync(item => item.SessionId == sessionId, cancellationToken);
+            UserRefreshToken? persistedToken = await _dbContext.UserRefreshTokens
+                .SingleOrDefaultAsync(item => item.SessionId == sessionId, cancellationToken);
+
+            if (session is null || persistedToken is null
+                || !_cryptography.Matches(refreshToken, persistedToken.TokenHash))
+            {
+                await transaction.CommitAsync(cancellationToken);
+                return RefreshTokenConsumptionStatus.Invalid;
+            }
+
+            if (persistedToken.ConsumedAtUtc is not null || persistedToken.RevokedAtUtc is not null)
+            {
+                await RevokeSessionStateAsync(session, nowUtc, "RefreshTokenReuseDetected", cancellationToken);
+                await transaction.CommitAsync(cancellationToken);
+                return RefreshTokenConsumptionStatus.Reused;
+            }
+
+            if (session.Status != UserSessionStatus.Active
+                || session.ExpiresAtUtc <= nowUtc
+                || persistedToken.ExpiresAtUtc <= nowUtc)
+            {
+                MarkSessionExpired(session, nowUtc);
+                await _dbContext.SaveChangesAsync(cancellationToken);
+                await transaction.CommitAsync(cancellationToken);
+                return RefreshTokenConsumptionStatus.Expired;
+            }
+
+            persistedToken.ConsumedAtUtc = nowUtc;
+            await _dbContext.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return RefreshTokenConsumptionStatus.Consumed;
+        }
+        catch
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Revoca una sesión y todos sus refresh tokens todavía utilizables.
+    /// </summary>
+    /// <param name="sessionId">Identificador de la sesión que se revoca.</param>
+    /// <param name="reason">Motivo seguro de revocación.</param>
+    /// <param name="revokedAtUtc">Instante UTC de la revocación.</param>
+    /// <param name="cancellationToken">Token para cancelar la operación.</param>
+    /// <returns>Una tarea que representa la operación de persistencia.</returns>
+    public async Task RevokeSessionAsync(
+        Guid sessionId,
+        string reason,
+        DateTimeOffset revokedAtUtc,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateRequiredValue(reason, nameof(reason));
+
+        await using Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction transaction =
+            await _dbContext.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
+
+        try
+        {
+            UserSession? session = await _dbContext.UserSessions
+                .SingleOrDefaultAsync(item => item.SessionId == sessionId, cancellationToken);
+            if (session is null)
+            {
+                await transaction.CommitAsync(cancellationToken);
+                return;
+            }
+
+            await RevokeSessionStateAsync(session, revokedAtUtc, reason, cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+        }
+        catch
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Marca como expiradas las sesiones activas cuyo plazo ya terminó.
+    /// </summary>
+    /// <param name="nowUtc">Instante UTC usado para evaluar la expiración.</param>
+    /// <param name="cancellationToken">Token para cancelar la operación.</param>
+    /// <returns>Cantidad de sesiones marcadas como expiradas.</returns>
+    public async Task<int> ExpireSessionsAsync(
+        DateTimeOffset nowUtc,
+        CancellationToken cancellationToken = default)
+    {
+        await using Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction transaction =
+            await _dbContext.Database.BeginTransactionAsync(cancellationToken);
+
+        try
+        {
+            List<UserSession> sessions = await _dbContext.UserSessions
+                .Where(session => session.Status == UserSessionStatus.Active
+                    && session.ExpiresAtUtc <= nowUtc)
+                .ToListAsync(cancellationToken);
+
+            foreach (UserSession session in sessions)
+            {
+                MarkSessionExpired(session, nowUtc);
+            }
+
+            await _dbContext.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return sessions.Count;
+        }
+        catch
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            throw;
+        }
+    }
+
+    /// <summary>
     /// Valida un texto requerido.
     /// </summary>
     /// <param name="value">Valor que se valida.</param>
@@ -161,6 +298,53 @@ public sealed class UserSessionStore
             throw new ArgumentException(
                 "The expiration must be after creation.",
                 parameterName);
+        }
+    }
+
+    /// <summary>
+    /// Revoca la sesión y los refresh tokens no consumidos asociados.
+    /// </summary>
+    /// <param name="session">Sesión que se actualiza.</param>
+    /// <param name="revokedAtUtc">Instante UTC de revocación.</param>
+    /// <param name="reason">Motivo seguro de revocación.</param>
+    /// <param name="cancellationToken">Token para cancelar la consulta.</param>
+    private async Task RevokeSessionStateAsync(
+        UserSession session,
+        DateTimeOffset revokedAtUtc,
+        string reason,
+        CancellationToken cancellationToken)
+    {
+        if (session.Status != UserSessionStatus.Revoked)
+        {
+            session.Status = UserSessionStatus.Revoked;
+            session.RevokedAtUtc = revokedAtUtc;
+            session.RevocationReason = reason;
+        }
+
+        List<UserRefreshToken> refreshTokens = await _dbContext.UserRefreshTokens
+            .Where(token => token.SessionId == session.SessionId
+                && token.ConsumedAtUtc == null
+                && token.RevokedAtUtc == null)
+            .ToListAsync(cancellationToken);
+
+        foreach (UserRefreshToken refreshToken in refreshTokens)
+        {
+            refreshToken.RevokedAtUtc = revokedAtUtc;
+        }
+
+        await _dbContext.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Marca una sesión activa como expirada.
+    /// </summary>
+    /// <param name="session">Sesión que se actualiza.</param>
+    /// <param name="nowUtc">Instante UTC de evaluación.</param>
+    private static void MarkSessionExpired(UserSession session, DateTimeOffset nowUtc)
+    {
+        if (session.Status == UserSessionStatus.Active && session.ExpiresAtUtc <= nowUtc)
+        {
+            session.Status = UserSessionStatus.Expired;
         }
     }
 }
