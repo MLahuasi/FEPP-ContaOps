@@ -218,7 +218,90 @@ Se configura la persistencia de `HashedUserToken` con tipos PostgreSQL, clave pr
 
 ---
 
-### 6. Implementar generación segura y Base64Url.
+### 6. Implementar generación segura y Base64Url
+
+#### 1. Componentes implementados
+
+| Componente              | Acción | Tipo                 | Capa           | Responsabilidad                                                                                |
+| ----------------------- | ------ | -------------------- | -------------- | ---------------------------------------------------------------------------------------------- |
+| `IOpaqueTokenGenerator` | Create | Interfaz (puerto)    | Application    | Definir el contrato para generar tokens opacos de alta entropía.                               |
+| `OpaqueTokenGenerator`  | Create | Servicio (adaptador) | Infrastructure | Generar 32 bytes aleatorios criptográficamente seguros y codificarlos en Base64Url.            |
+| `DependencyInjection`   | Update | Configuración DI     | Infrastructure | Registrar `IOpaqueTokenGenerator` con su implementación `OpaqueTokenGenerator` como Singleton. |
+
+#### 2. Métodos principales
+
+| Clase                   | Método                | Responsabilidad                                                                          |
+| ----------------------- | --------------------- | ---------------------------------------------------------------------------------------- |
+| `IOpaqueTokenGenerator` | `Generate()`          | Declarar la operación de generación de tokens opacos.                                    |
+| `OpaqueTokenGenerator`  | `Generate()`          | Generar 32 bytes aleatorios mediante `RandomNumberGenerator` y convertirlos a Base64Url. |
+| `DependencyInjection`   | `AddInfrastructure()` | Registrar el generador en el contenedor de inyección de dependencias.                    |
+
+**Características del token generado:**
+
+| Propiedad           | Valor         | Descripción                                                           |
+| ------------------- | ------------- | --------------------------------------------------------------------- |
+| Longitud aleatoria  | 32 bytes      | Definida mediante `TokenByteLength`.                                  |
+| Entropía            | 256 bits      | Entropía máxima de 32 bytes generados uniformemente.                  |
+| Generación          | CSPRNG        | Utiliza un generador de números aleatorios criptográficamente seguro. |
+| Codificación        | Base64Url     | Representación compatible con URLs.                                   |
+| Padding             | Sin padding   | No incluye caracteres `=` finales.                                    |
+| Longitud codificada | 43 caracteres | Representación Base64Url de 32 bytes sin padding.                     |
+
+#### 3. Componentes de .NET y bibliotecas externas
+
+| Componente / Método                         | Origen                                             | Función                                                   | Uso en el proyecto                                           |
+| ------------------------------------------- | -------------------------------------------------- | --------------------------------------------------------- | ------------------------------------------------------------ |
+| `RandomNumberGenerator.GetBytes()`          | .NET / `System.Security.Cryptography`              | Generar bytes aleatorios criptográficamente seguros.      | Producir los 32 bytes del token opaco.                       |
+| `WebEncoders.Base64UrlEncode()`             | ASP.NET Core / `Microsoft.AspNetCore.WebUtilities` | Codificar bytes en Base64Url sin padding.                 | Convertir el token binario a una cadena compatible con URLs. |
+| `IServiceCollection`                        | .NET / Microsoft.Extensions.DependencyInjection    | Definir el contenedor de servicios.                       | Registrar la implementación del generador.                   |
+| `AddSingleton<TService, TImplementation>()` | .NET / Microsoft.Extensions.DependencyInjection    | Registrar una implementación con ciclo de vida Singleton. | Asociar `IOpaqueTokenGenerator` con `OpaqueTokenGenerator`.  |
+
+#### 4. Flujo funcional
+
+| Paso | Componente                            | Operación                                                  |
+| ---- | ------------------------------------- | ---------------------------------------------------------- |
+| 1    | Consumidor de `IOpaqueTokenGenerator` | Solicita un token mediante `Generate()`.                   |
+| 2    | `OpaqueTokenGenerator`                | Ejecuta `RandomNumberGenerator.GetBytes(32)`.              |
+| 3    | `WebEncoders`                         | Codifica los bytes mediante `Base64UrlEncode()`.           |
+| 4    | `OpaqueTokenGenerator`                | Retorna una cadena Base64Url de 43 caracteres sin padding. |
+
+**Registro de dependencias:**
+
+| Contrato                | Implementación         | Ciclo de vida |
+| ----------------------- | ---------------------- | ------------- |
+| `IOpaqueTokenGenerator` | `OpaqueTokenGenerator` | Singleton     |
+
+**Alcance:** este paso implementa únicamente la generación del token público. No incluye cálculo de hash SHA-256, persistencia ni validación del token. Aunque `DependencyInjection` mantiene configuraciones existentes de Identity y Data Protection, estas no intervienen en `OpaqueTokenGenerator`.
+
+#### 5. Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    subgraph APP["Application"]
+        PORT["IOpaqueTokenGenerator"]
+    end
+
+    subgraph INF["Infrastructure"]
+        DI["DependencyInjection"]
+        GEN["OpaqueTokenGenerator"]
+    end
+
+    subgraph NET[".NET / ASP.NET Core"]
+        RNG["RandomNumberGenerator.GetBytes"]
+        B64["WebEncoders.Base64UrlEncode"]
+        CONTAINER["IServiceCollection"]
+    end
+
+    DI -->|"AddSingleton"| CONTAINER
+    DI -->|"Registra contrato e implementación"| PORT
+    GEN -.->|"Implementa"| PORT
+    GEN -->|"Genera 32 bytes aleatorios"| RNG
+    GEN -->|"Codifica Base64Url"| B64
+```
+
+#### 6. Resultado
+
+Se implementa un generador de tokens opacos de 256 bits mediante APIs criptográficas de .NET y codificación Base64Url. El servicio queda disponible mediante `IOpaqueTokenGenerator`, registrado como Singleton en Infrastructure.
 
 ---
 
