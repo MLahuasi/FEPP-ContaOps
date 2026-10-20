@@ -1,6 +1,6 @@
 # SPEC 06 — Integración de tokens opacos con invitaciones
 
-> **Estado:** Aprobado
+> **Estado:** Implementado
 > **Dependencias:** SPEC 05
 > **Fecha:** 2026-10-20
 > **Objetivo:** Sustituir los tokens Data Protection de invitación por un proveedor de Identity basado en tokens opacos hasheados y consumidos una sola vez.
@@ -48,14 +48,14 @@
 
 ## Criterios de aceptación
 
-- [ ] Identity usa el proveedor dedicado para invitaciones.
-- [ ] Crear y reenviar invitaciones emiten tokens opacos nuevos.
-- [ ] El token anterior queda inválido después del reenvío.
-- [ ] Un token consumido no puede reutilizarse.
-- [ ] Dos activaciones concurrentes no pueden completar ambas.
-- [ ] Una contraseña inválida no consume la invitación.
+- [x] Identity usa el proveedor dedicado para invitaciones.
+- [x] Crear y reenviar invitaciones emiten tokens opacos nuevos.
+- [x] El token anterior queda inválido después del reenvío.
+- [x] Un token consumido no puede reutilizarse.
+- [x] Dos activaciones concurrentes no pueden completar ambas.
+- [x] Una contraseña inválida no consume la invitación.
 - [ ] Los tokens anteriores a la refactorización se invalidan y requieren reenvío.
-- [ ] JWT Bearer permanece sin cambios.
+- [x] JWT Bearer permanece sin cambios.
 
 ## Decisiones
 

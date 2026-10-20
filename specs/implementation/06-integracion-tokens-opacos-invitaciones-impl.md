@@ -940,6 +940,234 @@ Revisar el spec: [`06-integracion-tokens-opacos-invitaciones.md`](../06-integrac
 
 ### 14. Diagrama Final: Arquitectura del spec-06-integracion-tokens-opacos-invitaciones
 
+Arquitectura consolidada de la integración de tokens opacos con ASP.NET Core Identity. Incluye la generación, persistencia, validación, reenvío, consumo único y activación transaccional de usuarios, considerando las implementaciones finales de los pasos anteriores.
+
+#### 1. Diagrama de arquitectura integrado
+
+```mermaid
+flowchart TD
+    subgraph Presentation["Presentation - API"]
+        INV["POST /api/users/invitations"]
+        RESEND["POST /api/users/{userId}/invitations"]
+        ACT["POST /api/auth/activate"]
+        LOGIN["POST /api/auth/login"]
+    end
+
+    subgraph Application["Application - Contratos propios"]
+        IUS["IUserInvitationService"]
+        ITS["IOpaqueTokenStore"]
+        ITG["IOpaqueTokenGenerator"]
+        INOT["IInvitationNotifier"]
+        RESULT["Result / UserInvitationResult / ValidationError"]
+    end
+
+    subgraph Domain["Domain - Modelo propio"]
+        USER["User / UserId"]
+        STATUS["UserStatus - PendingActivation / Active"]
+    end
+
+    subgraph Infrastructure["Infrastructure - Implementaciones propias"]
+        DI["DependencyInjection.AddInfrastructure"]
+
+        subgraph Identity["Identity"]
+            UIS["IdentityUserInvitationService"]
+            PROVIDER["HashedUserTokenProvider"]
+            IDUSER["ApplicationIdentityUser"]
+            OPT["UserInvitationOptions"]
+        end
+
+        subgraph Security["Security"]
+            STORE["OpaqueTokenStore"]
+            GENERATOR["OpaqueTokenGenerator"]
+            CRYPTO["OpaqueTokenCryptography"]
+        end
+
+        subgraph Persistence["Persistence"]
+            DB["AppDbContext"]
+            ENTITY["HashedUserToken"]
+            RECORD["OpaqueTokenRecord"]
+        end
+
+        subgraph Email["Notificaciones"]
+            NOTIFIER["InvitationEmailNotifier"]
+        end
+    end
+
+    subgraph DotNet["ASP.NET Core / .NET"]
+        UM["UserManager"]
+        TOKEN_INTERFACE["IUserTwoFactorTokenProvider"]
+        IDENTITY["ASP.NET Core Identity"]
+        OPTIONS["IOptions"]
+        DP["Data Protection / Key Ring"]
+    end
+
+    subgraph EFCore["Entity Framework Core"]
+        TX["BeginTransactionAsync / CommitAsync / RollbackAsync"]
+        DELETE["ExecuteDeleteAsync"]
+        SAVE["SaveChangesAsync"]
+    end
+
+    subgraph External["Servicios externos"]
+        PG["PostgreSQL"]
+        SMTP["Servidor SMTP"]
+    end
+
+    subgraph Tests["IntegrationTests"]
+        TEST["InvitationIntegrationTests"]
+        FACTORY["TestApiFactory"]
+        FAKE["FakeInvitationNotifier"]
+        AUTH["TestAuthenticationHandler"]
+        XUNIT["xUnit"]
+        CONTAINERS["Testcontainers.PostgreSql"]
+    end
+
+    %% Endpoints y contratos
+    INV -->|RegisterPendingAsync| IUS
+    RESEND -->|ResendAsync| IUS
+    ACT -->|ActivateAsync| IUS
+
+    IUS -.->|Implementado por| UIS
+    ITS -.->|Implementado por| STORE
+    ITG -.->|Implementado por| GENERATOR
+    INOT -.->|Implementado por| NOTIFIER
+
+    %% Gestión de invitaciones
+    UIS -->|Gestiona usuarios y tokens| UM
+    UIS -->|ConsumeAsync| ITS
+    UIS -->|Transacciones| DB
+    UIS -->|Notifica mediante contrato| INOT
+    UIS --> RESULT
+    UIS --> USER
+    UIS --> STATUS
+
+    %% Identity
+    DI -->|Registra proveedor UserInvitation| PROVIDER
+    DI -->|Configura| IDENTITY
+    IDENTITY --> UM
+    UM --> IDUSER
+    UM -->|GenerateUserTokenAsync / VerifyUserTokenAsync| PROVIDER
+    PROVIDER -.->|Implementa| TOKEN_INTERFACE
+
+    %% Tokens opacos
+    PROVIDER -->|StoreAsync / FindAsync| ITS
+    PROVIDER -->|Matches| CRYPTO
+    PROVIDER -->|Consulta vigencia| OPT
+    OPTIONS --> OPT
+
+    STORE -->|Generate| ITG
+    STORE -->|Hash| CRYPTO
+    STORE -->|Persistencia y consulta| DB
+    STORE -->|FindAsync devuelve| RECORD
+
+    %% Persistencia
+    DB --> ENTITY
+    DB --> SAVE
+    DB --> TX
+    STORE -->|Consumo condicional| DELETE
+    DELETE -->|Elimina token válido| ENTITY
+    DB --> PG
+
+    %% Notificaciones
+    NOTIFIER --> SMTP
+
+    %% Configuración Data Protection vigente
+    DI -->|Configuración existente| DP
+
+    %% Autenticación
+    LOGIN -->|Autenticación de usuario| UM
+
+    %% Pruebas de integración
+    TEST --> FACTORY
+    TEST --> XUNIT
+    FACTORY --> AUTH
+    FACTORY --> FAKE
+    FACTORY --> CONTAINERS
+    TEST -->|Solicitudes HTTP| INV
+    TEST -->|Reenvío| RESEND
+    TEST -->|Activación y concurrencia| ACT
+    TEST -->|Login posterior| LOGIN
+    TEST -->|Modifica vencimiento| DB
+
+    INOT -.->|Implementación de pruebas| FAKE
+    CONTAINERS -->|PostgreSQL efímero| PG
+```
+
+#### 2. Relaciones principales
+
+| Origen                          | Destino                                | Relación / Responsabilidad                                               |
+| ------------------------------- | -------------------------------------- | ------------------------------------------------------------------------ |
+| Presentation                    | `IUserInvitationService`               | Expone creación, reenvío y activación mediante endpoints HTTP.           |
+| `IUserInvitationService`        | `IdentityUserInvitationService`        | Contrato e implementación del ciclo de invitaciones.                     |
+| `IdentityUserInvitationService` | `UserManager<ApplicationIdentityUser>` | Gestiona usuarios, roles, tokens, contraseña y SecurityStamp.            |
+| `UserManager`                   | `HashedUserTokenProvider`              | Genera y valida tokens mediante el proveedor `UserInvitation`.           |
+| `HashedUserTokenProvider`       | `IUserTwoFactorTokenProvider<TUser>`   | Implementa el contrato de tokens de ASP.NET Core Identity.               |
+| `HashedUserTokenProvider`       | `IOpaqueTokenStore`                    | Solicita generación, persistencia y recuperación de tokens.              |
+| `HashedUserTokenProvider`       | `UserInvitationOptions`                | Obtiene `TokenLifetimeHours` para calcular la expiración.                |
+| `IOpaqueTokenStore`             | `OpaqueTokenStore`                     | Contrato e implementación del almacenamiento de tokens opacos.           |
+| `OpaqueTokenStore`              | `IOpaqueTokenGenerator`                | Obtiene tokens públicos criptográficamente aleatorios.                   |
+| `OpaqueTokenStore`              | `OpaqueTokenCryptography`              | Calcula el hash del token recibido o generado.                           |
+| `OpaqueTokenStore`              | `AppDbContext`                         | Consulta, inserta, reemplaza y elimina tokens persistidos.               |
+| `OpaqueTokenStore`              | `ExecuteDeleteAsync()`                 | Consume tokens válidos mediante una eliminación condicional atómica.     |
+| `IdentityUserInvitationService` | `AppDbContext`                         | Coordina transacciones para registro, reenvío y activación.              |
+| `AppDbContext`                  | PostgreSQL                             | Persiste usuarios Identity y hashes de tokens opacos.                    |
+| `IInvitationNotifier`           | `InvitationEmailNotifier`              | Abstrae el envío de notificaciones de invitación.                        |
+| `InvitationIntegrationTests`    | API / PostgreSQL                       | Verifica activación, vencimiento, consumo único, reenvío y concurrencia. |
+
+#### 3. Componentes de .NET y bibliotecas externas
+
+| Componente                           | Origen                         | Uso en el proyecto                                                      |
+| ------------------------------------ | ------------------------------ | ----------------------------------------------------------------------- |
+| `UserManager<TUser>`                 | ASP.NET Core Identity          | Administración de usuarios, contraseñas, SecurityStamp y tokens.        |
+| `IUserTwoFactorTokenProvider<TUser>` | ASP.NET Core Identity          | Contrato implementado por `HashedUserTokenProvider`.                    |
+| `AddTokenProvider<TProvider>()`      | ASP.NET Core Identity          | Registro del proveedor dedicado `UserInvitation`.                       |
+| `AddDefaultTokenProviders()`         | ASP.NET Core Identity          | Mantiene los proveedores predeterminados de Identity.                   |
+| `IOptions<T>`                        | .NET / Options                 | Proporciona la configuración de vigencia de invitaciones.               |
+| `IDbContextTransaction`              | Entity Framework Core          | Agrupa las operaciones transaccionales.                                 |
+| `ExecuteDeleteAsync()`               | Entity Framework Core          | Elimina condicionalmente tokens válidos sin cargar entidades.           |
+| `SaveChangesAsync()`                 | Entity Framework Core          | Persiste cambios de entidades.                                          |
+| `UseNpgsql()`                        | Npgsql / Entity Framework Core | Integra PostgreSQL como proveedor de persistencia.                      |
+| `AddDataProtection()`                | ASP.NET Core Data Protection   | Mantiene configurados los servicios criptográficos basados en Key Ring. |
+| `WebApplicationFactory<T>`           | ASP.NET Core Testing           | Ejecuta la API durante las pruebas de integración.                      |
+| `PostgreSqlContainer`                | Testcontainers.PostgreSql      | Proporciona PostgreSQL efímero para pruebas.                            |
+| `[Fact]` / `Assert`                  | xUnit                          | Define y valida las pruebas automatizadas.                              |
+| `Task.WhenAll()`                     | .NET                           | Espera la finalización de las solicitudes concurrentes.                 |
+
+#### 4. Flujos funcionales consolidados
+
+| Operación              | Flujo                                                                                                        | Resultado                                                     |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------- |
+| Crear invitación       | API → `RegisterPendingAsync()` → `UserManager` → `HashedUserTokenProvider` → `OpaqueTokenStore`              | Usuario pendiente y token opaco generado con hash persistido. |
+| Reenviar invitación    | API → `ResendAsync()` → Actualizar SecurityStamp → Generar nuevo token → Reemplazar hash                     | Token anterior invalidado y nueva invitación disponible.      |
+| Validar token          | `VerifyUserTokenAsync()` → `HashedUserTokenProvider.ValidateAsync()` → `FindAsync()`                         | Verificación de hash, propósito, SecurityStamp y vencimiento. |
+| Consumir token         | `ActivateAsync()` → `IOpaqueTokenStore.ConsumeAsync()` → `ExecuteDeleteAsync()`                              | Eliminación condicional del token válido.                     |
+| Activar usuario        | Consumir token → `AddPasswordAsync()` → Confirmar correo → Estado Active → Actualizar SecurityStamp → Commit | Usuario activo y token consumido dentro de una transacción.   |
+| Error de activación    | Validación fallida o contraseña inválida → Rollback                                                          | No se confirma la activación ni el consumo del token.         |
+| Activación concurrente | Dos solicitudes HTTP con el mismo token → Consumo condicional                                                | La prueba exige una respuesta `204` y otra `400`.             |
+| Notificación           | `IInvitationNotifier` → `InvitationEmailNotifier`                                                            | Envío de invitación mediante el adaptador de correo.          |
+
+#### 5. Decisiones arquitectónicas vigentes
+
+| Decisión                           | Implementación final                                            |
+| ---------------------------------- | --------------------------------------------------------------- |
+| Proveedor de invitaciones          | `HashedUserTokenProvider`, registrado como `UserInvitation`.    |
+| Formato de tokens                  | Tokens opacos; únicamente se persisten hashes.                  |
+| Persistencia                       | PostgreSQL mediante Entity Framework Core.                      |
+| Vigencia                           | `UserInvitationOptions.TokenLifetimeHours`.                     |
+| Validación                         | Hash, usuario, propósito, SecurityStamp y expiración.           |
+| Reenvío                            | Rotación de SecurityStamp y reemplazo del token anterior.       |
+| Consumo único                      | Eliminación condicional mediante `ExecuteDeleteAsync()`.        |
+| Integridad transaccional           | `BeginTransactionAsync()`, `CommitAsync()` y `RollbackAsync()`. |
+| Tokens antiguos de Data Protection | No son compatibles con el proveedor dedicado de invitaciones.   |
+| Configuración anterior             | Eliminado el registro de `UserInvitationTokenProviderOptions`.  |
+| Data Protection                    | Su configuración y Key Ring permanecen registrados.             |
+| Pruebas                            | xUnit, ASP.NET Core Testing, Testcontainers y PostgreSQL.       |
+
+#### 6. Resultado
+
+El SPEC 06 integra tokens opacos con ASP.NET Core Identity mediante un proveedor dedicado, persistencia de hashes, validación contextual y consumo transaccional único.
+
+El flujo contempla creación, reenvío, activación y pruebas de concurrencia, sin depender de Data Protection para los tokens de invitación. Data Protection permanece configurado para otros posibles usos de Identity.
+
 ---
 
 ### 15. Comandos Git / PR\*\* (una vez validada la implementación y revisados los cambios)
