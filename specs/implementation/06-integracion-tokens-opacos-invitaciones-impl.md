@@ -540,6 +540,202 @@ Los tokens antiguos no son compatibles con este proveedor; Data Protection y su 
 
 ### 8. Agregar pruebas de tokens válidos, inválidos, vencidos, usados, de otro usuario y de reenvío.
 
+Ampliación de `InvitationIntegrationTests` para verificar el ciclo de vida de las invitaciones mediante pruebas HTTP de integración, utilizando PostgreSQL efímero, ASP.NET Core Identity y un notificador de correo simulado.
+
+#### 1. Componentes implementados
+
+| Componente                   | Acción  | Tipo                                    | Capa                       | Responsabilidad                                                                                           |
+| ---------------------------- | ------- | --------------------------------------- | -------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `InvitationIntegrationTests` | Update  | Clase de pruebas                        | IntegrationTests           | Verifica invitaciones, activación, reutilización, expiración y reenvío de tokens mediante endpoints HTTP. |
+| `TestApiFactory`             | Consume | Fábrica de pruebas                      | IntegrationTests           | Inicializa la API con configuración aislada, PostgreSQL y servicios simulados.                            |
+| `FakeInvitationNotifier`     | Consume | Implementación de `IInvitationNotifier` | IntegrationTests           | Captura los tokens generados sin enviar correos reales.                                                   |
+| `TestAuthenticationHandler`  | Consume | Handler de autenticación                | IntegrationTests           | Simula la autenticación Bearer para verificar permisos y respuestas HTTP.                                 |
+| `AppDbContext`               | Consume | Contexto EF Core                        | Infrastructure/Persistence | Permite modificar directamente la expiración de tokens durante las pruebas.                               |
+| `HashedUserToken`            | Consume | Entidad de persistencia                 | Infrastructure/Persistence | Representa el registro persistido utilizado para comprobar el vencimiento.                                |
+
+#### 2. Métodos principales
+
+**Pruebas del ciclo de vida de tokens**
+
+| Método                                                           | Escenario                          | Resultado esperado                                                  |
+| ---------------------------------------------------------------- | ---------------------------------- | ------------------------------------------------------------------- |
+| `AdminCreatesInvitation_ActivationAllowsLogin()`                 | Token válido                       | Activación HTTP `204` y posterior login `200`.                      |
+| `InvalidActivationToken_ReturnsUniformError()`                   | Token arbitrario                   | HTTP `400`, código `invalid_activation_token`.                      |
+| `ExpiredInvitationToken_ReturnsUniformError()`                   | Token vencido                      | HTTP `400`, código `invalid_activation_token`.                      |
+| `UsedInvitationToken_CannotBeConsumedAgain()`                    | Token previamente consumido        | Primera activación `204`; segundo intento `400`.                    |
+| `InvitationTokenFromAnotherUser_ReturnsUniformError()`           | Token perteneciente a otro usuario | HTTP `400`, código `invalid_activation_token`.                      |
+| `ResendInvitation_InvalidatesPreviousToken()`                    | Reenvío de invitación              | Token anterior rechazado y nuevo token aceptado.                    |
+| `InvalidActivationPassword_ReturnsValidationAndPreservesToken()` | Contraseña inválida                | HTTP `400`; el mismo token permite una activación posterior válida. |
+
+**Pruebas complementarias**
+
+| Método                                                      | Responsabilidad                                                                        |
+| ----------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `InvitationEndpoints_RequireAdminRole()`                    | Verifica que los endpoints administrativos requieran autenticación y rol `Admin`.      |
+| `DuplicateEmail_ReturnsConflict()`                          | Comprueba el rechazo de invitaciones con correos duplicados.                           |
+| `ResendActiveInvitation_ReturnsConflict()`                  | Impide reenviar invitaciones a cuentas activadas.                                      |
+| `ResendUnknownInvitation_ReturnsNotFound()`                 | Verifica la respuesta para usuarios inexistentes.                                      |
+| `InvalidJson_ReturnsValidationProblemDetails()`             | Comprueba el formato de error ante JSON inválido.                                      |
+| `InvalidActivationUserId_ReturnsValidationProblemDetails()` | Verifica el rechazo de identificadores de usuario inválidos.                           |
+| `NotificationFailure_Returns503AndKeepsPendingAccount()`    | Comprueba que un fallo de notificación conserva la cuenta pendiente e impide el login. |
+
+**Métodos auxiliares relevantes**
+
+| Clase                        | Método                      | Responsabilidad                                                          |
+| ---------------------------- | --------------------------- | ------------------------------------------------------------------------ |
+| `InvitationIntegrationTests` | `InitializeAsync()`         | Inicia el contenedor PostgreSQL.                                         |
+| `InvitationIntegrationTests` | `DisposeAsync()`            | Libera el contenedor PostgreSQL.                                         |
+| `InvitationIntegrationTests` | `CreateFactory()`           | Construye la fábrica de API utilizando la conexión del contenedor.       |
+| `InvitationIntegrationTests` | `CreateHttpsClient()`       | Crea un cliente HTTP de pruebas con dirección HTTPS.                     |
+| `InvitationIntegrationTests` | `LoginAsync()`              | Ejecuta el login y obtiene el JWT de respuesta.                          |
+| `InvitationIntegrationTests` | `SendAsAdminAsync()`        | Envía solicitudes HTTP incluyendo el token Bearer.                       |
+| `InvitationIntegrationTests` | `ReadCodeAsync()`           | Extrae el código de error de una respuesta JSON.                         |
+| `TestApiFactory`             | `ConfigureWebHost()`        | Sustituye configuración, conexión de datos, autenticación y notificador. |
+| `TestAuthenticationHandler`  | `HandleAuthenticateAsync()` | Construye una identidad de prueba desde los claims del JWT.              |
+| `FakeInvitationNotifier`     | `NotifyAsync()`             | Almacena la última invitación y permite simular fallos de entrega.       |
+
+#### 3. Componentes de .NET y bibliotecas externas
+
+| Componente / Método                         | Origen                                                    | Función                                            | Uso en el proyecto                                                       |
+| ------------------------------------------- | --------------------------------------------------------- | -------------------------------------------------- | ------------------------------------------------------------------------ |
+| `[Fact]` / `Assert`                         | xUnit                                                     | Define pruebas y verifica resultados.              | Comprueba respuestas HTTP y reglas funcionales.                          |
+| `IAsyncLifetime`                            | xUnit                                                     | Gestiona inicialización y liberación asíncrona.    | Controla el ciclo de vida de PostgreSQL.                                 |
+| `PostgreSqlContainer` / `PostgreSqlBuilder` | Testcontainers.PostgreSql                                 | Ejecuta PostgreSQL dentro de un contenedor Docker. | Proporciona una base de datos efímera para las pruebas.                  |
+| `WebApplicationFactory<Program>`            | ASP.NET Core / Microsoft.AspNetCore.Mvc.Testing           | Crea un host de pruebas de la aplicación.          | Ejecuta los endpoints de la API en un entorno controlado.                |
+| `HttpClient`                                | .NET / System.Net.Http                                    | Ejecuta solicitudes HTTP.                          | Invoca endpoints de invitación, activación y login.                      |
+| `PostAsJsonAsync()`                         | .NET / System.Net.Http.Json                               | Envía solicitudes HTTP con contenido JSON.         | Construye solicitudes de prueba.                                         |
+| `HttpStatusCode`                            | .NET / System.Net                                         | Representa códigos de estado HTTP.                 | Verifica `200`, `201`, `204`, `400`, `401`, `403`, `404`, `409` y `503`. |
+| `CreateAsyncScope()`                        | .NET / DependencyInjection                                | Crea un alcance asíncrono de servicios.            | Obtiene `AppDbContext` para modificar tokens persistidos.                |
+| `GetRequiredService<T>()`                   | .NET / DependencyInjection                                | Resuelve dependencias registradas.                 | Accede al contexto de datos y notificador simulado.                      |
+| `AddInMemoryCollection()`                   | .NET / Configuration                                      | Proporciona configuración en memoria.              | Define credenciales, JWT, conexión y vigencia para pruebas.              |
+| `RemoveAll<T>()`                            | .NET / DependencyInjection.Extensions                     | Elimina registros de servicios existentes.         | Sustituye dependencias reales por configuraciones de prueba.             |
+| `AddDbContext<T>()` / `UseNpgsql()`         | Entity Framework Core / Npgsql                            | Configura el contexto con PostgreSQL.              | Conecta la API de pruebas al contenedor efímero.                         |
+| `SingleAsync()` / `SaveChangesAsync()`      | Entity Framework Core                                     | Consulta y modifica entidades persistidas.         | Simula la expiración de un token.                                        |
+| `AuthenticationHandler<TOptions>`           | ASP.NET Core Authentication                               | Implementa un esquema de autenticación.            | Permite verificar autorización con identidades controladas.              |
+| `JwtSecurityTokenHandler`                   | Microsoft.IdentityModel / System.IdentityModel.Tokens.Jwt | Procesa tokens JWT.                                | Lee los claims utilizados por la autenticación de pruebas.               |
+| `ClaimsIdentity` / `ClaimsPrincipal`        | .NET / System.Security.Claims                             | Representa identidades y permisos.                 | Construye el usuario autenticado durante las pruebas.                    |
+| `JsonDocument`                              | .NET / System.Text.Json                                   | Procesa documentos JSON.                           | Extrae tokens JWT y códigos de error.                                    |
+
+#### 4. Flujo funcional
+
+**Escenarios de validación de tokens**
+
+| Escenario             | Preparación                                                | Operación                                                 | Verificación                                      |
+| --------------------- | ---------------------------------------------------------- | --------------------------------------------------------- | ------------------------------------------------- |
+| Token válido          | Crear invitación y capturar token.                         | Activar usuario y ejecutar login.                         | Activación `204` y login `200`.                   |
+| Token inválido        | Crear invitación válida.                                   | Activar utilizando `"invalid-token"`.                     | `400 / invalid_activation_token`.                 |
+| Token vencido         | Modificar `ExpiresAtUtc` a un instante anterior al actual. | Intentar activar la cuenta.                               | `400 / invalid_activation_token`.                 |
+| Token utilizado       | Activar correctamente una cuenta.                          | Repetir activación con el mismo token.                    | Segundo intento `400 / invalid_activation_token`. |
+| Token de otro usuario | Crear invitaciones para dos usuarios.                      | Activar el segundo usuario con el token del primero.      | `400 / invalid_activation_token`.                 |
+| Token reemplazado     | Crear invitación y solicitar reenvío.                      | Intentar activar con el token anterior.                   | `400 / invalid_activation_token`.                 |
+| Nuevo token           | Solicitar reenvío de invitación.                           | Activar utilizando el token nuevo.                        | `204 NoContent`.                                  |
+| Contraseña inválida   | Crear invitación válida.                                   | Activar con contraseña inválida y repetir con una válida. | Primer intento `400`; segundo intento `204`.      |
+
+**Configuración del entorno de pruebas**
+
+| Componente         | Configuración                                                     |
+| ------------------ | ----------------------------------------------------------------- |
+| Base de datos      | PostgreSQL 16 Alpine mediante Testcontainers.                     |
+| Host HTTP          | `WebApplicationFactory<Program>`.                                 |
+| Cliente HTTP       | `https://localhost`, sin redirecciones automáticas.               |
+| Vigencia del token | `UserInvitation:TokenLifetimeHours = 24`.                         |
+| Notificaciones     | `FakeInvitationNotifier`, sin envío SMTP real.                    |
+| Autenticación      | `TestAuthenticationHandler`, con esquema `IntegrationTestBearer`. |
+| Configuración      | Valores aislados mediante `AddInMemoryCollection()`.              |
+
+**Alcance de las pruebas**
+
+Las pruebas verifican el comportamiento funcional de la API utilizando persistencia PostgreSQL real.
+
+La prueba de reutilización comprueba intentos secuenciales. No se incluye una prueba de concurrencia que verifique dos consumos simultáneos del mismo token.
+
+El handler de autenticación de pruebas lee los claims del JWT, pero no realiza su validación criptográfica. Por tanto, las pruebas de autorización utilizan un esquema controlado, no el validador JWT de producción.
+
+#### 5. Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    subgraph Tests["IntegrationTests - Código propio"]
+        IT["InvitationIntegrationTests"]
+        FACTORY["TestApiFactory"]
+        AUTH["TestAuthenticationHandler"]
+        NOTIFIER["FakeInvitationNotifier"]
+    end
+
+    subgraph TestFramework["Frameworks de pruebas"]
+        XUNIT["xUnit"]
+        WAF["WebApplicationFactory"]
+        TC["Testcontainers.PostgreSql"]
+    end
+
+    subgraph Presentation["Presentation - API"]
+        HTTP["Endpoints HTTP"]
+    end
+
+    subgraph Application["Application"]
+        IUS["IUserInvitationService"]
+        INOT["IInvitationNotifier"]
+        ISTORE["IOpaqueTokenStore"]
+    end
+
+    subgraph Domain["Domain"]
+        USER["User / UserId / UserStatus"]
+    end
+
+    subgraph Infrastructure["Infrastructure"]
+        UIS["IdentityUserInvitationService"]
+        PROVIDER["HashedUserTokenProvider"]
+        STORE["OpaqueTokenStore"]
+        DB["AppDbContext"]
+        TOKEN["HashedUserToken"]
+    end
+
+    subgraph Framework["ASP.NET Core / EF Core"]
+        UM["UserManager"]
+        EF["Entity Framework Core"]
+    end
+
+    subgraph Database["Servicio externo"]
+        PG["PostgreSQL 16"]
+    end
+
+    IT --> XUNIT
+    IT --> FACTORY
+    FACTORY --> WAF
+    FACTORY --> AUTH
+    FACTORY --> NOTIFIER
+    FACTORY --> TC
+
+    IT -->|Solicitudes HTTP| HTTP
+    HTTP --> IUS
+
+    IUS -.->|Implementación| UIS
+    INOT -.->|Implementación de prueba| NOTIFIER
+    ISTORE -.->|Implementación| STORE
+
+    UIS --> UM
+    UM --> PROVIDER
+    PROVIDER --> ISTORE
+
+    UIS --> ISTORE
+    UIS --> DB
+    UIS --> USER
+
+    STORE --> DB
+    DB --> TOKEN
+    DB --> EF
+    EF --> PG
+    TC -->|Inicia contenedor| PG
+
+    IT -->|Modifica expiración| DB
+```
+
+#### 6. Resultado
+
+Se incorporaron pruebas de integración para tokens válidos, inválidos, vencidos, consumidos, pertenecientes a otros usuarios y reemplazados mediante reenvío.
+
+Las pruebas también verifican la recuperación transaccional ante contraseñas inválidas, las restricciones de autorización y la consistencia de las respuestas HTTP.
+
 ---
 
 ### 9. Agregar prueba de dos activaciones concurrentes, asegurando que solo una tenga éxito.
