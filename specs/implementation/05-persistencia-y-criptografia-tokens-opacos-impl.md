@@ -307,6 +307,101 @@ Se implementa un generador de tokens opacos de 256 bits mediante APIs criptográ
 
 ### 7. Implementar hash SHA-256, comparación constante y validaciones.
 
+#### 1. Componentes implementados
+
+| Componente                | Acción      | Tipo                    | Capa           | Responsabilidad                                                                                        |
+| ------------------------- | ----------- | ----------------------- | -------------- | ------------------------------------------------------------------------------------------------------ |
+| `OpaqueTokenCryptography` | Create      | Servicio criptográfico  | Infrastructure | Calcular hashes SHA-256, comparar tokens en tiempo constante y validar sus condiciones de uso.         |
+| `DependencyInjection`     | Update      | Configuración DI        | Infrastructure | Registrar `OpaqueTokenCryptography` como Singleton.                                                    |
+| `HashedUserToken`         | Sin cambios | Entidad de persistencia | Infrastructure | Proporcionar el hash, propósito, sello de seguridad y fecha de expiración utilizados en la validación. |
+
+#### 2. Métodos principales
+
+| Clase                     | Método                                                   | Responsabilidad                                                                                                          |
+| ------------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `OpaqueTokenCryptography` | `Hash(string token)`                                     | Calcular el hash SHA-256 del token codificado en UTF-8.                                                                  |
+| `OpaqueTokenCryptography` | `Matches(string token, ReadOnlySpan<byte> expectedHash)` | Comparar el hash calculado con el almacenado mediante una operación de tiempo constante para entradas de igual longitud. |
+| `OpaqueTokenCryptography` | `IsValid(...)`                                           | Validar coincidencia criptográfica, propósito, sello de seguridad y expiración.                                          |
+| `DependencyInjection`     | `AddInfrastructure()`                                    | Registrar el servicio criptográfico en el contenedor DI.                                                                 |
+
+**Condiciones evaluadas por `IsValid()`:**
+
+| Validación           | Condición                                  | Resultado                                                   |
+| -------------------- | ------------------------------------------ | ----------------------------------------------------------- |
+| Referencias nulas    | `ArgumentNullException.ThrowIfNull()`      | Rechaza argumentos nulos mediante excepción.                |
+| Token vacío          | `token.Length > 0`                         | Requiere un token no vacío.                                 |
+| Propósito vacío      | `expectedPurpose.Length > 0`               | Requiere un propósito no vacío.                             |
+| Security Stamp vacío | `currentSecurityStamp.Length > 0`          | Requiere un sello de seguridad no vacío.                    |
+| Integridad del token | `Matches(token, persistedToken.TokenHash)` | Verifica la coincidencia del hash SHA-256.                  |
+| Propósito            | `StringComparison.Ordinal`                 | Exige coincidencia exacta y sensible a mayúsculas.          |
+| Security Stamp       | `StringComparison.Ordinal`                 | Exige coincidencia exacta con el sello vigente del usuario. |
+| Expiración           | `nowUtc < persistedToken.ExpiresAtUtc`     | Rechaza tokens expirados.                                   |
+
+#### 3. Componentes de .NET y bibliotecas externas
+
+| Componente / Método                         | Origen                                | Función                                                                                                        | Uso en el proyecto                                         |
+| ------------------------------------------- | ------------------------------------- | -------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| `SHA256.HashData()`                         | .NET / `System.Security.Cryptography` | Calcular el hash SHA-256 de una secuencia de bytes.                                                            | Generar el hash de 32 bytes del token.                     |
+| `Encoding.UTF8.GetBytes()`                  | .NET / `System.Text`                  | Convertir una cadena en bytes UTF-8.                                                                           | Preparar el token para calcular su hash.                   |
+| `CryptographicOperations.FixedTimeEquals()` | .NET / `System.Security.Cryptography` | Comparar secuencias de bytes evitando variaciones temporales por el contenido cuando sus longitudes coinciden. | Verificar el hash del token recibido frente al almacenado. |
+| `ReadOnlySpan<byte>`                        | .NET / C#                             | Representar una vista de solo lectura sobre bytes.                                                             | Recibir el hash esperado sin requerir una copia.           |
+| `ArgumentNullException.ThrowIfNull()`       | .NET                                  | Validar argumentos no nulos.                                                                                   | Rechazar referencias nulas.                                |
+| `StringComparison.Ordinal`                  | .NET                                  | Comparar cadenas mediante coincidencia ordinal.                                                                | Validar propósito y Security Stamp.                        |
+| `AddSingleton<T>()`                         | .NET / Dependency Injection           | Registrar un servicio con ciclo de vida Singleton.                                                             | Registrar `OpaqueTokenCryptography`.                       |
+
+#### 4. Flujo funcional
+
+| Paso | Operación    | Descripción                                                                                                                         |
+| ---- | ------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
+| 1    | Recepción    | `IsValid()` recibe el token público, registro persistido, propósito, Security Stamp vigente y fecha actual.                         |
+| 2    | Hash         | `Hash()` convierte el token a UTF-8 y calcula SHA-256.                                                                              |
+| 3    | Comparación  | `Matches()` compara el hash calculado con `TokenHash` mediante `FixedTimeEquals()`.                                                 |
+| 4    | Validaciones | Comprueba que los valores requeridos no estén vacíos, que coincidan el propósito y Security Stamp, y que el token no haya expirado. |
+| 5    | Resultado    | Retorna `true` únicamente cuando todas las condiciones son válidas.                                                                 |
+
+**Registro de dependencias:**
+
+| Servicio                  | Ciclo de vida |
+| ------------------------- | ------------- |
+| `OpaqueTokenCryptography` | Singleton     |
+
+**Alcance:** el servicio valida información recibida, pero no consulta la base de datos ni elimina o consume tokens. La comparación constante aplica al hash; las comparaciones de propósito y Security Stamp utilizan `StringComparison.Ordinal`.
+
+#### 5. Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    subgraph INF["Infrastructure"]
+        DI["DependencyInjection"]
+        CRYPTO["OpaqueTokenCryptography"]
+        TOKEN["HashedUserToken"]
+    end
+
+    subgraph NET[".NET / System.Security.Cryptography"]
+        UTF8["Encoding.UTF8.GetBytes"]
+        SHA["SHA256.HashData"]
+        COMP["CryptographicOperations.FixedTimeEquals"]
+        STR["StringComparison.Ordinal"]
+    end
+
+    DI -->|"AddSingleton"| CRYPTO
+
+    CRYPTO -->|"Hash()"| UTF8
+    UTF8 --> SHA
+
+    CRYPTO -->|"Matches()"| COMP
+    TOKEN -->|"TokenHash"| COMP
+
+    CRYPTO -->|"IsValid()"| TOKEN
+    CRYPTO -->|"Purpose / SecurityStamp"| STR
+
+    CRYPTO -->|"Valida expiración"| EXP["nowUtc < ExpiresAtUtc"]
+```
+
+#### 6. Resultado
+
+Se implementa `OpaqueTokenCryptography` para calcular hashes SHA-256 y verificar tokens mediante comparación criptográfica de tiempo constante. La validación incorpora propósito, Security Stamp y expiración, sin depender de ASP.NET Core Data Protection.
+
 ---
 
 ### 8. Implementar almacenamiento, reemplazo y eliminación de vencidos.

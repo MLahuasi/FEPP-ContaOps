@@ -138,6 +138,7 @@ public static class DependencyInjection
             .ValidateOnStart();
         services.AddSingleton<ITokenIssuer, JwtTokenIssuer>();
         services.AddSingleton<IOpaqueTokenGenerator, OpaqueTokenGenerator>();
+        services.AddSingleton<OpaqueTokenCryptography>();
         services.AddScoped<IdentitySeeder>();
         return services;
     }
