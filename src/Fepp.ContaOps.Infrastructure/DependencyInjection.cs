@@ -137,6 +137,9 @@ public static class DependencyInjection
                 "BootstrapAdmin:Email and BootstrapAdmin:Password must be configured with valid values.")
             .ValidateOnStart();
         services.AddSingleton<ITokenIssuer, JwtTokenIssuer>();
+        services.AddSingleton<IOpaqueTokenGenerator, OpaqueTokenGenerator>();
+        services.AddSingleton<OpaqueTokenCryptography>();
+        services.AddScoped<IOpaqueTokenStore, OpaqueTokenStore>();
         services.AddScoped<IdentitySeeder>();
         return services;
     }

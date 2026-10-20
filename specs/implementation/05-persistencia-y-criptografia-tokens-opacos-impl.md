@@ -1,0 +1,864 @@
+# Implementar: 05-persistencia-y-criptografia-tokens-opacos
+
+## PASOS
+
+### 1 a 3. Reiniciar los volúmenes locales de Docker y arrancar database y pgadmin. Comprobar el estado de los contenedores. Registrar/verificar el servidor en pgAdmin.
+
+Abrir http://localhost:5050/ e registra el servidor:
+
+1. Iniciar sesión con las credenciales de pgAdmin configuradas en .env.
+
+- PGADMIN_DEFAULT_EMAIL
+- PGADMIN_DEFAULT_PASSWORD
+
+2. Clic derecho en Servers → Register → Server.
+3. General → Name: FEPP-ContaOps Local
+4. Connection:
+
+- Host name/address: database
+- Port: 5432
+- Maintenance database: fepp_contaops_dev
+- Username: app
+- Password: el valor de POSTGRES_PASSWORD
+- Marca Save password
+
+5. Pulsar Save.
+
+---
+
+### 4. Crear HashedUserToken y configurar UserSecurityTokens.
+
+#### 1. Componentes implementados
+
+| Componente           | Acción | Tipo                    | Capa           | Responsabilidad                                                                                                                             |
+| -------------------- | ------ | ----------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `HashedUserToken`    | Create | Entidad de persistencia | Infrastructure | Representar tokens opacos almacenados mediante su hash SHA-256, asociados a un usuario, propósito, sello de seguridad y período de validez. |
+| `AppDbContext`       | Update | DbContext               | Infrastructure | Incorporar la entidad `HashedUserToken` al modelo de persistencia de EF Core.                                                               |
+| `UserSecurityTokens` | Create | DbSet                   | Infrastructure | Proporcionar acceso a las operaciones de persistencia y consulta de tokens.                                                                 |
+| `OnModelCreating`    | Update | Configuración EF Core   | Infrastructure | Mapear `HashedUserToken` a la tabla `UserSecurityTokens`.                                                                                   |
+
+#### 2. Métodos principales
+
+| Clase          | Método                     | Responsabilidad                                                                   |
+| -------------- | -------------------------- | --------------------------------------------------------------------------------- |
+| `AppDbContext` | `AppDbContext(options)`    | Inicializar el contexto mediante `DbContextOptions<AppDbContext>`.                |
+| `AppDbContext` | `OnModelCreating(builder)` | Conservar la configuración de Identity y registrar el mapeo de `HashedUserToken`. |
+
+**Propiedades relevantes de `HashedUserToken`:**
+
+| Propiedad       | Tipo             | Responsabilidad                                                |
+| --------------- | ---------------- | -------------------------------------------------------------- |
+| `TokenId`       | `Guid`           | Identificador del registro.                                    |
+| `UserId`        | `string`         | Identificador del usuario propietario.                         |
+| `Purpose`       | `string`         | Propósito funcional del token.                                 |
+| `TokenHash`     | `byte[]`         | Almacenar el hash SHA-256 del token opaco.                     |
+| `SecurityStamp` | `string`         | Registrar el sello de seguridad del usuario al crear el token. |
+| `CreatedAtUtc`  | `DateTimeOffset` | Fecha UTC de creación.                                         |
+| `ExpiresAtUtc`  | `DateTimeOffset` | Fecha UTC de expiración.                                       |
+
+#### 3. Componentes de .NET y bibliotecas externas
+
+| Componente / Método                     | Origen                          | Función                                                          | Uso en el proyecto                                                                                         |
+| --------------------------------------- | ------------------------------- | ---------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `IdentityDbContext<TUser, TRole, TKey>` | ASP.NET Core Identity + EF Core | Contexto de persistencia especializado en Identity.              | Clase base de `AppDbContext`, configurada con `ApplicationIdentityUser`, `IdentityRole` y claves `string`. |
+| `IdentityRole`                          | ASP.NET Core Identity           | Representar roles de usuarios.                                   | Tipo de rol utilizado por el contexto Identity.                                                            |
+| `DbContextOptions<T>`                   | Entity Framework Core           | Proporcionar opciones de configuración del contexto.             | Inicialización de `AppDbContext`.                                                                          |
+| `DbSet<T>`                              | Entity Framework Core           | Representar un conjunto de entidades persistentes.               | Exponer `UserSecurityTokens`.                                                                              |
+| `ModelBuilder`                          | Entity Framework Core           | Configurar el modelo de entidades.                               | Registrar el mapeo de `HashedUserToken`.                                                                   |
+| `Entity<T>().ToTable()`                 | Entity Framework Core           | Asociar una entidad con una tabla.                               | Mapear `HashedUserToken` a `UserSecurityTokens`.                                                           |
+| `Guid`                                  | .NET / C#                       | Representar identificadores únicos.                              | Tipo de `TokenId`.                                                                                         |
+| `DateTimeOffset`                        | .NET / C#                       | Representar fechas y horas con desplazamiento UTC.               | Campos de creación y expiración del token.                                                                 |
+| `HashedUserToken`                       | Código propio                   | Representar la información persistente de un token de seguridad. | Modelo de tokens opacos almacenados mediante hash.                                                         |
+
+#### 4. Flujo funcional
+
+| Operación                     | Componente                        | Descripción                                                                                              |
+| ----------------------------- | --------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| Definición del token          | `HashedUserToken`                 | Establece los campos necesarios para almacenar un token mediante su hash, usuario, propósito y vigencia. |
+| Registro de entidad           | `AppDbContext.UserSecurityTokens` | Incorpora los tokens de seguridad al contexto de EF Core.                                                |
+| Configuración de persistencia | `OnModelCreating`                 | Asocia la entidad con la tabla `UserSecurityTokens`.                                                     |
+| Persistencia                  | Entity Framework Core             | Permite consultar y persistir registros mediante el contexto.                                            |
+
+**Alcance:** el código define la estructura persistente, pero no implementa la generación, cálculo SHA-256, validación, revocación ni eliminación de tokens expirados. Tampoco muestra una migración aplicada.
+
+#### 5. Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    subgraph INF["Infrastructure"]
+        CTX["AppDbContext"]
+        TOKEN["HashedUserToken"]
+        SET["DbSet&lt;HashedUserToken&gt;<br/>UserSecurityTokens"]
+        TABLE[("UserSecurityTokens")]
+    end
+
+    subgraph NET["ASP.NET Core Identity / EF Core"]
+        IDB["IdentityDbContext"]
+        EF["Entity Framework Core"]
+        ROLE["IdentityRole"]
+    end
+
+    CTX -->|Hereda| IDB
+    IDB -.->|Utiliza| ROLE
+    CTX -->|Expone| SET
+    SET -->|Entidad| TOKEN
+    CTX -->|Configura modelo| EF
+    EF -->|Mapeo ToTable| TABLE
+    TOKEN -.->|Representada en| TABLE
+```
+
+#### 6. Resultado
+
+Se incorpora `HashedUserToken` como entidad de persistencia para tokens opacos almacenados mediante hash SHA-256. `AppDbContext` expone `UserSecurityTokens` y configura su mapeo en EF Core, manteniendo la integración con ASP.NET Core Identity.
+
+---
+
+### 5. Configurar relación, índice único, tipos PostgreSQL y cascada
+
+#### 1. Componentes implementados
+
+| Componente                | Acción      | Tipo                             | Capa           | Responsabilidad                                                                   |
+| ------------------------- | ----------- | -------------------------------- | -------------- | --------------------------------------------------------------------------------- |
+| `AppDbContext`            | Update      | DbContext                        | Infrastructure | Configurar las restricciones, relaciones y tipos PostgreSQL de `HashedUserToken`. |
+| `HashedUserToken`         | Update      | Configuración de entidad EF Core | Infrastructure | Definir clave primaria, propiedades obligatorias y tipos de columnas.             |
+| `UserSecurityTokens`      | Update      | Tabla PostgreSQL                 | Infrastructure | Almacenar tokens con integridad referencial y restricciones de unicidad.          |
+| `ApplicationIdentityUser` | Sin cambios | Entidad Identity                 | Infrastructure | Representar al usuario propietario de los tokens.                                 |
+
+#### 2. Métodos principales
+
+| Clase                                | Método                | Responsabilidad                                                           |
+| ------------------------------------ | --------------------- | ------------------------------------------------------------------------- |
+| `AppDbContext`                       | `OnModelCreating()`   | Configurar el modelo de persistencia de `HashedUserToken`.                |
+| `EntityTypeBuilder<HashedUserToken>` | `HasKey()`            | Establecer `TokenId` como clave primaria.                                 |
+| `EntityTypeBuilder<HashedUserToken>` | `Property()`          | Configurar las propiedades persistentes.                                  |
+| `PropertyBuilder`                    | `HasColumnType()`     | Especificar los tipos de datos PostgreSQL.                                |
+| `PropertyBuilder`                    | `HasMaxLength(32)`    | Establecer una longitud máxima de 32 bytes para `TokenHash` en el modelo. |
+| `PropertyBuilder`                    | `IsRequired()`        | Configurar columnas obligatorias (`NOT NULL`).                            |
+| `EntityTypeBuilder<HashedUserToken>` | `HasOne().WithMany()` | Definir la relación entre tokens y usuarios.                              |
+| `ReferenceCollectionBuilder`         | `HasForeignKey()`     | Establecer `UserId` como clave foránea.                                   |
+| `ReferenceCollectionBuilder`         | `OnDelete()`          | Configurar eliminación en cascada.                                        |
+| `IndexBuilder`                       | `IsUnique()`          | Establecer unicidad para la combinación `UserId` y `Purpose`.             |
+
+#### 3. Componentes de .NET y bibliotecas externas
+
+| Componente / Método       | Origen                          | Función                                                      | Uso en el proyecto                                          |
+| ------------------------- | ------------------------------- | ------------------------------------------------------------ | ----------------------------------------------------------- |
+| `IdentityDbContext`       | ASP.NET Core Identity + EF Core | Proporcionar persistencia para usuarios y roles de Identity. | Clase base de `AppDbContext`.                               |
+| `ModelBuilder`            | Entity Framework Core           | Configurar entidades y relaciones del modelo.                | Definir las restricciones de `HashedUserToken`.             |
+| `EntityTypeBuilder<T>`    | Entity Framework Core           | Configurar entidades mediante Fluent API.                    | Definir clave primaria, propiedades, relaciones e índices.  |
+| `HasColumnType()`         | Entity Framework Core           | Especificar el tipo de columna de la base de datos.          | Utilizar tipos nativos de PostgreSQL.                       |
+| `HasOne().WithMany()`     | Entity Framework Core           | Configurar una relación muchos a uno.                        | Asociar múltiples tokens con un usuario Identity.           |
+| `DeleteBehavior.Cascade`  | Entity Framework Core           | Configurar eliminación en cascada.                           | Eliminar los tokens asociados cuando se elimina su usuario. |
+| `HasIndex().IsUnique()`   | Entity Framework Core           | Configurar índices únicos.                                   | Impedir múltiples tokens con el mismo `UserId` y `Purpose`. |
+| `ApplicationIdentityUser` | Código propio                   | Representar usuarios de ASP.NET Core Identity.               | Entidad principal de la relación con `HashedUserToken`.     |
+
+#### 4. Flujo funcional
+
+**Configuración PostgreSQL**
+
+| Propiedad       | Tipo PostgreSQL            | Restricción                                     |
+| --------------- | -------------------------- | ----------------------------------------------- |
+| `TokenId`       | `uuid`                     | Primary Key                                     |
+| `UserId`        | `character varying(450)`   | NOT NULL, Foreign Key                           |
+| `Purpose`       | `text`                     | NOT NULL                                        |
+| `TokenHash`     | `bytea`                    | NOT NULL, longitud máxima configurada: 32 bytes |
+| `SecurityStamp` | `text`                     | NOT NULL                                        |
+| `CreatedAtUtc`  | `timestamp with time zone` | NOT NULL                                        |
+| `ExpiresAtUtc`  | `timestamp with time zone` | NOT NULL                                        |
+
+**Relaciones y restricciones**
+
+| Operación              | Configuración                                  | Comportamiento                                                              |
+| ---------------------- | ---------------------------------------------- | --------------------------------------------------------------------------- |
+| Relación usuario-token | `HasOne<ApplicationIdentityUser>().WithMany()` | Un usuario puede tener múltiples tokens; cada token pertenece a un usuario. |
+| Clave foránea          | `HasForeignKey(token => token.UserId)`         | Vincula los tokens con los usuarios de Identity.                            |
+| Eliminación            | `OnDelete(DeleteBehavior.Cascade)`             | Eliminar un usuario provoca la eliminación de sus tokens asociados.         |
+| Índice único           | `HasIndex(UserId, Purpose).IsUnique()`         | Permite como máximo un token por usuario y propósito.                       |
+| Clave primaria         | `HasKey(token => token.TokenId)`               | Identifica de manera única cada registro.                                   |
+
+**Nota:** `HasMaxLength(32)` configura una restricción de longitud en el modelo EF Core, pero no garantiza por sí sola que PostgreSQL limite los valores `bytea` a 32 bytes. La configuración no muestra una restricción `CHECK` adicional.
+
+#### 5. Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    subgraph INF["Infrastructure"]
+        CTX["AppDbContext"]
+        TOKEN["HashedUserToken"]
+        USER["ApplicationIdentityUser"]
+    end
+
+    subgraph EF["Entity Framework Core"]
+        IDB["IdentityDbContext"]
+        MODEL["ModelBuilder / Fluent API"]
+    end
+
+    subgraph PG["PostgreSQL"]
+        USERS[("AspNetUsers")]
+        TOKENS[("UserSecurityTokens")]
+        IDX["UNIQUE (UserId, Purpose)"]
+    end
+
+    CTX -->|Hereda| IDB
+    CTX -->|Configura| MODEL
+
+    MODEL -->|Mapea| TOKEN
+    MODEL -->|Configura relación| USER
+
+    USER -->|Persistencia Identity| USERS
+    TOKEN -->|Persistencia| TOKENS
+
+    TOKENS -->|FK UserId / ON DELETE CASCADE| USERS
+    TOKENS -->|Índice único| IDX
+```
+
+#### 6. Resultado
+
+Se configura la persistencia de `HashedUserToken` con tipos PostgreSQL, clave primaria, relación con Identity y eliminación en cascada. El índice compuesto único `(UserId, Purpose)` garantiza un máximo de un token por usuario y propósito.
+
+---
+
+### 6. Implementar generación segura y Base64Url
+
+#### 1. Componentes implementados
+
+| Componente              | Acción | Tipo                 | Capa           | Responsabilidad                                                                                |
+| ----------------------- | ------ | -------------------- | -------------- | ---------------------------------------------------------------------------------------------- |
+| `IOpaqueTokenGenerator` | Create | Interfaz (puerto)    | Application    | Definir el contrato para generar tokens opacos de alta entropía.                               |
+| `OpaqueTokenGenerator`  | Create | Servicio (adaptador) | Infrastructure | Generar 32 bytes aleatorios criptográficamente seguros y codificarlos en Base64Url.            |
+| `DependencyInjection`   | Update | Configuración DI     | Infrastructure | Registrar `IOpaqueTokenGenerator` con su implementación `OpaqueTokenGenerator` como Singleton. |
+
+#### 2. Métodos principales
+
+| Clase                   | Método                | Responsabilidad                                                                          |
+| ----------------------- | --------------------- | ---------------------------------------------------------------------------------------- |
+| `IOpaqueTokenGenerator` | `Generate()`          | Declarar la operación de generación de tokens opacos.                                    |
+| `OpaqueTokenGenerator`  | `Generate()`          | Generar 32 bytes aleatorios mediante `RandomNumberGenerator` y convertirlos a Base64Url. |
+| `DependencyInjection`   | `AddInfrastructure()` | Registrar el generador en el contenedor de inyección de dependencias.                    |
+
+**Características del token generado:**
+
+| Propiedad           | Valor         | Descripción                                                           |
+| ------------------- | ------------- | --------------------------------------------------------------------- |
+| Longitud aleatoria  | 32 bytes      | Definida mediante `TokenByteLength`.                                  |
+| Entropía            | 256 bits      | Entropía máxima de 32 bytes generados uniformemente.                  |
+| Generación          | CSPRNG        | Utiliza un generador de números aleatorios criptográficamente seguro. |
+| Codificación        | Base64Url     | Representación compatible con URLs.                                   |
+| Padding             | Sin padding   | No incluye caracteres `=` finales.                                    |
+| Longitud codificada | 43 caracteres | Representación Base64Url de 32 bytes sin padding.                     |
+
+#### 3. Componentes de .NET y bibliotecas externas
+
+| Componente / Método                         | Origen                                             | Función                                                   | Uso en el proyecto                                           |
+| ------------------------------------------- | -------------------------------------------------- | --------------------------------------------------------- | ------------------------------------------------------------ |
+| `RandomNumberGenerator.GetBytes()`          | .NET / `System.Security.Cryptography`              | Generar bytes aleatorios criptográficamente seguros.      | Producir los 32 bytes del token opaco.                       |
+| `WebEncoders.Base64UrlEncode()`             | ASP.NET Core / `Microsoft.AspNetCore.WebUtilities` | Codificar bytes en Base64Url sin padding.                 | Convertir el token binario a una cadena compatible con URLs. |
+| `IServiceCollection`                        | .NET / Microsoft.Extensions.DependencyInjection    | Definir el contenedor de servicios.                       | Registrar la implementación del generador.                   |
+| `AddSingleton<TService, TImplementation>()` | .NET / Microsoft.Extensions.DependencyInjection    | Registrar una implementación con ciclo de vida Singleton. | Asociar `IOpaqueTokenGenerator` con `OpaqueTokenGenerator`.  |
+
+#### 4. Flujo funcional
+
+| Paso | Componente                            | Operación                                                  |
+| ---- | ------------------------------------- | ---------------------------------------------------------- |
+| 1    | Consumidor de `IOpaqueTokenGenerator` | Solicita un token mediante `Generate()`.                   |
+| 2    | `OpaqueTokenGenerator`                | Ejecuta `RandomNumberGenerator.GetBytes(32)`.              |
+| 3    | `WebEncoders`                         | Codifica los bytes mediante `Base64UrlEncode()`.           |
+| 4    | `OpaqueTokenGenerator`                | Retorna una cadena Base64Url de 43 caracteres sin padding. |
+
+**Registro de dependencias:**
+
+| Contrato                | Implementación         | Ciclo de vida |
+| ----------------------- | ---------------------- | ------------- |
+| `IOpaqueTokenGenerator` | `OpaqueTokenGenerator` | Singleton     |
+
+**Alcance:** este paso implementa únicamente la generación del token público. No incluye cálculo de hash SHA-256, persistencia ni validación del token. Aunque `DependencyInjection` mantiene configuraciones existentes de Identity y Data Protection, estas no intervienen en `OpaqueTokenGenerator`.
+
+#### 5. Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    subgraph APP["Application"]
+        PORT["IOpaqueTokenGenerator"]
+    end
+
+    subgraph INF["Infrastructure"]
+        DI["DependencyInjection"]
+        GEN["OpaqueTokenGenerator"]
+    end
+
+    subgraph NET[".NET / ASP.NET Core"]
+        RNG["RandomNumberGenerator.GetBytes"]
+        B64["WebEncoders.Base64UrlEncode"]
+        CONTAINER["IServiceCollection"]
+    end
+
+    DI -->|"AddSingleton"| CONTAINER
+    DI -->|"Registra contrato e implementación"| PORT
+    GEN -.->|"Implementa"| PORT
+    GEN -->|"Genera 32 bytes aleatorios"| RNG
+    GEN -->|"Codifica Base64Url"| B64
+```
+
+#### 6. Resultado
+
+Se implementa un generador de tokens opacos de 256 bits mediante APIs criptográficas de .NET y codificación Base64Url. El servicio queda disponible mediante `IOpaqueTokenGenerator`, registrado como Singleton en Infrastructure.
+
+---
+
+### 7. Implementar hash SHA-256, comparación constante y validaciones.
+
+#### 1. Componentes implementados
+
+| Componente                | Acción      | Tipo                    | Capa           | Responsabilidad                                                                                        |
+| ------------------------- | ----------- | ----------------------- | -------------- | ------------------------------------------------------------------------------------------------------ |
+| `OpaqueTokenCryptography` | Create      | Servicio criptográfico  | Infrastructure | Calcular hashes SHA-256, comparar tokens en tiempo constante y validar sus condiciones de uso.         |
+| `DependencyInjection`     | Update      | Configuración DI        | Infrastructure | Registrar `OpaqueTokenCryptography` como Singleton.                                                    |
+| `HashedUserToken`         | Sin cambios | Entidad de persistencia | Infrastructure | Proporcionar el hash, propósito, sello de seguridad y fecha de expiración utilizados en la validación. |
+
+#### 2. Métodos principales
+
+| Clase                     | Método                                                   | Responsabilidad                                                                                                          |
+| ------------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `OpaqueTokenCryptography` | `Hash(string token)`                                     | Calcular el hash SHA-256 del token codificado en UTF-8.                                                                  |
+| `OpaqueTokenCryptography` | `Matches(string token, ReadOnlySpan<byte> expectedHash)` | Comparar el hash calculado con el almacenado mediante una operación de tiempo constante para entradas de igual longitud. |
+| `OpaqueTokenCryptography` | `IsValid(...)`                                           | Validar coincidencia criptográfica, propósito, sello de seguridad y expiración.                                          |
+| `DependencyInjection`     | `AddInfrastructure()`                                    | Registrar el servicio criptográfico en el contenedor DI.                                                                 |
+
+**Condiciones evaluadas por `IsValid()`:**
+
+| Validación           | Condición                                  | Resultado                                                   |
+| -------------------- | ------------------------------------------ | ----------------------------------------------------------- |
+| Referencias nulas    | `ArgumentNullException.ThrowIfNull()`      | Rechaza argumentos nulos mediante excepción.                |
+| Token vacío          | `token.Length > 0`                         | Requiere un token no vacío.                                 |
+| Propósito vacío      | `expectedPurpose.Length > 0`               | Requiere un propósito no vacío.                             |
+| Security Stamp vacío | `currentSecurityStamp.Length > 0`          | Requiere un sello de seguridad no vacío.                    |
+| Integridad del token | `Matches(token, persistedToken.TokenHash)` | Verifica la coincidencia del hash SHA-256.                  |
+| Propósito            | `StringComparison.Ordinal`                 | Exige coincidencia exacta y sensible a mayúsculas.          |
+| Security Stamp       | `StringComparison.Ordinal`                 | Exige coincidencia exacta con el sello vigente del usuario. |
+| Expiración           | `nowUtc < persistedToken.ExpiresAtUtc`     | Rechaza tokens expirados.                                   |
+
+#### 3. Componentes de .NET y bibliotecas externas
+
+| Componente / Método                         | Origen                                | Función                                                                                                        | Uso en el proyecto                                         |
+| ------------------------------------------- | ------------------------------------- | -------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| `SHA256.HashData()`                         | .NET / `System.Security.Cryptography` | Calcular el hash SHA-256 de una secuencia de bytes.                                                            | Generar el hash de 32 bytes del token.                     |
+| `Encoding.UTF8.GetBytes()`                  | .NET / `System.Text`                  | Convertir una cadena en bytes UTF-8.                                                                           | Preparar el token para calcular su hash.                   |
+| `CryptographicOperations.FixedTimeEquals()` | .NET / `System.Security.Cryptography` | Comparar secuencias de bytes evitando variaciones temporales por el contenido cuando sus longitudes coinciden. | Verificar el hash del token recibido frente al almacenado. |
+| `ReadOnlySpan<byte>`                        | .NET / C#                             | Representar una vista de solo lectura sobre bytes.                                                             | Recibir el hash esperado sin requerir una copia.           |
+| `ArgumentNullException.ThrowIfNull()`       | .NET                                  | Validar argumentos no nulos.                                                                                   | Rechazar referencias nulas.                                |
+| `StringComparison.Ordinal`                  | .NET                                  | Comparar cadenas mediante coincidencia ordinal.                                                                | Validar propósito y Security Stamp.                        |
+| `AddSingleton<T>()`                         | .NET / Dependency Injection           | Registrar un servicio con ciclo de vida Singleton.                                                             | Registrar `OpaqueTokenCryptography`.                       |
+
+#### 4. Flujo funcional
+
+| Paso | Operación    | Descripción                                                                                                                         |
+| ---- | ------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
+| 1    | Recepción    | `IsValid()` recibe el token público, registro persistido, propósito, Security Stamp vigente y fecha actual.                         |
+| 2    | Hash         | `Hash()` convierte el token a UTF-8 y calcula SHA-256.                                                                              |
+| 3    | Comparación  | `Matches()` compara el hash calculado con `TokenHash` mediante `FixedTimeEquals()`.                                                 |
+| 4    | Validaciones | Comprueba que los valores requeridos no estén vacíos, que coincidan el propósito y Security Stamp, y que el token no haya expirado. |
+| 5    | Resultado    | Retorna `true` únicamente cuando todas las condiciones son válidas.                                                                 |
+
+**Registro de dependencias:**
+
+| Servicio                  | Ciclo de vida |
+| ------------------------- | ------------- |
+| `OpaqueTokenCryptography` | Singleton     |
+
+**Alcance:** el servicio valida información recibida, pero no consulta la base de datos ni elimina o consume tokens. La comparación constante aplica al hash; las comparaciones de propósito y Security Stamp utilizan `StringComparison.Ordinal`.
+
+#### 5. Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    subgraph INF["Infrastructure"]
+        DI["DependencyInjection"]
+        CRYPTO["OpaqueTokenCryptography"]
+        TOKEN["HashedUserToken"]
+    end
+
+    subgraph NET[".NET / System.Security.Cryptography"]
+        UTF8["Encoding.UTF8.GetBytes"]
+        SHA["SHA256.HashData"]
+        COMP["CryptographicOperations.FixedTimeEquals"]
+        STR["StringComparison.Ordinal"]
+    end
+
+    DI -->|"AddSingleton"| CRYPTO
+
+    CRYPTO -->|"Hash()"| UTF8
+    UTF8 --> SHA
+
+    CRYPTO -->|"Matches()"| COMP
+    TOKEN -->|"TokenHash"| COMP
+
+    CRYPTO -->|"IsValid()"| TOKEN
+    CRYPTO -->|"Purpose / SecurityStamp"| STR
+
+    CRYPTO -->|"Valida expiración"| EXP["nowUtc < ExpiresAtUtc"]
+```
+
+#### 6. Resultado
+
+Se implementa `OpaqueTokenCryptography` para calcular hashes SHA-256 y verificar tokens mediante comparación criptográfica de tiempo constante. La validación incorpora propósito, Security Stamp y expiración, sin depender de ASP.NET Core Data Protection.
+
+---
+
+### 8. Implementar almacenamiento, reemplazo y eliminación de vencidos.
+
+#### 1. Componentes implementados
+
+| Componente            | Acción | Tipo                      | Capa           | Responsabilidad                                                                     |
+| --------------------- | ------ | ------------------------- | -------------- | ----------------------------------------------------------------------------------- |
+| `IOpaqueTokenStore`   | Create | Interfaz (puerto)         | Application    | Definir operaciones de almacenamiento, consulta y eliminación de tokens opacos.     |
+| `OpaqueTokenRecord`   | Create | Record (DTO)              | Application    | Transportar los datos persistidos de un token sin exponer la entidad de EF Core.    |
+| `OpaqueTokenStore`    | Create | Adaptador de persistencia | Infrastructure | Implementar almacenamiento, reemplazo, consulta y eliminación mediante EF Core.     |
+| `DependencyInjection` | Update | Configuración DI          | Infrastructure | Registrar `IOpaqueTokenStore` con su implementación `OpaqueTokenStore` como Scoped. |
+
+**Dependencias de `OpaqueTokenStore`:**
+
+| Dependencia               | Capa           | Responsabilidad                              |
+| ------------------------- | -------------- | -------------------------------------------- |
+| `AppDbContext`            | Infrastructure | Acceder a la tabla `UserSecurityTokens`.     |
+| `IOpaqueTokenGenerator`   | Application    | Generar tokens opacos seguros.               |
+| `OpaqueTokenCryptography` | Infrastructure | Calcular el hash SHA-256 del token generado. |
+| `HashedUserToken`         | Infrastructure | Representar el registro persistente.         |
+
+#### 2. Métodos principales
+
+| Clase                 | Método                    | Responsabilidad                                                                                |
+| --------------------- | ------------------------- | ---------------------------------------------------------------------------------------------- |
+| `OpaqueTokenStore`    | `StoreAsync()`            | Generar un token, crear o actualizar su registro, guardar el hash y retornar el token público. |
+| `OpaqueTokenStore`    | `FindAsync()`             | Consultar un token por usuario y propósito y devolver un `OpaqueTokenRecord`.                  |
+| `OpaqueTokenStore`    | `DeleteExpiredAsync()`    | Eliminar tokens expirados y retornar la cantidad de registros eliminados.                      |
+| `OpaqueTokenStore`    | `ValidateRequiredValue()` | Rechazar argumentos de texto nulos o vacíos.                                                   |
+| `DependencyInjection` | `AddInfrastructure()`     | Registrar el adaptador de persistencia mediante DI.                                            |
+
+#### 3. Componentes de .NET y bibliotecas externas
+
+| Componente / Método                      | Origen                      | Función                                               | Uso en el proyecto                                             |
+| ---------------------------------------- | --------------------------- | ----------------------------------------------------- | -------------------------------------------------------------- |
+| `Task<T>`                                | .NET / C#                   | Representar operaciones asíncronas.                   | Retornar resultados de almacenamiento, consulta y eliminación. |
+| `CancellationToken`                      | .NET                        | Permitir cancelar operaciones asíncronas.             | Propagar cancelaciones a EF Core.                              |
+| `Guid.NewGuid()`                         | .NET                        | Generar identificadores únicos.                       | Asignar `TokenId` a nuevos registros.                          |
+| `ArgumentException.ThrowIfNullOrEmpty()` | .NET                        | Validar cadenas requeridas.                           | Rechazar identificadores, propósitos y sellos vacíos.          |
+| `SingleOrDefaultAsync()`                 | Entity Framework Core       | Consultar un único registro o devolver `null`.        | Buscar tokens por `UserId` y `Purpose`.                        |
+| `AsNoTracking()`                         | Entity Framework Core       | Consultar entidades sin seguimiento de cambios.       | Optimizar las consultas de lectura en `FindAsync()`.           |
+| `DbSet.Add()`                            | Entity Framework Core       | Registrar una entidad para inserción.                 | Crear nuevos registros de tokens.                              |
+| `SaveChangesAsync()`                     | Entity Framework Core       | Persistir cambios pendientes.                         | Guardar tokens nuevos o actualizados.                          |
+| `ExecuteDeleteAsync()`                   | Entity Framework Core       | Ejecutar una eliminación directa en la base de datos. | Eliminar tokens expirados sin cargarlos en memoria.            |
+| `AddScoped<TService, TImplementation>()` | .NET / Dependency Injection | Registrar servicios con ciclo de vida Scoped.         | Asociar `IOpaqueTokenStore` con `OpaqueTokenStore`.            |
+
+#### 4. Flujo funcional
+
+**Almacenamiento y reemplazo (`StoreAsync`)**
+
+| Paso | Operación    | Descripción                                                                        |
+| ---- | ------------ | ---------------------------------------------------------------------------------- |
+| 1    | Validación   | Verifica `userId`, `purpose`, `securityStamp` y que `expiresAtUtc > createdAtUtc`. |
+| 2    | Generación   | `IOpaqueTokenGenerator.Generate()` genera el token público.                        |
+| 3    | Consulta     | Busca un registro existente mediante `UserId` y `Purpose`.                         |
+| 4    | Creación     | Si no existe, crea `HashedUserToken` con un nuevo `TokenId`.                       |
+| 5    | Reemplazo    | Si existe, reutiliza el registro y actualiza sus datos.                            |
+| 6    | Hash         | Calcula SHA-256 y asigna el resultado a `TokenHash`.                               |
+| 7    | Persistencia | Guarda los cambios mediante `SaveChangesAsync()`.                                  |
+| 8    | Resultado    | Retorna el token público generado.                                                 |
+
+**Consulta y eliminación**
+
+| Operación              | Criterio                                 | Resultado                                                   |
+| ---------------------- | ---------------------------------------- | ----------------------------------------------------------- |
+| `FindAsync()`          | `UserId == userId && Purpose == purpose` | Devuelve `OpaqueTokenRecord` o `null`.                      |
+| `DeleteExpiredAsync()` | `ExpiresAtUtc <= nowUtc`                 | Elimina registros vencidos y retorna la cantidad eliminada. |
+
+**Registro de dependencias:**
+
+| Contrato            | Implementación     | Ciclo de vida |
+| ------------------- | ------------------ | ------------- |
+| `IOpaqueTokenStore` | `OpaqueTokenStore` | Scoped        |
+
+**Consideraciones de implementación:**
+
+- El reemplazo actualiza el registro existente, conservando su `TokenId`.
+- El token público se devuelve al consumidor; únicamente su hash se almacena en `UserSecurityTokens`.
+- `FindAsync()` devuelve una copia de `TokenHash`, evitando compartir directamente el arreglo de la entidad consultada.
+- `ExecuteDeleteAsync()` elimina directamente los registros vencidos, sin requerir `SaveChangesAsync()`.
+- La eliminación de vencidos se ejecuta cuando se invoca `DeleteExpiredAsync()`; no se implementa una ejecución automática.
+- El código no muestra mecanismos específicos para resolver operaciones concurrentes de creación sobre el mismo usuario y propósito.
+
+#### 5. Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    subgraph APP["Application"]
+        STORE_IF["IOpaqueTokenStore"]
+        RECORD["OpaqueTokenRecord"]
+        GEN_IF["IOpaqueTokenGenerator"]
+    end
+
+    subgraph INF["Infrastructure"]
+        STORE["OpaqueTokenStore"]
+        GEN["OpaqueTokenGenerator"]
+        CRYPTO["OpaqueTokenCryptography"]
+        CTX["AppDbContext"]
+        TOKEN["HashedUserToken"]
+        DI["DependencyInjection"]
+    end
+
+    subgraph EF["Entity Framework Core"]
+        QUERY["SingleOrDefaultAsync / AsNoTracking"]
+        SAVE["SaveChangesAsync"]
+        DELETE["ExecuteDeleteAsync"]
+    end
+
+    subgraph PG["PostgreSQL"]
+        TABLE[("UserSecurityTokens")]
+    end
+
+    STORE -.->|Implementa| STORE_IF
+    STORE_IF -->|Devuelve en consultas| RECORD
+
+    DI -->|Registra Scoped| STORE
+
+    STORE -->|Genera token| GEN_IF
+    GEN -.->|Implementa| GEN_IF
+
+    STORE -->|Calcula SHA-256| CRYPTO
+    STORE -->|Persistencia| CTX
+
+    CTX -->|DbSet| TOKEN
+
+    CTX --> QUERY
+    CTX --> SAVE
+    CTX --> DELETE
+
+    QUERY --> TABLE
+    SAVE --> TABLE
+    DELETE --> TABLE
+```
+
+#### 6. Resultado
+
+Se implementa `IOpaqueTokenStore` mediante un adaptador EF Core que permite crear, reemplazar y consultar tokens almacenando únicamente su hash SHA-256. También se incorpora la eliminación directa de tokens expirados mediante `ExecuteDeleteAsync()`.
+
+---
+
+### 9. Agregar pruebas unitarias.
+
+#### 1. Componentes implementados
+
+| Componente               | Acción | Tipo                       | Capa  | Responsabilidad                                                               |
+| ------------------------ | ------ | -------------------------- | ----- | ----------------------------------------------------------------------------- |
+| `OpaqueTokenTests`       | Create | Clase de pruebas unitarias | Tests | Verificar la generación, hash y validación criptográfica de tokens opacos.    |
+| `CreatePersistedToken()` | Create | Método auxiliar            | Tests | Construir registros `HashedUserToken` con datos controlados para las pruebas. |
+
+**Componentes bajo prueba:**
+
+| Componente                | Capa           | Funcionalidad verificada                                      |
+| ------------------------- | -------------- | ------------------------------------------------------------- |
+| `OpaqueTokenGenerator`    | Infrastructure | Generación aleatoria de 32 bytes y codificación Base64Url.    |
+| `OpaqueTokenCryptography` | Infrastructure | Hash SHA-256, comparación de hashes y validación de tokens.   |
+| `HashedUserToken`         | Infrastructure | Representación de los datos necesarios para validar un token. |
+
+#### 2. Métodos principales
+
+| Clase              | Método                                               | Responsabilidad                                                                    |
+| ------------------ | ---------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `OpaqueTokenTests` | `Generate_Returns32RandomBytesAsBase64Url()`         | Verificar que el token contiene 32 bytes y utiliza Base64Url sin padding.          |
+| `OpaqueTokenTests` | `Generate_ProducesDifferentTokens()`                 | Comprobar que dos generaciones consecutivas producen valores diferentes.           |
+| `OpaqueTokenTests` | `Hash_IsFixedLengthAndDoesNotStoreOriginalToken()`   | Verificar la longitud SHA-256 de 32 bytes y la coincidencia del token con su hash. |
+| `OpaqueTokenTests` | `Matches_RejectsDifferentToken()`                    | Rechazar un token cuyo hash no coincide con el esperado.                           |
+| `OpaqueTokenTests` | `IsValid_AcceptsMatchingPurposeStampAndExpiration()` | Aceptar un token vigente con propósito y Security Stamp correctos.                 |
+| `OpaqueTokenTests` | `IsValid_RejectsDifferentPurpose()`                  | Rechazar tokens utilizados con un propósito diferente.                             |
+| `OpaqueTokenTests` | `IsValid_RejectsDifferentSecurityStamp()`            | Rechazar tokens cuyo Security Stamp no coincide con el vigente.                    |
+| `OpaqueTokenTests` | `IsValid_RejectsExpiredToken()`                      | Rechazar tokens cuya fecha de expiración coincide con el instante de validación.   |
+| `OpaqueTokenTests` | `CreatePersistedToken()`                             | Generar una entidad de prueba con valores conocidos y hash SHA-256.                |
+
+#### 3. Componentes de .NET y bibliotecas externas
+
+| Componente / Método                | Origen                      | Función                                           | Uso en el proyecto                                         |
+| ---------------------------------- | --------------------------- | ------------------------------------------------- | ---------------------------------------------------------- |
+| `[Fact]`                           | xUnit (biblioteca externa)  | Identificar métodos de prueba independientes.     | Declarar los ocho casos de prueba.                         |
+| `Assert.Equal()`                   | xUnit                       | Verificar igualdad de valores.                    | Comprobar la longitud del token y del hash.                |
+| `Assert.NotEqual()`                | xUnit                       | Verificar desigualdad de valores.                 | Comprobar diferencias entre tokens y representaciones.     |
+| `Assert.True()` / `Assert.False()` | xUnit                       | Verificar condiciones booleanas.                  | Validar resultados de `Matches()` e `IsValid()`.           |
+| `Assert.DoesNotContain()`          | xUnit                       | Verificar ausencia de caracteres.                 | Comprobar que Base64Url no contiene `=`, `+` ni `/`.       |
+| `WebEncoders.Base64UrlDecode()`    | ASP.NET Core / WebUtilities | Decodificar cadenas Base64Url.                    | Recuperar los bytes originales para verificar su longitud. |
+| `Convert.ToBase64String()`         | .NET / C#                   | Convertir bytes a Base64.                         | Comparar la representación del hash con el token original. |
+| `DateTimeOffset`                   | .NET / C#                   | Representar instantes con desplazamiento horario. | Establecer fechas de validación y expiración.              |
+| `Guid.NewGuid()`                   | .NET / C#                   | Generar identificadores únicos.                   | Asignar identificadores a los registros de prueba.         |
+
+#### 4. Flujo funcional
+
+**Cobertura implementada:**
+
+| Funcionalidad                | Pruebas | Resultado esperado                                                         |
+| ---------------------------- | ------- | -------------------------------------------------------------------------- |
+| Generación Base64Url         | 1       | Token decodificado de 32 bytes sin caracteres incompatibles con Base64Url. |
+| Aleatoriedad                 | 1       | Dos tokens consecutivos diferentes.                                        |
+| Hash SHA-256                 | 1       | Hash de 32 bytes y coincidencia con el token original.                     |
+| Comparación de hashes        | 1       | Rechazo de tokens diferentes.                                              |
+| Validación de token vigente  | 1       | Aceptación del token válido.                                               |
+| Validación de propósito      | 1       | Rechazo por propósito incorrecto.                                          |
+| Validación de Security Stamp | 1       | Rechazo por sello de seguridad diferente.                                  |
+| Validación de expiración     | 1       | Rechazo en el instante exacto de expiración.                               |
+| **Total**                    | **8**   | **Pruebas unitarias definidas.**                                           |
+
+**Alcance:**
+
+- Las pruebas ejecutan directamente los servicios sin base de datos ni contenedor de dependencias.
+- `CreatePersistedToken()` proporciona datos controlados para verificar diferentes escenarios.
+- No se incluyen pruebas de persistencia de `OpaqueTokenStore`.
+- No se verifica experimentalmente la distribución aleatoria ni el tiempo constante de comparación.
+- El código proporcionado no incluye resultados de ejecución de las pruebas.
+
+#### 5. Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    subgraph TEST["Tests - xUnit"]
+        T["OpaqueTokenTests"]
+        HELPER["CreatePersistedToken"]
+        ASSERT["Assert"]
+    end
+
+    subgraph INF["Infrastructure"]
+        GEN["OpaqueTokenGenerator"]
+        CRYPTO["OpaqueTokenCryptography"]
+        TOKEN["HashedUserToken"]
+    end
+
+    subgraph NET[".NET / ASP.NET Core"]
+        B64["WebEncoders.Base64UrlDecode"]
+        RNG["RandomNumberGenerator"]
+        SHA["SHA256"]
+    end
+
+    T -->|Prueba generación| GEN
+    T -->|Prueba hash y validación| CRYPTO
+    T -->|Prepara datos| HELPER
+    T -->|Verifica resultados| ASSERT
+
+    HELPER -->|Construye| TOKEN
+    HELPER -->|Calcula hash| CRYPTO
+
+    T -->|Decodifica token| B64
+
+    GEN -->|Utiliza| RNG
+    CRYPTO -->|Utiliza| SHA
+    CRYPTO -->|Valida| TOKEN
+```
+
+#### 6. Resultado
+
+Se incorporan ocho pruebas unitarias con xUnit para verificar la generación Base64Url, el hash SHA-256 y las reglas de validación de tokens opacos. Las pruebas cubren escenarios válidos e inválidos sin depender de infraestructura de persistencia.
+
+---
+
+### 10. Ejecutar build, pruebas, API y verificación del esquema.
+
+---
+
+### 11. Ajustes por pruebas manuales
+
+**Levantar PostgreSQL y pgAdmin:**
+
+```powershell
+docker compose up -d
+```
+
+**Compilación y pruebas:**
+
+```powershell
+dotnet restore FEPP-ContaOps.slnx
+dotnet build FEPP-ContaOps.slnx
+dotnet test FEPP-ContaOps.slnx
+```
+
+---
+
+### 12. Validación, ejecución local y Git
+
+**Prerrequisitos:** Docker disponible; crear un archivo `.env` local a partir de `.env.example` y sustituir todos los valores de ejemplo por credenciales y secretos propios. **No subir `.env` a Git.**
+
+**Iniciar API:**
+
+```powershell
+.\run-local.ps1
+```
+
+---
+
+### 13. Validación del spec (flujo de trabajo existente):
+
+```powershell
+/spec-acceptance-validator @specs/05-persistencia-y-criptografia-tokens-opacos.md
+```
+
+Revisar el spec: [`05-persistencia-y-criptografia-tokens-opacos.md`](../05-persistencia-y-criptografia-tokens-opacos.md).
+
+---
+
+### 14. Diagrama Final: Arquitectura del spec-05-persistencia-y-criptografia-tokens-opacos
+
+#### 1. Diagrama de arquitectura consolidado
+
+```mermaid
+flowchart TD
+    subgraph PRE["Presentation"]
+        API["API ASP.NET Core<br/>Sin endpoints nuevos en este spec"]
+    end
+
+    subgraph APP["Application - Código propio"]
+        STORE_IF["IOpaqueTokenStore<br/>Puerto de persistencia"]
+        GEN_IF["IOpaqueTokenGenerator<br/>Puerto de generación"]
+        RECORD["OpaqueTokenRecord<br/>DTO de consulta"]
+    end
+
+    subgraph DOM["Domain"]
+        DOMAIN["Sin componentes nuevos<br/>en este spec"]
+    end
+
+    subgraph INF["Infrastructure - Código propio"]
+        DI["DependencyInjection<br/>AddInfrastructure"]
+
+        STORE["OpaqueTokenStore<br/>Scoped"]
+        GEN["OpaqueTokenGenerator<br/>Singleton"]
+        CRYPTO["OpaqueTokenCryptography<br/>Singleton"]
+
+        CTX["AppDbContext"]
+        TOKEN["HashedUserToken"]
+        USER["ApplicationIdentityUser"]
+    end
+
+    subgraph FRAMEWORK[".NET / ASP.NET Core / EF Core"]
+        CONTAINER["IServiceCollection<br/>Dependency Injection"]
+
+        RNG["RandomNumberGenerator.GetBytes<br/>32 bytes"]
+        B64["WebEncoders.Base64UrlEncode"]
+
+        SHA["SHA256.HashData"]
+        FIXED["CryptographicOperations.FixedTimeEquals"]
+
+        EF["Entity Framework Core<br/>Consultas y persistencia"]
+        IDENTITY["IdentityDbContext<br/>ASP.NET Core Identity"]
+    end
+
+    subgraph DB["PostgreSQL - Proveedor externo"]
+        TOKENS[("UserSecurityTokens<br/>PK: TokenId<br/>UNIQUE: UserId + Purpose")]
+        USERS[("AspNetUsers")]
+    end
+
+    subgraph TEST["Tests - xUnit"]
+        UNIT["OpaqueTokenTests<br/>8 pruebas unitarias"]
+    end
+
+    %% Inyección de dependencias
+    DI -->|"Registra servicios"| CONTAINER
+    DI -->|"Scoped"| STORE
+    DI -->|"Singleton"| GEN
+    DI -->|"Singleton"| CRYPTO
+
+    %% Contratos e implementaciones
+    STORE -.->|"Implementa"| STORE_IF
+    GEN -.->|"Implementa"| GEN_IF
+
+    %% Generación y almacenamiento
+    STORE -->|"Genera token público"| GEN_IF
+    STORE -->|"Calcula hash SHA-256"| CRYPTO
+    STORE -->|"Consulta y persiste"| CTX
+
+    %% Generación criptográfica
+    GEN -->|"Genera bytes aleatorios"| RNG
+    GEN -->|"Codifica Base64Url"| B64
+
+    %% Validaciones criptográficas
+    CRYPTO -->|"Hash"| SHA
+    CRYPTO -->|"Comparación constante"| FIXED
+    CRYPTO -->|"Valida hash, propósito,<br/>SecurityStamp y expiración"| TOKEN
+
+    %% Consulta y transporte
+    STORE_IF -->|"FindAsync devuelve"| RECORD
+
+    %% Persistencia
+    CTX -->|"Hereda"| IDENTITY
+    CTX -->|"Utiliza"| EF
+    CTX -->|"DbSet UserSecurityTokens"| TOKEN
+
+    TOKEN -->|"Mapeo EF Core"| TOKENS
+    USER -->|"Entidad Identity"| USERS
+
+    TOKENS -->|"FK UserId<br/>ON DELETE CASCADE"| USERS
+
+    EF -->|"StoreAsync / FindAsync /<br/>DeleteExpiredAsync"| TOKENS
+
+    %% Pruebas unitarias
+    UNIT -.->|"Prueba generación"| GEN
+    UNIT -.->|"Prueba hash y validaciones"| CRYPTO
+    UNIT -.->|"Utiliza datos de prueba"| TOKEN
+```
+
+#### 2. Relaciones principales
+
+| Origen                 | Destino                   | Relación      | Responsabilidad                                                         |
+| ---------------------- | ------------------------- | ------------- | ----------------------------------------------------------------------- |
+| `OpaqueTokenStore`     | `IOpaqueTokenStore`       | Implementa    | Proporcionar almacenamiento, consulta y eliminación de tokens.          |
+| `OpaqueTokenGenerator` | `IOpaqueTokenGenerator`   | Implementa    | Generar tokens opacos de 256 bits.                                      |
+| `OpaqueTokenStore`     | `IOpaqueTokenGenerator`   | Dependencia   | Obtener el token público.                                               |
+| `OpaqueTokenStore`     | `OpaqueTokenCryptography` | Dependencia   | Calcular el hash SHA-256 antes de persistir.                            |
+| `OpaqueTokenStore`     | `AppDbContext`            | Dependencia   | Ejecutar operaciones de persistencia.                                   |
+| `OpaqueTokenStore`     | `OpaqueTokenRecord`       | Retorno       | Entregar los datos consultados sin exponer entidades EF Core.           |
+| `AppDbContext`         | `IdentityDbContext`       | Herencia      | Integrar persistencia de ASP.NET Core Identity.                         |
+| `AppDbContext`         | `HashedUserToken`         | DbSet         | Configurar y administrar la entidad persistente.                        |
+| `HashedUserToken`      | `UserSecurityTokens`      | Mapeo EF Core | Representar los registros de tokens en PostgreSQL.                      |
+| `UserSecurityTokens`   | `AspNetUsers`             | Foreign Key   | Vincular tokens con usuarios Identity y aplicar eliminación en cascada. |
+| `OpaqueTokenTests`     | `OpaqueTokenGenerator`    | Pruebas       | Verificar generación y codificación Base64Url.                          |
+| `OpaqueTokenTests`     | `OpaqueTokenCryptography` | Pruebas       | Verificar hash, comparación y reglas de validación.                     |
+
+#### 3. Componentes de .NET y bibliotecas externas
+
+| Componente / Método                         | Origen                          | Función                                                      | Uso en el proyecto                              |
+| ------------------------------------------- | ------------------------------- | ------------------------------------------------------------ | ----------------------------------------------- |
+| `RandomNumberGenerator.GetBytes()`          | .NET / Cryptography             | Generar bytes criptográficamente seguros.                    | Producir tokens de 32 bytes.                    |
+| `SHA256.HashData()`                         | .NET / Cryptography             | Calcular hashes SHA-256.                                     | Almacenar únicamente el hash del token público. |
+| `CryptographicOperations.FixedTimeEquals()` | .NET / Cryptography             | Comparar hashes en tiempo constante para longitudes iguales. | Validar coincidencias criptográficas.           |
+| `WebEncoders.Base64UrlEncode()`             | ASP.NET Core / WebUtilities     | Codificar bytes en Base64Url.                                | Generar tokens compatibles con URLs.            |
+| `IdentityDbContext`                         | ASP.NET Core Identity + EF Core | Proporcionar persistencia de usuarios y roles.               | Clase base de `AppDbContext`.                   |
+| `Entity Framework Core`                     | Microsoft / EF Core             | Consultar, insertar, actualizar y eliminar entidades.        | Implementar `OpaqueTokenStore`.                 |
+| `UseNpgsql()`                               | Npgsql / EF Core Provider       | Configurar PostgreSQL como proveedor de base de datos.       | Conectar `AppDbContext` con PostgreSQL.         |
+| `IServiceCollection`                        | .NET / Dependency Injection     | Registrar dependencias y ciclos de vida.                     | Configurar servicios Scoped y Singleton.        |
+| `xUnit`                                     | Biblioteca externa              | Ejecutar pruebas unitarias.                                  | Definir las ocho pruebas criptográficas.        |
+
+#### 4. Flujo funcional consolidado
+
+| Operación                | Flujo                                                                                                 | Resultado                                                      |
+| ------------------------ | ----------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| Generación               | `OpaqueTokenStore → IOpaqueTokenGenerator → OpaqueTokenGenerator → RandomNumberGenerator → Base64Url` | Token público de 43 caracteres.                                |
+| Almacenamiento           | `OpaqueTokenStore → OpaqueTokenCryptography.Hash → AppDbContext → PostgreSQL`                         | Persistencia del hash SHA-256, nunca del token público.        |
+| Reemplazo                | `OpaqueTokenStore → Find(UserId, Purpose) → Update → SaveChangesAsync`                                | Reemplaza los datos del token existente conservando `TokenId`. |
+| Consulta                 | `OpaqueTokenStore → AppDbContext → AsNoTracking → OpaqueTokenRecord`                                  | Recupera datos persistidos sin seguimiento de cambios.         |
+| Validación criptográfica | `OpaqueTokenCryptography → SHA256 → FixedTimeEquals`                                                  | Determina si el token coincide con su hash.                    |
+| Validación funcional     | `OpaqueTokenCryptography.IsValid()`                                                                   | Verifica propósito, Security Stamp y expiración.               |
+| Eliminación de vencidos  | `OpaqueTokenStore → ExecuteDeleteAsync`                                                               | Elimina registros con `ExpiresAtUtc <= nowUtc`.                |
+| Eliminación de usuario   | `PostgreSQL → ON DELETE CASCADE`                                                                      | Elimina los tokens asociados al usuario.                       |
+
+#### 5. Resultado
+
+El spec implementa la generación criptográfica, persistencia y validación de tokens opacos utilizando puertos de Application y adaptadores de Infrastructure. Los tokens se almacenan exclusivamente mediante hashes SHA-256 en PostgreSQL, con restricciones de unicidad, integridad referencial y eliminación de vencidos.
+
+La criptografía propia del spec no depende de ASP.NET Core Data Protection; su configuración existente de Identity permanece fuera de este flujo.
+
+---
+
+### 15. Comandos Git / PR\*\* (una vez validada la implementación y revisados los cambios)
+
+```powershell
+git add .
+git commit -m "FEPP-ContaOps - spec-05-persistencia-y-criptografia-tokens-opacos -  Implementado"
+git push -u origin spec-05-persistencia-y-criptografia-tokens-opacos
+
+# Después de aprobar y fusionar el Pull Request:
+git switch main
+git pull
+git branch -d spec-05-persistencia-y-criptografia-tokens-opacos
+```
