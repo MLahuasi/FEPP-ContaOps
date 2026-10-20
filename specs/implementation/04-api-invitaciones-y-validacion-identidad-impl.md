@@ -5053,7 +5053,221 @@ Estos cambios facilitan la ejecución reproducible de los escenarios de integrac
 
 ### 18. Ajustes por pruebas manuales
 
----
+#### Componentes implementados
+
+| Componente            | Acción | Tipo           | Capa         | Responsabilidad                                                                                   |
+| --------------------- | ------ | -------------- | ------------ | ------------------------------------------------------------------------------------------------- |
+| `DependencyInjection` | Update | class (static) | Presentation | Configura explícitamente los esquemas predeterminados de autenticación y autorización JWT Bearer. |
+
+**Ubicación:** `Fepp.ContaOps.Api.DependencyInjection`
+
+El cambio principal consiste en establecer explícitamente los esquemas utilizados por ASP.NET Core para autenticar solicitudes, solicitar autenticación y rechazar accesos por permisos insuficientes.
+
+Se mantienen las configuraciones existentes de validación HTTP, política `AdminOnly`, parámetros de validación JWT y documentación Swagger.
+
+#### Métodos y funciones principales
+
+| Clase                 | Método                            | Responsabilidad                                                                                                    |
+| --------------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `DependencyInjection` | `AddApi()`                        | Registra los componentes HTTP y configura explícitamente los esquemas predeterminados de autenticación JWT Bearer. |
+| `DependencyInjection` | `WriteAuthenticationErrorAsync()` | Genera respuestas uniformes `ProblemDetails` para errores de autenticación y autorización.                         |
+| `DependencyInjection` | `AddSwaggerDocumentation()`       | Mantiene la configuración de OpenAPI y la definición del esquema de seguridad Bearer.                              |
+
+#### Configuración explícita de autenticación
+
+**1. Configuración anterior**
+
+La autenticación se registraba utilizando directamente el nombre del esquema:
+
+```csharp
+services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
+    {
+        // Configuración JWT.
+    });
+```
+
+Esta sobrecarga establece el esquema predeterminado de autenticación mediante `DefaultScheme`.
+
+**2. Configuración actual**
+
+Se reemplaza por una configuración explícita de `AuthenticationOptions`:
+
+```csharp
+services.AddAuthentication(options =>
+    {
+        options.DefaultAuthenticateScheme =
+            JwtBearerDefaults.AuthenticationScheme;
+
+        options.DefaultChallengeScheme =
+            JwtBearerDefaults.AuthenticationScheme;
+
+        options.DefaultForbidScheme =
+            JwtBearerDefaults.AuthenticationScheme;
+    })
+    .AddJwtBearer(options =>
+    {
+        // Configuración JWT.
+    });
+```
+
+**Propiedades configuradas:**
+
+| Propiedad                   | Valor    | Responsabilidad                                                                             |
+| --------------------------- | -------- | ------------------------------------------------------------------------------------------- |
+| `DefaultAuthenticateScheme` | `Bearer` | Establece el esquema utilizado para autenticar las solicitudes HTTP.                        |
+| `DefaultChallengeScheme`    | `Bearer` | Establece el esquema utilizado cuando una solicitud requiere autenticación.                 |
+| `DefaultForbidScheme`       | `Bearer` | Establece el esquema utilizado cuando un usuario autenticado no tiene permisos suficientes. |
+
+`JwtBearerDefaults.AuthenticationScheme` es una constante de ASP.NET Core cuyo valor es `Bearer`.
+
+**Diferencia principal:**
+
+| Característica            | Antes                                   | Ahora                                          |
+| ------------------------- | --------------------------------------- | ---------------------------------------------- |
+| Registro de autenticación | `AddAuthentication("Bearer")`           | `AddAuthentication(options => ...)`            |
+| Esquema de autenticación  | Predeterminado mediante `DefaultScheme` | Explícito mediante `DefaultAuthenticateScheme` |
+| Esquema de challenge      | Resuelto mediante `DefaultScheme`       | Explícito mediante `DefaultChallengeScheme`    |
+| Esquema de forbid         | Resuelto mediante `DefaultScheme`       | Explícito mediante `DefaultForbidScheme`       |
+| Validación de tokens      | JWT Bearer                              | JWT Bearer                                     |
+| Política administrativa   | `AdminOnly`                             | `AdminOnly`                                    |
+
+La configuración actual permite identificar directamente qué esquema debe utilizar ASP.NET Core para cada operación.
+
+**Consideración técnica:**
+
+Ambas configuraciones pueden producir el mismo comportamiento cuando no existen otros esquemas o configuraciones que modifiquen las opciones predeterminadas.
+
+Por tanto, el cambio hace explícita la selección de esquemas, pero el código proporcionado no demuestra por sí solo que exista una diferencia funcional respecto a la configuración anterior.
+
+#### Autenticación y autorización HTTP
+
+La configuración mantiene los eventos personalizados de JWT Bearer:
+
+| Evento        | Estado HTTP        | Código                    | Responsabilidad                                                                              |
+| ------------- | ------------------ | ------------------------- | -------------------------------------------------------------------------------------------- |
+| `OnChallenge` | `401 Unauthorized` | `authentication_required` | Genera una respuesta cuando la solicitud no cumple los requisitos de autenticación.          |
+| `OnForbidden` | `403 Forbidden`    | `forbidden`               | Genera una respuesta cuando el usuario autenticado no cumple los requisitos de autorización. |
+
+**Relación con los esquemas configurados:**
+
+| Esquema predeterminado      | Evento relacionado       | Resultado                                           |
+| --------------------------- | ------------------------ | --------------------------------------------------- |
+| `DefaultAuthenticateScheme` | Autenticación JWT Bearer | Construye la identidad a partir de un token válido. |
+| `DefaultChallengeScheme`    | `OnChallenge`            | Respuesta HTTP 401.                                 |
+| `DefaultForbidScheme`       | `OnForbidden`            | Respuesta HTTP 403.                                 |
+
+Los eventos utilizan `WriteAuthenticationErrorAsync()` para construir las respuestas mediante `ProblemDetailsResponseFactory`.
+
+#### Relación con la política AdminOnly
+
+Se conserva el registro:
+
+```csharp
+services.AddAuthorization(options =>
+{
+    options.AddPolicy(
+        "AdminOnly",
+        policy => policy.RequireRole(IdentitySeeder.AdminRole));
+});
+```
+
+**Flujo de autorización:**
+
+| Orden | Operación                                                     | Componente responsable      |
+| ----- | ------------------------------------------------------------- | --------------------------- |
+| 1     | El cliente envía una solicitud HTTP con un token Bearer.      | Cliente HTTP                |
+| 2     | Se selecciona el esquema de autenticación configurado.        | `DefaultAuthenticateScheme` |
+| 3     | Se valida el token JWT.                                       | JWT Bearer                  |
+| 4     | Se construye la identidad autenticada y sus claims.           | ASP.NET Core Authentication |
+| 5     | Se evalúa la política `AdminOnly`.                            | ASP.NET Core Authorization  |
+| 6     | Se comprueba la pertenencia al rol `Admin`.                   | `RequireRole()`             |
+| 7     | Si falta autenticación válida, se ejecuta el challenge.       | `DefaultChallengeScheme`    |
+| 8     | Si el usuario carece de permisos, se ejecuta forbid.          | `DefaultForbidScheme`       |
+| 9     | Si cumple los requisitos, se permite ejecutar el controlador. | `UserInvitationsController` |
+
+**Endpoints relacionados:**
+
+| Método | Endpoint                      | Autorización |
+| ------ | ----------------------------- | ------------ |
+| POST   | `/api/auth/login`             | Anónimo      |
+| POST   | `/api/auth/activate`          | Anónimo      |
+| POST   | `/api/users/invitations`      | `AdminOnly`  |
+| POST   | `/api/users/{id}/invitations` | `AdminOnly`  |
+
+La modificación no altera los requisitos de autorización definidos anteriormente.
+
+#### Componentes de .NET y proveedores externos
+
+| Componente / Método                      | Origen                         | Función                                                                |
+| ---------------------------------------- | ------------------------------ | ---------------------------------------------------------------------- |
+| `AddAuthentication()`                    | ASP.NET Core Authentication    | Registra los servicios y opciones de autenticación.                    |
+| `AuthenticationOptions`                  | ASP.NET Core Authentication    | Define los esquemas predeterminados utilizados por el sistema.         |
+| `DefaultAuthenticateScheme`              | ASP.NET Core Authentication    | Selecciona el esquema de autenticación.                                |
+| `DefaultChallengeScheme`                 | ASP.NET Core Authentication    | Selecciona el esquema para solicitar autenticación.                    |
+| `DefaultForbidScheme`                    | ASP.NET Core Authentication    | Selecciona el esquema para rechazar solicitudes por falta de permisos. |
+| `JwtBearerDefaults.AuthenticationScheme` | ASP.NET Core JWT Bearer        | Proporciona el nombre estándar del esquema `Bearer`.                   |
+| `AddJwtBearer()`                         | ASP.NET Core JWT Bearer        | Registra el controlador de autenticación mediante JWT.                 |
+| `TokenValidationParameters`              | Microsoft.IdentityModel.Tokens | Define las reglas de validación de tokens.                             |
+| `JwtBearerEvents`                        | ASP.NET Core JWT Bearer        | Permite personalizar las respuestas de autenticación y autorización.   |
+
+#### Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    CLIENT["Cliente HTTP"]
+
+    subgraph Presentation["Presentation - API"]
+        AUTH["AuthenticationOptions"]
+        BEARER["JWT Bearer"]
+        POLICY["Política AdminOnly"]
+        CONTROLLER["UserInvitationsController"]
+        CHALLENGE["OnChallenge"]
+        FORBID["OnForbidden"]
+        PROBLEM["ProblemDetailsResponseFactory"]
+    end
+
+    subgraph Application
+        CREATE["CreateUserInvitation"]
+        RESEND["ResendUserInvitation"]
+    end
+
+    CLIENT -->|"Authorization: Bearer token"| AUTH
+
+    AUTH -->|"DefaultAuthenticateScheme"| BEARER
+
+    BEARER -->|"Token válido"| POLICY
+    BEARER -->|"Autenticación requerida"| CHALLENGE
+
+    POLICY -->|"Rol Admin"| CONTROLLER
+    POLICY -->|"Permisos insuficientes"| FORBID
+
+    CHALLENGE -->|"401"| PROBLEM
+    FORBID -->|"403"| PROBLEM
+
+    CONTROLLER --> CREATE
+    CONTROLLER --> RESEND
+```
+
+**Interpretación:**
+
+- **AuthenticationOptions:** establece explícitamente el esquema Bearer para autenticación, challenge y forbid.
+- **JWT Bearer:** valida las credenciales y construye la identidad autenticada.
+- **AdminOnly:** comprueba la pertenencia al rol administrativo.
+- **Presentation:** genera respuestas HTTP uniformes para solicitudes no autenticadas o sin permisos.
+- **Application:** ejecuta los casos de uso únicamente después de superar las restricciones HTTP correspondientes.
+
+El cambio permanece dentro de Presentation y no introduce modificaciones en Application, Domain o Infrastructure.
+
+#### Resultado
+
+Se ajustó `DependencyInjection.AddApi()` para configurar explícitamente los esquemas predeterminados de autenticación, challenge y forbid mediante JWT Bearer.
+
+La modificación mantiene el comportamiento esperado de autenticación y autorización, haciendo explícita la selección del esquema utilizado por ASP.NET Core.
+
+También conserva las respuestas uniformes HTTP 401 y 403, la política `AdminOnly` y la documentación Swagger existente.
+
+#### **Estado de verificación:** el código proporcionado confirma el ajuste de configuración, pero no incluye resultados de las pruebas manuales. Por tanto, no puede determinarse qué error específico motivó el cambio ni confirmar su resolución únicamente con este fragmento.
 
 ### 19. Validación, ejecución local y Git
 
