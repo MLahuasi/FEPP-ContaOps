@@ -1,6 +1,6 @@
 # SPEC 05 — Persistencia y criptografía de tokens opacos
 
-> **Estado:** Aceptado
+> **Estado:** Implementado
 > **Dependencias:** SPEC 03, SPEC 04
 > **Fecha:** 2026-10-20
 > **Objetivo:** Crear el núcleo persistente y criptográfico reutilizable para almacenar hashes de tokens opacos sin depender de ASP.NET Core Data Protection.
@@ -56,14 +56,14 @@ Debe existir un índice único sobre `(UserId, Purpose)` y borrado en cascada co
 
 ## Criterios de aceptación
 
-- [ ] El token público contiene 32 bytes aleatorios y usa Base64Url.
-- [ ] La base de datos nunca almacena el token original.
-- [ ] La comparación usa una operación de tiempo constante.
-- [ ] Solo existe una fila activa por `(UserId, Purpose)`.
-- [ ] El token vencido se rechaza y puede eliminarse oportunistamente.
-- [ ] El modelo no introduce Data Protection.
-- [ ] La tabla aparece en PostgreSQL después de iniciar una base nueva.
-- [ ] Las pruebas unitarias cubren los casos criptográficos y temporales.
+- [x] El token público contiene 32 bytes aleatorios y usa Base64Url.
+- [x] La base de datos nunca almacena el token original.
+- [x] La comparación usa una operación de tiempo constante.
+- [x] Solo existe una fila activa por `(UserId, Purpose)`.
+- [x] El token vencido se rechaza y puede eliminarse oportunistamente.
+- [x] El modelo no introduce Data Protection.
+- [x] La tabla aparece en PostgreSQL después de iniciar una base nueva.
+- [x] Las pruebas unitarias cubren los casos criptográficos y temporales.
 
 ## Decisiones
 
