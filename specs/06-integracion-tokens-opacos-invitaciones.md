@@ -1,6 +1,6 @@
 # SPEC 06 — Integración de tokens opacos con invitaciones
 
-> **Estado:** Borrador
+> **Estado:** Aprobado
 > **Dependencias:** SPEC 05
 > **Fecha:** 2026-10-20
 > **Objetivo:** Sustituir los tokens Data Protection de invitación por un proveedor de Identity basado en tokens opacos hasheados y consumidos una sola vez.
