@@ -321,6 +321,131 @@ Revisar el spec: [`07-eliminacion-data-protection-key-ring.md`](../07-eliminacio
 
 ### 12. Diagrama Final: Arquitectura del spec-07-eliminacion-data-protection-key-ring
 
+#### 1. Diagrama de arquitectura consolidado
+
+```mermaid
+flowchart TD
+    subgraph Presentation["Presentation - ASP.NET Core API"]
+        API["API REST"]
+    end
+
+    subgraph Application["Application - Código propio"]
+        IUIS["IUserInvitationService"]
+    end
+
+    subgraph Infrastructure["Infrastructure - Código propio"]
+        DI["DependencyInjection.AddInfrastructure()"]
+        UIS["IdentityUserInvitationService"]
+        HTP["HashedUserTokenProvider"]
+        AU["ApplicationIdentityUser"]
+        DB["AppDbContext"]
+    end
+
+    subgraph Identity["ASP.NET Core Identity"]
+        AI["AddIdentity()"]
+        UM["UserManager"]
+        EFS["AddEntityFrameworkStores()"]
+        ATP["AddTokenProvider()"]
+        IR["IdentityRole"]
+    end
+
+    subgraph EFCore["Entity Framework Core"]
+        EF["DbContext / EF Core"]
+        NP["Npgsql"]
+    end
+
+    subgraph External["Servicios externos"]
+        PG[("PostgreSQL")]
+    end
+
+    subgraph Configuration["Configuración del proyecto"]
+        ENV[".env / .env.template"]
+        IC["Identity__*"]
+        CS["ConnectionStrings__Default"]
+    end
+
+    API --> IUIS
+    IUIS -.->|"Implementada por"| UIS
+
+    DI --> AI
+    DI --> EFS
+    DI --> ATP
+
+    AI --> UM
+    AI --> AU
+    AI --> IR
+
+    UIS --> UM
+    UIS -.->|"Nombre del proveedor"| ATP
+
+    ATP -->|"Registra"| HTP
+    UM -.->|"Utiliza proveedor registrado"| HTP
+
+    EFS --> DB
+    DB --> EF
+    EF --> NP
+    NP --> PG
+
+    ENV --> IC
+    ENV --> CS
+
+    IC -.->|"Configura opciones"| AI
+    CS -.->|"Configura conexión"| DB
+```
+
+**Criterio de consolidación:** El diagrama representa los componentes conservados tras los pasos 4, 5 y 6. Se excluyen los proveedores predeterminados de tokens y la configuración explícita de Data Protection eliminados durante el spec.
+
+#### 2. Relaciones principales
+
+| Origen                          | Destino                         | Relación                                                                  |
+| ------------------------------- | ------------------------------- | ------------------------------------------------------------------------- |
+| Presentation                    | `IUserInvitationService`        | Acceso al contrato de invitaciones.                                       |
+| `IUserInvitationService`        | `IdentityUserInvitationService` | Implementación del contrato de Application.                               |
+| `DependencyInjection`           | `AddIdentity()`                 | Registra los servicios de ASP.NET Core Identity.                          |
+| `AddIdentity()`                 | `ApplicationIdentityUser`       | Configura el tipo de usuario del proyecto.                                |
+| `AddIdentity()`                 | `IdentityRole`                  | Configura el tipo de rol de Identity.                                     |
+| `IdentityUserInvitationService` | `UserManager`                   | Utiliza los servicios de administración de usuarios y tokens de Identity. |
+| `AddTokenProvider()`            | `HashedUserTokenProvider`       | Registra el proveedor personalizado mediante `TokenProviderName`.         |
+| `AddEntityFrameworkStores()`    | `AppDbContext`                  | Integra los almacenes de Identity con EF Core.                            |
+| `AppDbContext`                  | PostgreSQL                      | Persistencia mediante EF Core y Npgsql.                                   |
+| `.env` / `.env.template`        | Identity / EF Core              | Proporcionan configuración de políticas y conexión.                       |
+
+#### 3. Componentes de .NET y bibliotecas externas
+
+| Componente                      | Origen                                        | Función en la arquitectura                                                    |
+| ------------------------------- | --------------------------------------------- | ----------------------------------------------------------------------------- |
+| `AddIdentity()`                 | ASP.NET Core Identity                         | Registra la infraestructura de usuarios y roles.                              |
+| `UserManager`                   | ASP.NET Core Identity                         | Administra usuarios y operaciones de tokens mediante proveedores registrados. |
+| `AddEntityFrameworkStores()`    | ASP.NET Core Identity + Entity Framework Core | Integra la persistencia de identidad con `AppDbContext`.                      |
+| `AddTokenProvider()`            | ASP.NET Core Identity                         | Registra `HashedUserTokenProvider` como proveedor personalizado.              |
+| `IdentityRole`                  | ASP.NET Core Identity                         | Representa los roles de usuario.                                              |
+| `DbContext`                     | Entity Framework Core                         | Proporciona las operaciones de acceso y persistencia de datos.                |
+| `Npgsql`                        | Biblioteca externa / Proveedor EF Core        | Permite la conexión de EF Core con PostgreSQL.                                |
+| `IUserInvitationService`        | Código propio / Application                   | Define el contrato del servicio de invitaciones.                              |
+| `IdentityUserInvitationService` | Código propio / Infrastructure                | Implementa el contrato de invitaciones utilizando Identity.                   |
+| `HashedUserTokenProvider`       | Código propio / Infrastructure                | Proveedor personalizado registrado para tokens de invitación.                 |
+| `DependencyInjection`           | Código propio / Infrastructure                | Centraliza el registro de servicios y adaptadores.                            |
+
+#### 4. Componentes y configuraciones eliminados
+
+| Componente                            | Origen                       | Resultado final                                               |
+| ------------------------------------- | ---------------------------- | ------------------------------------------------------------- |
+| `AddDataProtection()`                 | ASP.NET Core Data Protection | Registro explícito eliminado.                                 |
+| `IDataProtectionBuilder`              | ASP.NET Core Data Protection | Uso eliminado.                                                |
+| `SetApplicationName()`                | ASP.NET Core Data Protection | Configuración eliminada.                                      |
+| `PersistKeysToFileSystem()`           | ASP.NET Core Data Protection | Persistencia explícita del Key Ring eliminada.                |
+| `ProtectKeysWithDpapi()`              | ASP.NET Core Data Protection | Protección de claves mediante DPAPI eliminada.                |
+| `AddDefaultTokenProviders()`          | ASP.NET Core Identity        | Registro automático de proveedores predeterminados eliminado. |
+| `DataProtection__KeyRingPath`         | Configuración del proyecto   | Variable eliminada de `.env` y `.env.template`.               |
+| `Microsoft.AspNetCore.DataProtection` | ASP.NET Core                 | Using eliminado de `DependencyInjection`.                     |
+| `System.IO`                           | .NET                         | Using eliminado de `DependencyInjection`.                     |
+
+#### 5. Resultado
+
+La arquitectura conserva ASP.NET Core Identity, su integración con EF Core y el registro explícito de `HashedUserTokenProvider`, eliminando la configuración de Key Ring, DPAPI y los proveedores de tokens predeterminados.
+
+El spec elimina las dependencias explícitas identificadas de Data Protection; su ausencia absoluta en otros componentes no puede verificarse únicamente con la documentación proporcionada.
+
 ---
 
 ### 13. Comandos Git / PR\*\* (una vez validada la implementación y revisados los cambios)

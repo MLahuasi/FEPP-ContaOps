@@ -1,6 +1,6 @@
 # SPEC 07 — Eliminación de Data Protection y key ring
 
-> **Estado:** Aprobado
+> **Estado:** Implementado
 > **Dependencias:** SPEC 06
 > **Fecha:** 2026-10-20
 > **Objetivo:** Eliminar el uso operativo de ASP.NET Core Data Protection y toda configuración de key ring después de migrar las invitaciones.
@@ -36,13 +36,13 @@
 
 ## Criterios de aceptación
 
-- [ ] No existe uso operativo de `IDataProtectionProvider` o `AddDataProtection`.
-- [ ] No existe proveedor de invitación derivado de `DataProtectorTokenProvider`.
-- [ ] No se crea ni persiste un key ring.
-- [ ] La configuración vigente no contiene `DataProtection__KeyRingPath`.
-- [ ] JWT Bearer continúa emitiendo y validando tokens.
-- [ ] Las invitaciones continúan funcionando mediante `HashedUserTokenProvider`.
-- [ ] Las pruebas completas pasan sin key ring.
+- [x] No existe uso operativo de `IDataProtectionProvider` o `AddDataProtection`.
+- [x] No existe proveedor de invitación derivado de `DataProtectorTokenProvider`.
+- [x] No se crea ni persiste un key ring.
+- [x] La configuración vigente no contiene `DataProtection__KeyRingPath`.
+- [x] JWT Bearer continúa emitiendo y validando tokens.
+- [x] Las invitaciones continúan funcionando mediante `HashedUserTokenProvider`.
+- [x] Las pruebas completas pasan sin key ring.
 
 ## Decisiones
 
