@@ -32,6 +32,40 @@ public sealed class AppDbContext : IdentityDbContext<ApplicationIdentityUser, Id
     {
         base.OnModelCreating(builder);
 
-        builder.Entity<HashedUserToken>().ToTable("UserSecurityTokens");
+        builder.Entity<HashedUserToken>(entity =>
+        {
+            entity.ToTable("UserSecurityTokens");
+            entity.HasKey(token => token.TokenId);
+
+            entity.Property(token => token.TokenId)
+                .HasColumnType("uuid");
+            entity.Property(token => token.UserId)
+                .HasColumnType("character varying(450)")
+                .IsRequired();
+            entity.Property(token => token.Purpose)
+                .HasColumnType("text")
+                .IsRequired();
+            entity.Property(token => token.TokenHash)
+                .HasColumnType("bytea")
+                .HasMaxLength(32)
+                .IsRequired();
+            entity.Property(token => token.SecurityStamp)
+                .HasColumnType("text")
+                .IsRequired();
+            entity.Property(token => token.CreatedAtUtc)
+                .HasColumnType("timestamp with time zone")
+                .IsRequired();
+            entity.Property(token => token.ExpiresAtUtc)
+                .HasColumnType("timestamp with time zone")
+                .IsRequired();
+
+            entity.HasOne<ApplicationIdentityUser>()
+                .WithMany()
+                .HasForeignKey(token => token.UserId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasIndex(token => new { token.UserId, token.Purpose })
+                .IsUnique();
+        });
     }
 }

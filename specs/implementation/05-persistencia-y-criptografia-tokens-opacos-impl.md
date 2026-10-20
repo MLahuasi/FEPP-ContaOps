@@ -113,7 +113,108 @@ Se incorpora `HashedUserToken` como entidad de persistencia para tokens opacos a
 
 ---
 
-### 5. Configurar relación, índice único, tipos PostgreSQL y cascada.
+### 5. Configurar relación, índice único, tipos PostgreSQL y cascada
+
+#### 1. Componentes implementados
+
+| Componente                | Acción      | Tipo                             | Capa           | Responsabilidad                                                                   |
+| ------------------------- | ----------- | -------------------------------- | -------------- | --------------------------------------------------------------------------------- |
+| `AppDbContext`            | Update      | DbContext                        | Infrastructure | Configurar las restricciones, relaciones y tipos PostgreSQL de `HashedUserToken`. |
+| `HashedUserToken`         | Update      | Configuración de entidad EF Core | Infrastructure | Definir clave primaria, propiedades obligatorias y tipos de columnas.             |
+| `UserSecurityTokens`      | Update      | Tabla PostgreSQL                 | Infrastructure | Almacenar tokens con integridad referencial y restricciones de unicidad.          |
+| `ApplicationIdentityUser` | Sin cambios | Entidad Identity                 | Infrastructure | Representar al usuario propietario de los tokens.                                 |
+
+#### 2. Métodos principales
+
+| Clase                                | Método                | Responsabilidad                                                           |
+| ------------------------------------ | --------------------- | ------------------------------------------------------------------------- |
+| `AppDbContext`                       | `OnModelCreating()`   | Configurar el modelo de persistencia de `HashedUserToken`.                |
+| `EntityTypeBuilder<HashedUserToken>` | `HasKey()`            | Establecer `TokenId` como clave primaria.                                 |
+| `EntityTypeBuilder<HashedUserToken>` | `Property()`          | Configurar las propiedades persistentes.                                  |
+| `PropertyBuilder`                    | `HasColumnType()`     | Especificar los tipos de datos PostgreSQL.                                |
+| `PropertyBuilder`                    | `HasMaxLength(32)`    | Establecer una longitud máxima de 32 bytes para `TokenHash` en el modelo. |
+| `PropertyBuilder`                    | `IsRequired()`        | Configurar columnas obligatorias (`NOT NULL`).                            |
+| `EntityTypeBuilder<HashedUserToken>` | `HasOne().WithMany()` | Definir la relación entre tokens y usuarios.                              |
+| `ReferenceCollectionBuilder`         | `HasForeignKey()`     | Establecer `UserId` como clave foránea.                                   |
+| `ReferenceCollectionBuilder`         | `OnDelete()`          | Configurar eliminación en cascada.                                        |
+| `IndexBuilder`                       | `IsUnique()`          | Establecer unicidad para la combinación `UserId` y `Purpose`.             |
+
+#### 3. Componentes de .NET y bibliotecas externas
+
+| Componente / Método       | Origen                          | Función                                                      | Uso en el proyecto                                          |
+| ------------------------- | ------------------------------- | ------------------------------------------------------------ | ----------------------------------------------------------- |
+| `IdentityDbContext`       | ASP.NET Core Identity + EF Core | Proporcionar persistencia para usuarios y roles de Identity. | Clase base de `AppDbContext`.                               |
+| `ModelBuilder`            | Entity Framework Core           | Configurar entidades y relaciones del modelo.                | Definir las restricciones de `HashedUserToken`.             |
+| `EntityTypeBuilder<T>`    | Entity Framework Core           | Configurar entidades mediante Fluent API.                    | Definir clave primaria, propiedades, relaciones e índices.  |
+| `HasColumnType()`         | Entity Framework Core           | Especificar el tipo de columna de la base de datos.          | Utilizar tipos nativos de PostgreSQL.                       |
+| `HasOne().WithMany()`     | Entity Framework Core           | Configurar una relación muchos a uno.                        | Asociar múltiples tokens con un usuario Identity.           |
+| `DeleteBehavior.Cascade`  | Entity Framework Core           | Configurar eliminación en cascada.                           | Eliminar los tokens asociados cuando se elimina su usuario. |
+| `HasIndex().IsUnique()`   | Entity Framework Core           | Configurar índices únicos.                                   | Impedir múltiples tokens con el mismo `UserId` y `Purpose`. |
+| `ApplicationIdentityUser` | Código propio                   | Representar usuarios de ASP.NET Core Identity.               | Entidad principal de la relación con `HashedUserToken`.     |
+
+#### 4. Flujo funcional
+
+**Configuración PostgreSQL**
+
+| Propiedad       | Tipo PostgreSQL            | Restricción                                     |
+| --------------- | -------------------------- | ----------------------------------------------- |
+| `TokenId`       | `uuid`                     | Primary Key                                     |
+| `UserId`        | `character varying(450)`   | NOT NULL, Foreign Key                           |
+| `Purpose`       | `text`                     | NOT NULL                                        |
+| `TokenHash`     | `bytea`                    | NOT NULL, longitud máxima configurada: 32 bytes |
+| `SecurityStamp` | `text`                     | NOT NULL                                        |
+| `CreatedAtUtc`  | `timestamp with time zone` | NOT NULL                                        |
+| `ExpiresAtUtc`  | `timestamp with time zone` | NOT NULL                                        |
+
+**Relaciones y restricciones**
+
+| Operación              | Configuración                                  | Comportamiento                                                              |
+| ---------------------- | ---------------------------------------------- | --------------------------------------------------------------------------- |
+| Relación usuario-token | `HasOne<ApplicationIdentityUser>().WithMany()` | Un usuario puede tener múltiples tokens; cada token pertenece a un usuario. |
+| Clave foránea          | `HasForeignKey(token => token.UserId)`         | Vincula los tokens con los usuarios de Identity.                            |
+| Eliminación            | `OnDelete(DeleteBehavior.Cascade)`             | Eliminar un usuario provoca la eliminación de sus tokens asociados.         |
+| Índice único           | `HasIndex(UserId, Purpose).IsUnique()`         | Permite como máximo un token por usuario y propósito.                       |
+| Clave primaria         | `HasKey(token => token.TokenId)`               | Identifica de manera única cada registro.                                   |
+
+**Nota:** `HasMaxLength(32)` configura una restricción de longitud en el modelo EF Core, pero no garantiza por sí sola que PostgreSQL limite los valores `bytea` a 32 bytes. La configuración no muestra una restricción `CHECK` adicional.
+
+#### 5. Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    subgraph INF["Infrastructure"]
+        CTX["AppDbContext"]
+        TOKEN["HashedUserToken"]
+        USER["ApplicationIdentityUser"]
+    end
+
+    subgraph EF["Entity Framework Core"]
+        IDB["IdentityDbContext"]
+        MODEL["ModelBuilder / Fluent API"]
+    end
+
+    subgraph PG["PostgreSQL"]
+        USERS[("AspNetUsers")]
+        TOKENS[("UserSecurityTokens")]
+        IDX["UNIQUE (UserId, Purpose)"]
+    end
+
+    CTX -->|Hereda| IDB
+    CTX -->|Configura| MODEL
+
+    MODEL -->|Mapea| TOKEN
+    MODEL -->|Configura relación| USER
+
+    USER -->|Persistencia Identity| USERS
+    TOKEN -->|Persistencia| TOKENS
+
+    TOKENS -->|FK UserId / ON DELETE CASCADE| USERS
+    TOKENS -->|Índice único| IDX
+```
+
+#### 6. Resultado
+
+Se configura la persistencia de `HashedUserToken` con tipos PostgreSQL, clave primaria, relación con Identity y eliminación en cascada. El índice compuesto único `(UserId, Purpose)` garantiza un máximo de un token por usuario y propósito.
 
 ---
 
