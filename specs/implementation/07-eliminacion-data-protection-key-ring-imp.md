@@ -225,6 +225,50 @@ Se elimina el registro automático de proveedores predeterminados de ASP.NET Cor
 
 ### 6. Eliminar DataProtection\_\_KeyRingPath de configuración/documentación, sin modificar secretos reales.
 
+#### 1. Componentes implementados
+
+| Componente                    | Acción | Tipo                       | Capa                           | Responsabilidad                                                                            |
+| ----------------------------- | ------ | -------------------------- | ------------------------------ | ------------------------------------------------------------------------------------------ |
+| `.env`                        | Update | Archivo de configuración   | Infrastructure / Configuration | Elimina la variable `DataProtection__KeyRingPath` sin modificar las demás configuraciones. |
+| `.env.template`               | Update | Plantilla de configuración | Infrastructure / Configuration | Elimina la variable y documentación asociada al almacenamiento del Key Ring.               |
+| `DataProtection__KeyRingPath` | Delete | Variable de entorno        | Infrastructure / Configuration | Definía la ruta de persistencia de claves de Data Protection.                              |
+
+#### 2. Métodos principales
+
+No se modifican métodos ni clases en este paso. Los cambios corresponden exclusivamente a archivos de configuración.
+
+#### 3. Componentes de .NET y bibliotecas externas
+
+| Componente / Método           | Origen                                                             | Función                                                                                  | Uso en el proyecto                                                      |
+| ----------------------------- | ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `DataProtection__KeyRingPath` | ASP.NET Core Data Protection / Convención de configuración de .NET | Representaba la propiedad `DataProtection:KeyRingPath` mediante una variable de entorno. | Eliminada de `.env` y `.env.template`.                                  |
+| Variables de entorno (`__`)   | .NET / Microsoft.Extensions.Configuration                          | Permiten representar configuraciones jerárquicas utilizando doble guion bajo.            | Se mantienen para Identity, JWT, SMTP y demás configuraciones.          |
+| `.env`                        | Configuración del proyecto                                         | Define variables de entorno para el entorno local.                                       | Conserva las configuraciones existentes, excepto la variable eliminada. |
+| `.env.template`               | Configuración del proyecto                                         | Proporciona una plantilla de variables de entorno.                                       | Se actualiza para excluir la configuración obsoleta de Data Protection. |
+
+#### 4. Flujo funcional
+
+| Operación                     | Antes                                                               | Después      |
+| ----------------------------- | ------------------------------------------------------------------- | ------------ |
+| Configuración del Key Ring    | `DataProtection__KeyRingPath=''`                                    | Eliminada.   |
+| Documentación del Key Ring    | Indicaba persistencia obligatoria en Docker y despliegues durables. | Eliminada.   |
+| Configuración de PostgreSQL   | Variables `POSTGRES_PASSWORD` y `ConnectionStrings__Default`.       | Sin cambios. |
+| Configuración de pgAdmin      | Variables `PGADMIN_DEFAULT_*`.                                      | Sin cambios. |
+| Configuración de JWT          | Variables `Jwt__*`.                                                 | Sin cambios. |
+| Configuración de Identity     | Variables `Identity__*`.                                            | Sin cambios. |
+| Configuración de invitaciones | Variables `UserInvitation__*`.                                      | Sin cambios. |
+| Configuración SMTP            | Variables `Email__Smtp__*`.                                         | Sin cambios. |
+
+**Alcance:** Se elimina la variable de configuración y su comentario asociado. No se modifican los valores de las demás variables, incluidos los secretos existentes.
+
+#### 5. Diagrama de arquitectura
+
+No se requiere un diagrama adicional. Este paso elimina una configuración obsoleta y no introduce nuevas relaciones arquitectónicas.
+
+#### 6. Resultado
+
+Se elimina `DataProtection__KeyRingPath` de `.env` y `.env.template`, junto con su documentación asociada. Se mantienen las configuraciones de PostgreSQL, pgAdmin, JWT, Identity, invitaciones y SMTP sin modificar sus valores.
+
 ---
 
 ### 7. Ejecutar búsqueda negativa y justificar menciones históricas.

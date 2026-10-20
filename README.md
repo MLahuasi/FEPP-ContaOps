@@ -55,7 +55,6 @@ usar el script recomendado o asignar las variables con
 | Invitaciones | `UserInvitation__TokenLifetimeHours`, `UserInvitation__ActivationBaseUrl` | No |
 | SMTP | `Email__Smtp__*` | `Password` |
 | Plantillas | `Email__Templates__RootPath` | No |
-| Data Protection | `DataProtection__KeyRingPath` | No |
 
 Reglas principales:
 
@@ -85,22 +84,12 @@ El contrato no depende de Gmail: otro proveedor compatible puede sustituirse
 cambiando `Email__Smtp__*`. No se usan `MAILER_*`, `MAIL_*` ni
 `MAIL_TEMPLATE_EXTENSION`.
 
-### Plantillas y key ring
+### Plantillas de correo
 
 El catálogo base está en `src/Fepp.ContaOps.Infrastructure/Email/Templates/` y
 contiene `templates.json`, `invitation.html` e `invitation.txt`. Se puede
 reemplazar mediante `Email__Templates__RootPath`; el manifest y ambos formatos
 se validan al iniciar.
-
-`DataProtection__KeyRingPath` es opcional para desarrollo local. En Windows
-local, el key ring puede protegerse mediante DPAPI. La API actualmente se
-ejecuta en el host con `run-local.ps1`; por ello el `docker-compose.yml` actual
-no monta todavía un volumen de key ring para la API.
-
-Cuando la API se ejecute en Docker, `DataProtection__KeyRingPath` deberá apuntar
-a un directorio montado desde un named volume con permisos de lectura y
-escritura para la API. El volumen deberá conservarse al recrear el contenedor;
-el almacenamiento anfitrión deberá contar con protección en reposo.
 
 ## Servicios y direcciones
 
@@ -390,7 +379,6 @@ logs. Si un token fue expuesto, reenvía la invitación para invalidarlo.
 | JWT y SMTP | Secretos fuera de Git |
 | Contraseñas | No reutilizarlas entre servicios |
 | Logs | No contienen contraseñas, tokens ni secretos |
-| Key ring Docker | Volumen persistente y protegido |
 | Logs | `src/Fepp.ContaOps.Api/logs/`, rotación diaria y máximo 14 archivos |
 
 ## Documentación complementaria
