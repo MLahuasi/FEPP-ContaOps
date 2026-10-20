@@ -1,0 +1,462 @@
+# Implementar: 07-eliminacion-data-protection-key-ring
+
+## PASOS
+
+### 1. Ejecutar docker compose ps y confirmar que no se eliminarán volúmenes ni se reconfigurará pgAdmin.
+
+---
+
+### 2. Buscar referencias de código, configuración, documentación y Docker.
+
+---
+
+### 3. Eliminar clases/opciones específicas de Data Protection sin consumidores.
+
+---
+
+### 4. Eliminar registros de Data Protection, persistencia, DPAPI y using asociados.
+
+#### 1. Componentes implementados
+
+| Componente                            | Acción | Tipo                     | Capa           | Responsabilidad                                                                                               |
+| ------------------------------------- | ------ | ------------------------ | -------------- | ------------------------------------------------------------------------------------------------------------- |
+| `DependencyInjection`                 | Update | Clase estática           | Infrastructure | Elimina la configuración explícita de Data Protection y conserva el registro de servicios de infraestructura. |
+| `AddInfrastructure()`                 | Update | Método de extensión      | Infrastructure | Elimina el registro, persistencia y protección de claves de Data Protection.                                  |
+| `IDataProtectionBuilder`              | Delete | Interfaz de ASP.NET Core | Infrastructure | Se elimina su utilización para configurar Data Protection.                                                    |
+| `DataProtection:KeyRingPath`          | Delete | Lectura de configuración | Infrastructure | Elimina la lectura de la ruta de almacenamiento de claves criptográficas.                                     |
+| `Microsoft.AspNetCore.DataProtection` | Delete | Using                    | Infrastructure | Elimina la importación explícita de Data Protection.                                                          |
+| `System.IO`                           | Delete | Using                    | Infrastructure | Elimina la importación utilizada para gestionar el directorio de claves.                                      |
+
+#### 2. Métodos principales
+
+| Clase                 | Método                | Responsabilidad                                                                         |
+| --------------------- | --------------------- | --------------------------------------------------------------------------------------- |
+| `DependencyInjection` | `AddInfrastructure()` | Registra los servicios de Infrastructure sin configurar explícitamente Data Protection. |
+
+**Operaciones eliminadas:**
+
+| Método / Propiedad            | Función anterior                                                            |
+| ----------------------------- | --------------------------------------------------------------------------- |
+| `AddDataProtection()`         | Registraba explícitamente los servicios de Data Protection.                 |
+| `SetApplicationName()`        | Establecía el identificador de aplicación utilizado para aislar las claves. |
+| `PersistKeysToFileSystem()`   | Configuraba la persistencia del Key Ring en el sistema de archivos.         |
+| `ProtectKeysWithDpapi()`      | Protegía las claves mediante DPAPI en Windows.                              |
+| `DirectoryInfo.Create()`      | Creaba el directorio destinado al almacenamiento de claves.                 |
+| `OperatingSystem.IsWindows()` | Comprobaba si el sistema operativo era Windows.                             |
+
+#### 3. Componentes de .NET y bibliotecas externas
+
+| Componente / Método           | Origen                                          | Función                                                   | Uso en el proyecto                           |
+| ----------------------------- | ----------------------------------------------- | --------------------------------------------------------- | -------------------------------------------- |
+| `IServiceCollection`          | .NET / Microsoft.Extensions.DependencyInjection | Contenedor de registro de servicios.                      | Mantiene los registros de Infrastructure.    |
+| `IConfiguration`              | .NET / Microsoft.Extensions.Configuration       | Acceso a configuración.                                   | Obtiene las opciones y cadenas de conexión.  |
+| `AddDataProtection()`         | ASP.NET Core Data Protection                    | Registra servicios criptográficos de protección de datos. | Eliminado del registro explícito.            |
+| `IDataProtectionBuilder`      | ASP.NET Core Data Protection                    | Configura los servicios de protección de datos.           | Eliminado.                                   |
+| `SetApplicationName()`        | ASP.NET Core Data Protection                    | Define el discriminador de aplicación.                    | Eliminado.                                   |
+| `PersistKeysToFileSystem()`   | ASP.NET Core Data Protection                    | Persiste el Key Ring en archivos.                         | Eliminado.                                   |
+| `ProtectKeysWithDpapi()`      | ASP.NET Core Data Protection                    | Protege claves mediante Windows DPAPI.                    | Eliminado.                                   |
+| `DirectoryInfo`               | .NET / System.IO                                | Representa y administra directorios.                      | Eliminado de esta configuración.             |
+| `OperatingSystem.IsWindows()` | .NET / System                                   | Identifica el sistema operativo.                          | Eliminado de esta configuración.             |
+| `AddIdentity()`               | ASP.NET Core Identity                           | Registra servicios de identidad.                          | Se mantiene sin modificaciones en este paso. |
+| `AddDefaultTokenProviders()`  | ASP.NET Core Identity                           | Registra proveedores de tokens predeterminados.           | Se mantiene en el código mostrado.           |
+| `AddTokenProvider<T>()`       | ASP.NET Core Identity                           | Registra un proveedor de tokens personalizado.            | Mantiene `HashedUserTokenProvider`.          |
+
+#### 4. Flujo funcional
+
+| Operación                         | Antes                                      | Después      |
+| --------------------------------- | ------------------------------------------ | ------------ |
+| Registro de Data Protection       | `AddDataProtection()` explícito.           | Eliminado.   |
+| Identificación de aplicación      | `SetApplicationName("FEPP-ContaOps")`.     | Eliminada.   |
+| Configuración del Key Ring        | Lectura de `DataProtection:KeyRingPath`.   | Eliminada.   |
+| Persistencia de claves            | `PersistKeysToFileSystem()`.               | Eliminada.   |
+| Protección en Windows             | `ProtectKeysWithDpapi()`.                  | Eliminada.   |
+| Registro de Identity              | `AddIdentity()` con proveedores de tokens. | Se mantiene. |
+| Registro de tokens personalizados | `HashedUserTokenProvider`.                 | Se mantiene. |
+
+**Alcance:** Se elimina la configuración explícita de Data Protection, pero no se demuestra su desactivación completa. `AddDefaultTokenProviders()` permanece registrado y puede incorporar proveedores que utilizan Data Protection.
+
+#### 5. Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    subgraph Infrastructure["Infrastructure - Código propio"]
+        DI["DependencyInjection.AddInfrastructure()"]
+        HTP["HashedUserTokenProvider"]
+        DB["AppDbContext"]
+    end
+
+    subgraph Identity["ASP.NET Core Identity"]
+        AI["AddIdentity()"]
+        DTP["AddDefaultTokenProviders()"]
+        ATP["AddTokenProvider()"]
+    end
+
+    subgraph DataProtection["ASP.NET Core Data Protection"]
+        DP["Data Protection"]
+    end
+
+    subgraph Persistence["Persistencia"]
+        PG[("PostgreSQL")]
+    end
+
+    DI --> AI
+    DI --> DB
+
+    AI --> DTP
+    AI --> ATP
+    ATP --> HTP
+
+    DTP -.->|"Puede registrar proveedores basados en"| DP
+
+    DB --> PG
+```
+
+**Configuración explícita eliminada:** `AddDataProtection()`, `SetApplicationName()`, `PersistKeysToFileSystem()` y `ProtectKeysWithDpapi()`.
+
+#### 6. Resultado
+
+Se elimina de `DependencyInjection` la configuración explícita de Data Protection, la persistencia del Key Ring y su protección mediante DPAPI. Se conserva el registro de ASP.NET Core Identity y sus proveedores de tokens, por lo que la ausencia total de dependencias de Data Protection todavía no queda demostrada.
+
+---
+
+### 5. Registrar explícitamente solo los proveedores de Identity necesarios.
+
+#### 1. Componentes implementados
+
+| Componente                   | Acción      | Tipo                              | Capa           | Responsabilidad                                                                              |
+| ---------------------------- | ----------- | --------------------------------- | -------------- | -------------------------------------------------------------------------------------------- |
+| `DependencyInjection`        | Update      | Clase estática                    | Infrastructure | Configura ASP.NET Core Identity registrando únicamente el proveedor de tokens personalizado. |
+| `AddInfrastructure()`        | Update      | Método de extensión               | Infrastructure | Elimina el registro de proveedores de tokens predeterminados de Identity.                    |
+| `HashedUserTokenProvider`    | Sin cambios | Proveedor de tokens personalizado | Infrastructure | Proveedor registrado explícitamente para los tokens de invitación.                           |
+| `AddDefaultTokenProviders()` | Delete      | Registro de servicios             | Infrastructure | Elimina el registro automático de proveedores predeterminados de Identity.                   |
+
+#### 2. Métodos principales
+
+| Clase                 | Método                | Responsabilidad                                                                                     |
+| --------------------- | --------------------- | --------------------------------------------------------------------------------------------------- |
+| `DependencyInjection` | `AddInfrastructure()` | Registra Identity, sus almacenes de EF Core y el proveedor personalizado `HashedUserTokenProvider`. |
+
+**Cambio realizado:**
+
+```csharp
+services.AddIdentity<ApplicationIdentityUser, IdentityRole>(options =>
+    {
+        options.User.RequireUniqueEmail = true;
+    })
+    .AddEntityFrameworkStores<AppDbContext>()
+    .AddTokenProvider<HashedUserTokenProvider>(
+        IdentityUserInvitationService.TokenProviderName);
+```
+
+Se elimina `.AddDefaultTokenProviders()`, conservando únicamente el registro explícito del proveedor personalizado.
+
+#### 3. Componentes de .NET y bibliotecas externas
+
+| Componente / Método                               | Origen                                        | Función                                                                      | Uso en el proyecto                                                              |
+| ------------------------------------------------- | --------------------------------------------- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `AddIdentity<TUser, TRole>()`                     | ASP.NET Core Identity                         | Registra los servicios de administración de usuarios y roles.                | Configura Identity con `ApplicationIdentityUser` e `IdentityRole`.              |
+| `AddEntityFrameworkStores<TContext>()`            | ASP.NET Core Identity + Entity Framework Core | Integra los almacenes de Identity con EF Core.                               | Utiliza `AppDbContext` para la persistencia de identidad.                       |
+| `AddTokenProvider<TProvider>()`                   | ASP.NET Core Identity                         | Registra un proveedor de tokens con un nombre específico.                    | Registra `HashedUserTokenProvider` para invitaciones.                           |
+| `AddDefaultTokenProviders()`                      | ASP.NET Core Identity                         | Registra proveedores predeterminados para generación y validación de tokens. | Eliminado para evitar registrar proveedores que no se requieren explícitamente. |
+| `HashedUserTokenProvider`                         | Código propio del proyecto                    | Proveedor personalizado de tokens de Identity.                               | Permanece registrado para el flujo de invitaciones.                             |
+| `IdentityUserInvitationService.TokenProviderName` | Código propio del proyecto                    | Identifica el nombre del proveedor personalizado.                            | Se utiliza como clave de registro del proveedor.                                |
+| `IdentityRole`                                    | ASP.NET Core Identity                         | Representa un rol de Identity.                                               | Tipo de rol utilizado en la configuración.                                      |
+
+#### 4. Flujo funcional
+
+| Operación                                          | Antes                                                     | Después                                    |
+| -------------------------------------------------- | --------------------------------------------------------- | ------------------------------------------ |
+| Registro de Identity                               | `AddIdentity()`                                           | Se mantiene.                               |
+| Persistencia de usuarios y roles                   | `AddEntityFrameworkStores<AppDbContext>()`                | Se mantiene.                               |
+| Proveedor personalizado                            | `HashedUserTokenProvider`                                 | Se mantiene.                               |
+| Proveedores predeterminados                        | `AddDefaultTokenProviders()`                              | Eliminado.                                 |
+| Registro de proveedores basados en Data Protection | Podían registrarse mediante `AddDefaultTokenProviders()`. | Se elimina esa vía de registro automático. |
+
+**Alcance:** El cambio evita registrar automáticamente los proveedores predeterminados de Identity, incluidos los basados en Data Protection. No demuestra que otros componentes de la aplicación no registren o utilicen Data Protection.
+
+#### 5. Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    subgraph Application["Application - Código propio"]
+        IUIS["IUserInvitationService"]
+    end
+
+    subgraph Infrastructure["Infrastructure - Código propio"]
+        DI["DependencyInjection.AddInfrastructure()"]
+        UIS["IdentityUserInvitationService"]
+        HTP["HashedUserTokenProvider"]
+        DB["AppDbContext"]
+        AU["ApplicationIdentityUser"]
+    end
+
+    subgraph Identity["ASP.NET Core Identity"]
+        AI["AddIdentity()"]
+        EFS["AddEntityFrameworkStores()"]
+        ATP["AddTokenProvider()"]
+        IR["IdentityRole"]
+    end
+
+    subgraph Persistence["Persistencia externa"]
+        PG[("PostgreSQL")]
+    end
+
+    DI --> AI
+    AI --> AU
+    AI --> IR
+    DI --> EFS
+    EFS --> DB
+    DB --> PG
+
+    DI --> ATP
+    ATP --> HTP
+
+    IUIS -.->|Implementada por| UIS
+    UIS -.->|Nombre del proveedor| ATP
+```
+
+**Registro eliminado:** `AddDefaultTokenProviders()`.
+
+#### 6. Resultado
+
+Se elimina el registro automático de proveedores predeterminados de ASP.NET Core Identity, conservando `HashedUserTokenProvider` como único proveedor registrado explícitamente. Esto elimina una vía de incorporación de proveedores dependientes de Data Protection, sin modificar los servicios principales de Identity.
+
+---
+
+### 6. Eliminar DataProtection\_\_KeyRingPath de configuración/documentación, sin modificar secretos reales.
+
+#### 1. Componentes implementados
+
+| Componente                    | Acción | Tipo                       | Capa                           | Responsabilidad                                                                            |
+| ----------------------------- | ------ | -------------------------- | ------------------------------ | ------------------------------------------------------------------------------------------ |
+| `.env`                        | Update | Archivo de configuración   | Infrastructure / Configuration | Elimina la variable `DataProtection__KeyRingPath` sin modificar las demás configuraciones. |
+| `.env.template`               | Update | Plantilla de configuración | Infrastructure / Configuration | Elimina la variable y documentación asociada al almacenamiento del Key Ring.               |
+| `DataProtection__KeyRingPath` | Delete | Variable de entorno        | Infrastructure / Configuration | Definía la ruta de persistencia de claves de Data Protection.                              |
+
+#### 2. Métodos principales
+
+No se modifican métodos ni clases en este paso. Los cambios corresponden exclusivamente a archivos de configuración.
+
+#### 3. Componentes de .NET y bibliotecas externas
+
+| Componente / Método           | Origen                                                             | Función                                                                                  | Uso en el proyecto                                                      |
+| ----------------------------- | ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `DataProtection__KeyRingPath` | ASP.NET Core Data Protection / Convención de configuración de .NET | Representaba la propiedad `DataProtection:KeyRingPath` mediante una variable de entorno. | Eliminada de `.env` y `.env.template`.                                  |
+| Variables de entorno (`__`)   | .NET / Microsoft.Extensions.Configuration                          | Permiten representar configuraciones jerárquicas utilizando doble guion bajo.            | Se mantienen para Identity, JWT, SMTP y demás configuraciones.          |
+| `.env`                        | Configuración del proyecto                                         | Define variables de entorno para el entorno local.                                       | Conserva las configuraciones existentes, excepto la variable eliminada. |
+| `.env.template`               | Configuración del proyecto                                         | Proporciona una plantilla de variables de entorno.                                       | Se actualiza para excluir la configuración obsoleta de Data Protection. |
+
+#### 4. Flujo funcional
+
+| Operación                     | Antes                                                               | Después      |
+| ----------------------------- | ------------------------------------------------------------------- | ------------ |
+| Configuración del Key Ring    | `DataProtection__KeyRingPath=''`                                    | Eliminada.   |
+| Documentación del Key Ring    | Indicaba persistencia obligatoria en Docker y despliegues durables. | Eliminada.   |
+| Configuración de PostgreSQL   | Variables `POSTGRES_PASSWORD` y `ConnectionStrings__Default`.       | Sin cambios. |
+| Configuración de pgAdmin      | Variables `PGADMIN_DEFAULT_*`.                                      | Sin cambios. |
+| Configuración de JWT          | Variables `Jwt__*`.                                                 | Sin cambios. |
+| Configuración de Identity     | Variables `Identity__*`.                                            | Sin cambios. |
+| Configuración de invitaciones | Variables `UserInvitation__*`.                                      | Sin cambios. |
+| Configuración SMTP            | Variables `Email__Smtp__*`.                                         | Sin cambios. |
+
+**Alcance:** Se elimina la variable de configuración y su comentario asociado. No se modifican los valores de las demás variables, incluidos los secretos existentes.
+
+#### 5. Diagrama de arquitectura
+
+No se requiere un diagrama adicional. Este paso elimina una configuración obsoleta y no introduce nuevas relaciones arquitectónicas.
+
+#### 6. Resultado
+
+Se elimina `DataProtection__KeyRingPath` de `.env` y `.env.template`, junto con su documentación asociada. Se mantienen las configuraciones de PostgreSQL, pgAdmin, JWT, Identity, invitaciones y SMTP sin modificar sus valores.
+
+---
+
+### 7. Ejecutar búsqueda negativa y justificar menciones históricas.
+
+---
+
+### 8. Ejecutar restore, build, pruebas y verificaciones manuales.
+
+---
+
+### 9. Ajustes por pruebas manuales
+
+**Levantar PostgreSQL y pgAdmin:**
+
+```powershell
+docker compose up -d
+```
+
+**Compilación y pruebas:**
+
+```powershell
+dotnet restore FEPP-ContaOps.slnx
+dotnet build FEPP-ContaOps.slnx
+dotnet test FEPP-ContaOps.slnx
+```
+
+---
+
+### 10. Validación, ejecución local y Git
+
+**Prerrequisitos:** Docker disponible; crear un archivo `.env` local a partir de `.env.example` y sustituir todos los valores de ejemplo por credenciales y secretos propios. **No subir `.env` a Git.**
+
+**Iniciar API:**
+
+```powershell
+.\run-local.ps1
+```
+
+---
+
+### 11. Validación del spec (flujo de trabajo existente):
+
+```powershell
+/spec-acceptance-validator @specs/07-eliminacion-data-protection-key-ring.md
+```
+
+Revisar el spec: [`07-eliminacion-data-protection-key-ring.md`](../07-eliminacion-data-protection-key-ring.md).
+
+---
+
+### 12. Diagrama Final: Arquitectura del spec-07-eliminacion-data-protection-key-ring
+
+#### 1. Diagrama de arquitectura consolidado
+
+```mermaid
+flowchart TD
+    subgraph Presentation["Presentation - ASP.NET Core API"]
+        API["API REST"]
+    end
+
+    subgraph Application["Application - Código propio"]
+        IUIS["IUserInvitationService"]
+    end
+
+    subgraph Infrastructure["Infrastructure - Código propio"]
+        DI["DependencyInjection.AddInfrastructure()"]
+        UIS["IdentityUserInvitationService"]
+        HTP["HashedUserTokenProvider"]
+        AU["ApplicationIdentityUser"]
+        DB["AppDbContext"]
+    end
+
+    subgraph Identity["ASP.NET Core Identity"]
+        AI["AddIdentity()"]
+        UM["UserManager"]
+        EFS["AddEntityFrameworkStores()"]
+        ATP["AddTokenProvider()"]
+        IR["IdentityRole"]
+    end
+
+    subgraph EFCore["Entity Framework Core"]
+        EF["DbContext / EF Core"]
+        NP["Npgsql"]
+    end
+
+    subgraph External["Servicios externos"]
+        PG[("PostgreSQL")]
+    end
+
+    subgraph Configuration["Configuración del proyecto"]
+        ENV[".env / .env.template"]
+        IC["Identity__*"]
+        CS["ConnectionStrings__Default"]
+    end
+
+    API --> IUIS
+    IUIS -.->|"Implementada por"| UIS
+
+    DI --> AI
+    DI --> EFS
+    DI --> ATP
+
+    AI --> UM
+    AI --> AU
+    AI --> IR
+
+    UIS --> UM
+    UIS -.->|"Nombre del proveedor"| ATP
+
+    ATP -->|"Registra"| HTP
+    UM -.->|"Utiliza proveedor registrado"| HTP
+
+    EFS --> DB
+    DB --> EF
+    EF --> NP
+    NP --> PG
+
+    ENV --> IC
+    ENV --> CS
+
+    IC -.->|"Configura opciones"| AI
+    CS -.->|"Configura conexión"| DB
+```
+
+**Criterio de consolidación:** El diagrama representa los componentes conservados tras los pasos 4, 5 y 6. Se excluyen los proveedores predeterminados de tokens y la configuración explícita de Data Protection eliminados durante el spec.
+
+#### 2. Relaciones principales
+
+| Origen                          | Destino                         | Relación                                                                  |
+| ------------------------------- | ------------------------------- | ------------------------------------------------------------------------- |
+| Presentation                    | `IUserInvitationService`        | Acceso al contrato de invitaciones.                                       |
+| `IUserInvitationService`        | `IdentityUserInvitationService` | Implementación del contrato de Application.                               |
+| `DependencyInjection`           | `AddIdentity()`                 | Registra los servicios de ASP.NET Core Identity.                          |
+| `AddIdentity()`                 | `ApplicationIdentityUser`       | Configura el tipo de usuario del proyecto.                                |
+| `AddIdentity()`                 | `IdentityRole`                  | Configura el tipo de rol de Identity.                                     |
+| `IdentityUserInvitationService` | `UserManager`                   | Utiliza los servicios de administración de usuarios y tokens de Identity. |
+| `AddTokenProvider()`            | `HashedUserTokenProvider`       | Registra el proveedor personalizado mediante `TokenProviderName`.         |
+| `AddEntityFrameworkStores()`    | `AppDbContext`                  | Integra los almacenes de Identity con EF Core.                            |
+| `AppDbContext`                  | PostgreSQL                      | Persistencia mediante EF Core y Npgsql.                                   |
+| `.env` / `.env.template`        | Identity / EF Core              | Proporcionan configuración de políticas y conexión.                       |
+
+#### 3. Componentes de .NET y bibliotecas externas
+
+| Componente                      | Origen                                        | Función en la arquitectura                                                    |
+| ------------------------------- | --------------------------------------------- | ----------------------------------------------------------------------------- |
+| `AddIdentity()`                 | ASP.NET Core Identity                         | Registra la infraestructura de usuarios y roles.                              |
+| `UserManager`                   | ASP.NET Core Identity                         | Administra usuarios y operaciones de tokens mediante proveedores registrados. |
+| `AddEntityFrameworkStores()`    | ASP.NET Core Identity + Entity Framework Core | Integra la persistencia de identidad con `AppDbContext`.                      |
+| `AddTokenProvider()`            | ASP.NET Core Identity                         | Registra `HashedUserTokenProvider` como proveedor personalizado.              |
+| `IdentityRole`                  | ASP.NET Core Identity                         | Representa los roles de usuario.                                              |
+| `DbContext`                     | Entity Framework Core                         | Proporciona las operaciones de acceso y persistencia de datos.                |
+| `Npgsql`                        | Biblioteca externa / Proveedor EF Core        | Permite la conexión de EF Core con PostgreSQL.                                |
+| `IUserInvitationService`        | Código propio / Application                   | Define el contrato del servicio de invitaciones.                              |
+| `IdentityUserInvitationService` | Código propio / Infrastructure                | Implementa el contrato de invitaciones utilizando Identity.                   |
+| `HashedUserTokenProvider`       | Código propio / Infrastructure                | Proveedor personalizado registrado para tokens de invitación.                 |
+| `DependencyInjection`           | Código propio / Infrastructure                | Centraliza el registro de servicios y adaptadores.                            |
+
+#### 4. Componentes y configuraciones eliminados
+
+| Componente                            | Origen                       | Resultado final                                               |
+| ------------------------------------- | ---------------------------- | ------------------------------------------------------------- |
+| `AddDataProtection()`                 | ASP.NET Core Data Protection | Registro explícito eliminado.                                 |
+| `IDataProtectionBuilder`              | ASP.NET Core Data Protection | Uso eliminado.                                                |
+| `SetApplicationName()`                | ASP.NET Core Data Protection | Configuración eliminada.                                      |
+| `PersistKeysToFileSystem()`           | ASP.NET Core Data Protection | Persistencia explícita del Key Ring eliminada.                |
+| `ProtectKeysWithDpapi()`              | ASP.NET Core Data Protection | Protección de claves mediante DPAPI eliminada.                |
+| `AddDefaultTokenProviders()`          | ASP.NET Core Identity        | Registro automático de proveedores predeterminados eliminado. |
+| `DataProtection__KeyRingPath`         | Configuración del proyecto   | Variable eliminada de `.env` y `.env.template`.               |
+| `Microsoft.AspNetCore.DataProtection` | ASP.NET Core                 | Using eliminado de `DependencyInjection`.                     |
+| `System.IO`                           | .NET                         | Using eliminado de `DependencyInjection`.                     |
+
+#### 5. Resultado
+
+La arquitectura conserva ASP.NET Core Identity, su integración con EF Core y el registro explícito de `HashedUserTokenProvider`, eliminando la configuración de Key Ring, DPAPI y los proveedores de tokens predeterminados.
+
+El spec elimina las dependencias explícitas identificadas de Data Protection; su ausencia absoluta en otros componentes no puede verificarse únicamente con la documentación proporcionada.
+
+---
+
+### 13. Comandos Git / PR\*\* (una vez validada la implementación y revisados los cambios)
+
+```powershell
+git add .
+git commit -m "FEPP-ContaOps - spec-07-eliminacion-data-protection-key-ring -  Implementado"
+git push -u origin spec-07-eliminacion-data-protection-key-ring
+
+# Después de aprobar y fusionar el Pull Request:
+git switch main
+git pull
+git branch -d spec-07-eliminacion-data-protection-key-ring
+```
