@@ -113,6 +113,32 @@ public sealed class OpaqueTokenStore : IOpaqueTokenStore
     }
 
     /// <inheritdoc />
+    public async Task<bool> ConsumeAsync(
+        string userId,
+        string purpose,
+        string token,
+        string securityStamp,
+        DateTimeOffset nowUtc,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateRequiredValue(userId, nameof(userId));
+        ValidateRequiredValue(purpose, nameof(purpose));
+        ValidateRequiredValue(token, nameof(token));
+        ValidateRequiredValue(securityStamp, nameof(securityStamp));
+
+        byte[] tokenHash = _cryptography.Hash(token);
+        int deletedRows = await _dbContext.UserSecurityTokens
+            .Where(persistedToken => persistedToken.UserId == userId
+                && persistedToken.Purpose == purpose
+                && persistedToken.SecurityStamp == securityStamp
+                && persistedToken.TokenHash == tokenHash
+                && persistedToken.ExpiresAtUtc > nowUtc)
+            .ExecuteDeleteAsync(cancellationToken);
+
+        return deletedRows == 1;
+    }
+
+    /// <inheritdoc />
     public Task<int> DeleteExpiredAsync(
         DateTimeOffset nowUtc,
         CancellationToken cancellationToken = default)

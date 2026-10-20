@@ -36,6 +36,24 @@ public interface IOpaqueTokenStore
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Consume atómicamente el token si coincide con su hash, sello y vigencia.
+    /// </summary>
+    /// <param name="userId">Identificador del usuario propietario.</param>
+    /// <param name="purpose">Propósito funcional del token.</param>
+    /// <param name="token">Token público recibido.</param>
+    /// <param name="securityStamp">Sello de seguridad vigente del usuario.</param>
+    /// <param name="nowUtc">Instante UTC usado para evaluar la expiración.</param>
+    /// <param name="cancellationToken">Token de cancelación.</param>
+    /// <returns><see langword="true"/> si se eliminó exactamente el token válido.</returns>
+    Task<bool> ConsumeAsync(
+        string userId,
+        string purpose,
+        string token,
+        string securityStamp,
+        DateTimeOffset nowUtc,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Elimina tokens cuya fecha de expiración ya llegó.
     /// </summary>
     /// <param name="nowUtc">Instante UTC usado para evaluar la expiración.</param>

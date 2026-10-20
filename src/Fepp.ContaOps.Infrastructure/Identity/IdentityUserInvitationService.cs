@@ -33,16 +33,24 @@ public sealed class IdentityUserInvitationService : IUserInvitationService
     private readonly AppDbContext _dbContext;
 
     /// <summary>
+    /// Almacén de tokens opacos usado para consumir la invitación una sola vez.
+    /// </summary>
+    private readonly IOpaqueTokenStore _opaqueTokenStore;
+
+    /// <summary>
     /// Inicializa el servicio de invitaciones.
     /// </summary>
     /// <param name="userManager">Administrador de usuarios de Identity.</param>
     /// <param name="dbContext">Contexto de persistencia.</param>
+    /// <param name="opaqueTokenStore">Almacén de tokens opacos.</param>
     public IdentityUserInvitationService(
         UserManager<ApplicationIdentityUser> userManager,
-        AppDbContext dbContext)
+        AppDbContext dbContext,
+        IOpaqueTokenStore opaqueTokenStore)
     {
         _userManager = userManager;
         _dbContext = dbContext;
+        _opaqueTokenStore = opaqueTokenStore;
     }
 
     /// <inheritdoc />
@@ -111,21 +119,36 @@ public sealed class IdentityUserInvitationService : IUserInvitationService
             return Result<User>.Failure(InvalidActivationTokenError.Instance);
         }
 
-        bool tokenIsValid = await _userManager.VerifyUserTokenAsync(
-            identityUser,
-            TokenProviderName,
-            TokenPurpose,
-            token);
-        if (!tokenIsValid)
-        {
-            return Result<User>.Failure(InvalidActivationTokenError.Instance);
-        }
-
         await using Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction transaction =
             await _dbContext.Database.BeginTransactionAsync(cancellationToken);
 
         try
         {
+            bool tokenIsValid = await _userManager.VerifyUserTokenAsync(
+                identityUser,
+                TokenProviderName,
+                TokenPurpose,
+                token);
+            if (!tokenIsValid)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return Result<User>.Failure(InvalidActivationTokenError.Instance);
+            }
+
+            string securityStamp = await _userManager.GetSecurityStampAsync(identityUser);
+            bool tokenConsumed = await _opaqueTokenStore.ConsumeAsync(
+                identityUser.Id,
+                TokenPurpose,
+                token,
+                securityStamp,
+                DateTimeOffset.UtcNow,
+                cancellationToken);
+            if (!tokenConsumed)
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                return Result<User>.Failure(InvalidActivationTokenError.Instance);
+            }
+
             IdentityResult passwordResult = await _userManager.AddPasswordAsync(
                 identityUser,
                 newPassword);

@@ -260,6 +260,172 @@ Los proveedores predeterminados de Identity y la configuración de Data Protecti
 
 ### 6. Adaptar la activación para validar y consumir el token atómicamente.
 
+Actualización del flujo de activación de usuarios para consumir tokens opacos mediante una eliminación condicional en base de datos, integrada en una transacción que incluye la asignación de contraseña y activación de la cuenta.
+
+#### 1. Componentes implementados
+
+| Componente                      | Acción  | Tipo                                                   | Capa                       | Responsabilidad                                                                               |
+| ------------------------------- | ------- | ------------------------------------------------------ | -------------------------- | --------------------------------------------------------------------------------------------- |
+| `IOpaqueTokenStore`             | Update  | Interfaz                                               | Application/Abstractions   | Incorpora el contrato `ConsumeAsync()` para consumir tokens válidos una sola vez.             |
+| `OpaqueTokenStore`              | Update  | Servicio de persistencia                               | Infrastructure/Security    | Implementa el consumo mediante eliminación condicional de registros con EF Core.              |
+| `IdentityUserInvitationService` | Update  | Servicio de aplicación implementado en infraestructura | Infrastructure/Identity    | Coordina la validación, consumo del token y activación del usuario dentro de una transacción. |
+| `AppDbContext`                  | Consume | DbContext                                              | Infrastructure/Persistence | Gestiona las operaciones de persistencia y transacciones.                                     |
+| `HashedUserToken`               | Consume | Entidad de persistencia                                | Infrastructure/Persistence | Representa el token almacenado con hash, propósito, SecurityStamp y vencimiento.              |
+| `OpaqueTokenCryptography`       | Consume | Servicio criptográfico                                 | Infrastructure/Security    | Calcula el hash del token recibido para su comparación en persistencia.                       |
+| `ApplicationIdentityUser`       | Consume | Entidad Identity                                       | Infrastructure/Identity    | Almacena el estado de activación, confirmación de correo y credenciales del usuario.          |
+
+#### 2. Métodos principales
+
+| Clase                           | Método                        | Responsabilidad                                                                                             |
+| ------------------------------- | ----------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `IOpaqueTokenStore`             | `ConsumeAsync()`              | Define el contrato para consumir un token verificando usuario, propósito, hash, SecurityStamp y vigencia.   |
+| `OpaqueTokenStore`              | `ConsumeAsync()`              | Ejecuta una eliminación condicional y retorna `true` únicamente cuando se elimina una fila.                 |
+| `OpaqueTokenCryptography`       | `Hash()`                      | Calcula el hash del token recibido para compararlo con el persistido.                                       |
+| `IdentityUserInvitationService` | `ActivateAsync()`             | Coordina la validación, consumo del token, asignación de contraseña y activación transaccional del usuario. |
+| `IdentityUserInvitationService` | `RegisterPendingAsync()`      | Registra un usuario pendiente y genera su token de invitación dentro de una transacción.                    |
+| `IdentityUserInvitationService` | `ResendAsync()`               | Actualiza el SecurityStamp y genera un nuevo token de invitación.                                           |
+| `IdentityUserInvitationService` | `ToPasswordValidationError()` | Convierte errores de política de contraseña de Identity en un `ValidationError`.                            |
+| `IdentityUserInvitationService` | `ToDomainUserAsync()`         | Convierte el usuario de Identity al modelo de dominio, incluyendo sus roles.                                |
+
+#### 3. Componentes de .NET y bibliotecas externas
+
+| Componente / Método          | Origen                | Función                                                                | Uso en el proyecto                                                         |
+| ---------------------------- | --------------------- | ---------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| `UserManager<TUser>`         | ASP.NET Core Identity | Administra usuarios, credenciales y tokens.                            | Coordina la validación del token y actualización del usuario.              |
+| `VerifyUserTokenAsync()`     | ASP.NET Core Identity | Valida tokens mediante el proveedor registrado.                        | Comprueba el token antes de intentar consumirlo.                           |
+| `GetSecurityStampAsync()`    | ASP.NET Core Identity | Obtiene el sello de seguridad del usuario.                             | Vincula el consumo del token al estado de seguridad vigente.               |
+| `AddPasswordAsync()`         | ASP.NET Core Identity | Asigna una contraseña y aplica la política configurada.                | Establece la contraseña durante la activación.                             |
+| `UpdateSecurityStampAsync()` | ASP.NET Core Identity | Actualiza el sello de seguridad del usuario.                           | Invalida tokens asociados al SecurityStamp anterior.                       |
+| `BeginTransactionAsync()`    | Entity Framework Core | Inicia una transacción de base de datos.                               | Agrupa consumo del token y modificaciones de la cuenta.                    |
+| `ExecuteDeleteAsync()`       | Entity Framework Core | Ejecuta una eliminación directa en base de datos sin cargar entidades. | Consume el token mediante una operación condicional.                       |
+| `Where()`                    | LINQ / .NET           | Define condiciones de filtrado.                                        | Selecciona exclusivamente el token que cumple los criterios de validación. |
+| `CommitAsync()`              | Entity Framework Core | Confirma una transacción.                                              | Persiste el consumo del token y la activación.                             |
+| `RollbackAsync()`            | Entity Framework Core | Revierte una transacción.                                              | Recupera el estado anterior cuando falla la activación.                    |
+| `CancellationToken`          | .NET                  | Permite cancelar operaciones asíncronas.                               | Propaga la cancelación a operaciones transaccionales y de persistencia.    |
+| `DateTimeOffset.UtcNow`      | .NET                  | Obtiene el instante UTC actual.                                        | Evalúa la expiración del token.                                            |
+
+#### 4. Flujo funcional
+
+**Activación de usuario**
+
+| Paso | Operación                                                          | Resultado                                                                                   |
+| ---- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------- |
+| 1    | Validar `UserId` y consultar el usuario mediante `FindByIdAsync()` | Rechaza identificadores inválidos, usuarios inexistentes o cuentas que no estén pendientes. |
+| 2    | Iniciar transacción mediante `BeginTransactionAsync()`             | Agrupa las operaciones de activación.                                                       |
+| 3    | Ejecutar `VerifyUserTokenAsync()`                                  | Valida el token mediante `HashedUserTokenProvider`.                                         |
+| 4    | Obtener `SecurityStamp` mediante `GetSecurityStampAsync()`         | Recupera el estado de seguridad vigente.                                                    |
+| 5    | Ejecutar `IOpaqueTokenStore.ConsumeAsync()`                        | Elimina el token únicamente si cumple todas las condiciones.                                |
+| 6    | Ejecutar `AddPasswordAsync()`                                      | Asigna la contraseña aplicando las políticas de Identity.                                   |
+| 7    | Actualizar `EmailConfirmed = true` y `Status = Active`             | Establece el nuevo estado del usuario.                                                      |
+| 8    | Ejecutar `UpdateSecurityStampAsync()`                              | Actualiza el estado de seguridad y persiste los cambios del usuario.                        |
+| 9    | Ejecutar `CommitAsync()`                                           | Confirma la activación y el consumo del token.                                              |
+| 10   | Ejecutar `ToDomainUserAsync()`                                     | Devuelve el usuario activo como entidad de dominio.                                         |
+
+**Consumo atómico del token**
+
+`OpaqueTokenStore.ConsumeAsync()` ejecuta una única operación `DELETE` con las siguientes condiciones:
+
+| Condición                | Campo              | Validación                                         |
+| ------------------------ | ------------------ | -------------------------------------------------- |
+| Propietario              | `UserId`           | Coincide con el usuario solicitado.                |
+| Propósito                | `Purpose`          | Coincide con `UserActivation`.                     |
+| Integridad criptográfica | `TokenHash`        | Coincide con el hash calculado del token recibido. |
+| Estado de seguridad      | `SecurityStamp`    | Coincide con el sello vigente del usuario.         |
+| Vigencia                 | `ExpiresAtUtc`     | Es posterior al instante UTC recibido.             |
+| Consumo exitoso          | `deletedRows == 1` | Se eliminó exactamente un registro.                |
+
+**Manejo transaccional**
+
+| Situación                    | Comportamiento                                                 |
+| ---------------------------- | -------------------------------------------------------------- |
+| Token inválido o inexistente | `RollbackAsync()` y `InvalidActivationTokenError`.             |
+| Token previamente consumido  | La eliminación no afecta filas y se rechaza la activación.     |
+| Token expirado               | No cumple la condición de vigencia y no se elimina.            |
+| Contraseña inválida          | `RollbackAsync()` y `ValidationError`.                         |
+| Fallo durante la operación   | `RollbackAsync()` y propagación de la excepción.               |
+| Activación exitosa           | `CommitAsync()` confirma el consumo y los cambios del usuario. |
+
+La eliminación condicional del token se ejecuta atómicamente en la base de datos. La transacción permite revertir su consumo si falla una operación posterior de activación.
+
+La atomicidad del flujo completo depende de que las operaciones de Identity y `OpaqueTokenStore` participen en la misma transacción de `AppDbContext`, tal como establece la implementación mostrada.
+
+#### 5. Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    subgraph Application["Application"]
+        IUS["IUserInvitationService"]
+        ITS["IOpaqueTokenStore"]
+        RES["Result / ValidationError"]
+    end
+
+    subgraph Domain["Domain"]
+        USER["User / UserId"]
+        STATUS["UserStatus"]
+    end
+
+    subgraph Infrastructure["Infrastructure"]
+        subgraph Identity["Identity"]
+            UIS["IdentityUserInvitationService"]
+            HP["HashedUserTokenProvider"]
+            IU["ApplicationIdentityUser"]
+        end
+
+        subgraph Security["Security"]
+            STORE["OpaqueTokenStore"]
+            CRYPTO["OpaqueTokenCryptography"]
+        end
+
+        subgraph Persistence["Persistence"]
+            DB["AppDbContext"]
+            TOKEN["HashedUserToken"]
+        end
+    end
+
+    subgraph Framework["ASP.NET Core Identity"]
+        UM["UserManager"]
+    end
+
+    subgraph EF["Entity Framework Core"]
+        TX["IDbContextTransaction"]
+        DELETE["ExecuteDeleteAsync"]
+    end
+
+    IUS -.->|Implementado por| UIS
+    ITS -.->|Implementado por| STORE
+
+    UIS -->|VerifyUserTokenAsync| UM
+    UM -->|Proveedor dedicado| HP
+    HP -->|Consulta token| ITS
+
+    UIS -->|ConsumeAsync| ITS
+    UIS -->|BeginTransactionAsync| DB
+
+    STORE -->|Hash| CRYPTO
+    STORE -->|Consulta y eliminación| DB
+    DB --> TOKEN
+
+    DB --> TX
+    STORE --> DELETE
+    DELETE -->|Elimina token válido| TOKEN
+
+    UIS -->|AddPasswordAsync| UM
+    UIS -->|UpdateSecurityStampAsync| UM
+    UM --> IU
+
+    UIS --> STATUS
+    UIS -->|ToDomainUserAsync| USER
+    UIS --> RES
+
+    TX -->|Commit / Rollback| DB
+```
+
+#### 6. Resultado
+
+La activación consume el token opaco mediante una eliminación condicional atómica, impidiendo reutilizar un token consumido exitosamente.
+
+El consumo, la asignación de contraseña y la actualización del usuario se integran en una transacción que confirma los cambios únicamente cuando la activación se completa correctamente.
+
 ---
 
 ### 7. Invalidar tokens antiguos de Data Protection.
