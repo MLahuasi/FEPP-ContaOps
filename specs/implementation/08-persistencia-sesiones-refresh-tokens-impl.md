@@ -163,6 +163,146 @@ La configuración de persistencia, las relaciones de Entity Framework Core y las
 
 ### 5. Configurar relaciones, índices, unicidad y cascada.
 
+#### 1. Componentes implementados
+
+| Componente          | Acción    | Tipo                      | Capa                         | Responsabilidad                                                                             |
+| ------------------- | --------- | ------------------------- | ---------------------------- | ------------------------------------------------------------------------------------------- |
+| `AppDbContext`      | Update    | Clase / DbContext         | Infrastructure / Persistence | Incorpora sesiones y refresh tokens al modelo de persistencia de EF Core.                   |
+| `UserSessions`      | Create    | `DbSet<UserSession>`      | Infrastructure / Persistence | Expone las sesiones de usuario para operaciones de persistencia.                            |
+| `UserRefreshTokens` | Create    | `DbSet<UserRefreshToken>` | Infrastructure / Persistence | Expone los refresh tokens almacenados mediante su hash.                                     |
+| `OnModelCreating()` | Update    | Método sobrescrito        | Infrastructure / Persistence | Configura tablas, columnas, relaciones, índices y restricciones.                            |
+| `UserSession`       | Configure | Entidad de persistencia   | Infrastructure / Persistence | Define su relación con usuarios y restringe a una sesión activa por usuario.                |
+| `UserRefreshToken`  | Configure | Entidad de persistencia   | Infrastructure / Persistence | Define su relación con sesiones y restringe a un token no consumido ni revocado por sesión. |
+
+**Configuración de tablas y restricciones:**
+
+| Tabla                | Clave primaria | Clave foránea                | Restricción                                                               |
+| -------------------- | -------------- | ---------------------------- | ------------------------------------------------------------------------- |
+| `UserSessions`       | `SessionId`    | `UserId` → `AspNetUsers`     | Una sesión con `Status = 1` por usuario.                                  |
+| `UserRefreshTokens`  | `TokenId`      | `SessionId` → `UserSessions` | Un token no consumido ni revocado por sesión.                             |
+| `UserSecurityTokens` | `TokenId`      | `UserId` → `AspNetUsers`     | Un token por usuario y propósito. Se mantiene la configuración existente. |
+
+#### 2. Métodos principales
+
+| Clase                        | Método                                | Responsabilidad                                                |
+| ---------------------------- | ------------------------------------- | -------------------------------------------------------------- |
+| `AppDbContext`               | `OnModelCreating()`                   | Configura el modelo relacional mediante Fluent API.            |
+| `ModelBuilder`               | `Entity<T>()`                         | Define la configuración de cada entidad.                       |
+| `EntityTypeBuilder`          | `ToTable()`                           | Asigna el nombre de la tabla.                                  |
+| `EntityTypeBuilder`          | `HasKey()`                            | Define la clave primaria.                                      |
+| `EntityTypeBuilder`          | `Property()`                          | Configura tipos de columnas, obligatoriedad y longitud.        |
+| `EntityTypeBuilder`          | `HasOne().WithMany().HasForeignKey()` | Configura relaciones uno a muchos mediante claves foráneas.    |
+| `ReferenceCollectionBuilder` | `OnDelete()`                          | Define el comportamiento al eliminar una entidad relacionada.  |
+| `EntityTypeBuilder`          | `HasIndex()`                          | Define índices sobre una o varias columnas.                    |
+| `IndexBuilder`               | `IsUnique()`                          | Establece restricciones de unicidad.                           |
+| `IndexBuilder`               | `HasFilter()`                         | Restringe un índice a los registros que cumplen una condición. |
+
+#### 3. Componentes de .NET y bibliotecas externas
+
+| Componente / Método                     | Origen                          | Función                                         | Uso en el proyecto                                                         |
+| --------------------------------------- | ------------------------------- | ----------------------------------------------- | -------------------------------------------------------------------------- |
+| `IdentityDbContext<TUser, TRole, TKey>` | ASP.NET Core Identity + EF Core | Contexto de persistencia de Identity.           | Clase base de `AppDbContext`.                                              |
+| `DbSet<T>`                              | Entity Framework Core           | Representa un conjunto de entidades.            | Expone `UserSessions` y `UserRefreshTokens`.                               |
+| `ModelBuilder`                          | Entity Framework Core           | Construye el modelo de entidades y relaciones.  | Configura las tablas de sesiones y tokens.                                 |
+| `HasColumnType()`                       | Entity Framework Core           | Especifica el tipo de columna de base de datos. | Define tipos como `uuid`, `bytea`, `integer` y `timestamp with time zone`. |
+| `HasIndex()`                            | Entity Framework Core           | Configura índices.                              | Define índices de búsqueda y unicidad.                                     |
+| `HasFilter()`                           | Entity Framework Core           | Define índices filtrados mediante SQL.          | Restringe sesiones activas y tokens utilizables.                           |
+| `IsUnique()`                            | Entity Framework Core           | Configura índices únicos.                       | Impide registros duplicados que cumplan los filtros.                       |
+| `DeleteBehavior.Cascade`                | Entity Framework Core           | Configura eliminación en cascada.               | Elimina sesiones y tokens asociados al eliminar sus entidades principales. |
+| `HasMaxLength()`                        | Entity Framework Core           | Configura la longitud máxima de una propiedad.  | Limita `TokenHash` a 32 bytes.                                             |
+| `UserSession`, `UserRefreshToken`       | Código propio                   | Modelos de persistencia.                        | Representan sesiones y refresh tokens.                                     |
+| `AppDbContext`                          | Código propio                   | Contexto EF Core de la aplicación.              | Centraliza la configuración del modelo persistente.                        |
+
+#### 4. Flujo funcional
+
+**Relaciones y eliminación en cascada:**
+
+| Entidad principal         | Entidad dependiente | Cardinalidad | Eliminación         |
+| ------------------------- | ------------------- | ------------ | ------------------- |
+| `ApplicationIdentityUser` | `UserSession`       | 1:N          | Cascade             |
+| `UserSession`             | `UserRefreshToken`  | 1:N          | Cascade             |
+| `ApplicationIdentityUser` | `HashedUserToken`   | 1:N          | Cascade (existente) |
+
+Eliminar un usuario provoca la eliminación de sus sesiones y, por cascada, de los refresh tokens asociados.
+
+**Índices configurados:**
+
+| Índice                               | Tabla               | Columnas           | Tipo           | Restricción / Finalidad                                    |
+| ------------------------------------ | ------------------- | ------------------ | -------------- | ---------------------------------------------------------- |
+| `IX_UserSessions_UserId_Status`      | `UserSessions`      | `UserId`, `Status` | No único       | Facilita consultas de sesiones por usuario y estado.       |
+| `UX_UserSessions_ActiveUser`         | `UserSessions`      | `UserId`           | Único filtrado | `Status = 1`. Permite una única sesión activa por usuario. |
+| `UX_UserRefreshTokens_UsableSession` | `UserRefreshTokens` | `SessionId`        | Único filtrado | `ConsumedAtUtc IS NULL AND RevokedAtUtc IS NULL`.          |
+| `IX_UserRefreshTokens_ExpiresAtUtc`  | `UserRefreshTokens` | `ExpiresAtUtc`     | No único       | Facilita consultas por expiración.                         |
+
+**Consideraciones de las restricciones:**
+
+- `UX_UserSessions_ActiveUser` permite múltiples sesiones históricas revocadas o expiradas, pero solo una con estado `Active` por usuario.
+- `UX_UserRefreshTokens_UsableSession` permite conservar tokens consumidos o revocados, pero solo uno que no tenga registradas esas condiciones por sesión.
+- El índice de refresh tokens no evalúa `ExpiresAtUtc`; un token vencido continúa sujeto a la restricción mientras `ConsumedAtUtc` y `RevokedAtUtc` sean `NULL`.
+- La configuración define restricciones a nivel de base de datos. No implementa por sí misma operaciones de creación, rotación o revocación.
+
+#### 5. Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    subgraph Infrastructure["Infrastructure - Persistence / Código propio"]
+        DB["AppDbContext"]
+        US["UserSession"]
+        RT["UserRefreshToken"]
+        HUT["HashedUserToken"]
+        AU["ApplicationIdentityUser"]
+        STATUS["UserSessionStatus"]
+    end
+
+    subgraph EFCore["Entity Framework Core"]
+        IDC["IdentityDbContext"]
+        MB["ModelBuilder / Fluent API"]
+        FK["Foreign Keys + Cascade"]
+        IDX["Índices únicos y filtrados"]
+    end
+
+    subgraph Database["PostgreSQL"]
+        USERS[("AspNetUsers")]
+        SESSIONS[("UserSessions")]
+        TOKENS[("UserRefreshTokens")]
+        SECURITY[("UserSecurityTokens")]
+    end
+
+    DB -->|"Hereda"| IDC
+    DB -->|"OnModelCreating"| MB
+
+    DB --> US
+    DB --> RT
+    DB --> HUT
+
+    US --> STATUS
+
+    MB --> FK
+    MB --> IDX
+
+    AU -->|"1:N - Cascade"| US
+    US -->|"1:N - Cascade"| RT
+    AU -->|"1:N - Cascade"| HUT
+
+    AU -.-> USERS
+    US -.-> SESSIONS
+    RT -.-> TOKENS
+    HUT -.-> SECURITY
+
+    USERS -->|"UserId - FK"| SESSIONS
+    USERS -->|"UserId - FK"| SECURITY
+    SESSIONS -->|"SessionId - FK"| TOKENS
+
+    IDX -->|"Unica sesion activa por usuario"| SESSIONS
+    IDX -->|"Un token no consumido ni revocado por sesion"| TOKENS
+```
+
+#### 6. Resultado
+
+Se incorporan `UserSession` y `UserRefreshToken` al modelo de EF Core, configurando sus relaciones con Identity, eliminación en cascada e índices de unicidad filtrados.
+
+La base de datos queda modelada para restringir a una sesión activa por usuario y un refresh token no consumido ni revocado por sesión. La aplicación efectiva de estos cambios requiere las migraciones correspondientes.
+
 ---
 
 ### 6. Implementar generación, hash y comparación.
