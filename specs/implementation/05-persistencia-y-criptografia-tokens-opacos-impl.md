@@ -406,6 +406,141 @@ Se implementa `OpaqueTokenCryptography` para calcular hashes SHA-256 y verificar
 
 ### 8. Implementar almacenamiento, reemplazo y eliminación de vencidos.
 
+#### 1. Componentes implementados
+
+| Componente            | Acción | Tipo                      | Capa           | Responsabilidad                                                                     |
+| --------------------- | ------ | ------------------------- | -------------- | ----------------------------------------------------------------------------------- |
+| `IOpaqueTokenStore`   | Create | Interfaz (puerto)         | Application    | Definir operaciones de almacenamiento, consulta y eliminación de tokens opacos.     |
+| `OpaqueTokenRecord`   | Create | Record (DTO)              | Application    | Transportar los datos persistidos de un token sin exponer la entidad de EF Core.    |
+| `OpaqueTokenStore`    | Create | Adaptador de persistencia | Infrastructure | Implementar almacenamiento, reemplazo, consulta y eliminación mediante EF Core.     |
+| `DependencyInjection` | Update | Configuración DI          | Infrastructure | Registrar `IOpaqueTokenStore` con su implementación `OpaqueTokenStore` como Scoped. |
+
+**Dependencias de `OpaqueTokenStore`:**
+
+| Dependencia               | Capa           | Responsabilidad                              |
+| ------------------------- | -------------- | -------------------------------------------- |
+| `AppDbContext`            | Infrastructure | Acceder a la tabla `UserSecurityTokens`.     |
+| `IOpaqueTokenGenerator`   | Application    | Generar tokens opacos seguros.               |
+| `OpaqueTokenCryptography` | Infrastructure | Calcular el hash SHA-256 del token generado. |
+| `HashedUserToken`         | Infrastructure | Representar el registro persistente.         |
+
+#### 2. Métodos principales
+
+| Clase                 | Método                    | Responsabilidad                                                                                |
+| --------------------- | ------------------------- | ---------------------------------------------------------------------------------------------- |
+| `OpaqueTokenStore`    | `StoreAsync()`            | Generar un token, crear o actualizar su registro, guardar el hash y retornar el token público. |
+| `OpaqueTokenStore`    | `FindAsync()`             | Consultar un token por usuario y propósito y devolver un `OpaqueTokenRecord`.                  |
+| `OpaqueTokenStore`    | `DeleteExpiredAsync()`    | Eliminar tokens expirados y retornar la cantidad de registros eliminados.                      |
+| `OpaqueTokenStore`    | `ValidateRequiredValue()` | Rechazar argumentos de texto nulos o vacíos.                                                   |
+| `DependencyInjection` | `AddInfrastructure()`     | Registrar el adaptador de persistencia mediante DI.                                            |
+
+#### 3. Componentes de .NET y bibliotecas externas
+
+| Componente / Método                      | Origen                      | Función                                               | Uso en el proyecto                                             |
+| ---------------------------------------- | --------------------------- | ----------------------------------------------------- | -------------------------------------------------------------- |
+| `Task<T>`                                | .NET / C#                   | Representar operaciones asíncronas.                   | Retornar resultados de almacenamiento, consulta y eliminación. |
+| `CancellationToken`                      | .NET                        | Permitir cancelar operaciones asíncronas.             | Propagar cancelaciones a EF Core.                              |
+| `Guid.NewGuid()`                         | .NET                        | Generar identificadores únicos.                       | Asignar `TokenId` a nuevos registros.                          |
+| `ArgumentException.ThrowIfNullOrEmpty()` | .NET                        | Validar cadenas requeridas.                           | Rechazar identificadores, propósitos y sellos vacíos.          |
+| `SingleOrDefaultAsync()`                 | Entity Framework Core       | Consultar un único registro o devolver `null`.        | Buscar tokens por `UserId` y `Purpose`.                        |
+| `AsNoTracking()`                         | Entity Framework Core       | Consultar entidades sin seguimiento de cambios.       | Optimizar las consultas de lectura en `FindAsync()`.           |
+| `DbSet.Add()`                            | Entity Framework Core       | Registrar una entidad para inserción.                 | Crear nuevos registros de tokens.                              |
+| `SaveChangesAsync()`                     | Entity Framework Core       | Persistir cambios pendientes.                         | Guardar tokens nuevos o actualizados.                          |
+| `ExecuteDeleteAsync()`                   | Entity Framework Core       | Ejecutar una eliminación directa en la base de datos. | Eliminar tokens expirados sin cargarlos en memoria.            |
+| `AddScoped<TService, TImplementation>()` | .NET / Dependency Injection | Registrar servicios con ciclo de vida Scoped.         | Asociar `IOpaqueTokenStore` con `OpaqueTokenStore`.            |
+
+#### 4. Flujo funcional
+
+**Almacenamiento y reemplazo (`StoreAsync`)**
+
+| Paso | Operación    | Descripción                                                                        |
+| ---- | ------------ | ---------------------------------------------------------------------------------- |
+| 1    | Validación   | Verifica `userId`, `purpose`, `securityStamp` y que `expiresAtUtc > createdAtUtc`. |
+| 2    | Generación   | `IOpaqueTokenGenerator.Generate()` genera el token público.                        |
+| 3    | Consulta     | Busca un registro existente mediante `UserId` y `Purpose`.                         |
+| 4    | Creación     | Si no existe, crea `HashedUserToken` con un nuevo `TokenId`.                       |
+| 5    | Reemplazo    | Si existe, reutiliza el registro y actualiza sus datos.                            |
+| 6    | Hash         | Calcula SHA-256 y asigna el resultado a `TokenHash`.                               |
+| 7    | Persistencia | Guarda los cambios mediante `SaveChangesAsync()`.                                  |
+| 8    | Resultado    | Retorna el token público generado.                                                 |
+
+**Consulta y eliminación**
+
+| Operación              | Criterio                                 | Resultado                                                   |
+| ---------------------- | ---------------------------------------- | ----------------------------------------------------------- |
+| `FindAsync()`          | `UserId == userId && Purpose == purpose` | Devuelve `OpaqueTokenRecord` o `null`.                      |
+| `DeleteExpiredAsync()` | `ExpiresAtUtc <= nowUtc`                 | Elimina registros vencidos y retorna la cantidad eliminada. |
+
+**Registro de dependencias:**
+
+| Contrato            | Implementación     | Ciclo de vida |
+| ------------------- | ------------------ | ------------- |
+| `IOpaqueTokenStore` | `OpaqueTokenStore` | Scoped        |
+
+**Consideraciones de implementación:**
+
+- El reemplazo actualiza el registro existente, conservando su `TokenId`.
+- El token público se devuelve al consumidor; únicamente su hash se almacena en `UserSecurityTokens`.
+- `FindAsync()` devuelve una copia de `TokenHash`, evitando compartir directamente el arreglo de la entidad consultada.
+- `ExecuteDeleteAsync()` elimina directamente los registros vencidos, sin requerir `SaveChangesAsync()`.
+- La eliminación de vencidos se ejecuta cuando se invoca `DeleteExpiredAsync()`; no se implementa una ejecución automática.
+- El código no muestra mecanismos específicos para resolver operaciones concurrentes de creación sobre el mismo usuario y propósito.
+
+#### 5. Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    subgraph APP["Application"]
+        STORE_IF["IOpaqueTokenStore"]
+        RECORD["OpaqueTokenRecord"]
+        GEN_IF["IOpaqueTokenGenerator"]
+    end
+
+    subgraph INF["Infrastructure"]
+        STORE["OpaqueTokenStore"]
+        GEN["OpaqueTokenGenerator"]
+        CRYPTO["OpaqueTokenCryptography"]
+        CTX["AppDbContext"]
+        TOKEN["HashedUserToken"]
+        DI["DependencyInjection"]
+    end
+
+    subgraph EF["Entity Framework Core"]
+        QUERY["SingleOrDefaultAsync / AsNoTracking"]
+        SAVE["SaveChangesAsync"]
+        DELETE["ExecuteDeleteAsync"]
+    end
+
+    subgraph PG["PostgreSQL"]
+        TABLE[("UserSecurityTokens")]
+    end
+
+    STORE -.->|Implementa| STORE_IF
+    STORE_IF -->|Devuelve en consultas| RECORD
+
+    DI -->|Registra Scoped| STORE
+
+    STORE -->|Genera token| GEN_IF
+    GEN -.->|Implementa| GEN_IF
+
+    STORE -->|Calcula SHA-256| CRYPTO
+    STORE -->|Persistencia| CTX
+
+    CTX -->|DbSet| TOKEN
+
+    CTX --> QUERY
+    CTX --> SAVE
+    CTX --> DELETE
+
+    QUERY --> TABLE
+    SAVE --> TABLE
+    DELETE --> TABLE
+```
+
+#### 6. Resultado
+
+Se implementa `IOpaqueTokenStore` mediante un adaptador EF Core que permite crear, reemplazar y consultar tokens almacenando únicamente su hash SHA-256. También se incorpora la eliminación directa de tokens expirados mediante `ExecuteDeleteAsync()`.
+
 ---
 
 ### 9. Agregar pruebas unitarias.
