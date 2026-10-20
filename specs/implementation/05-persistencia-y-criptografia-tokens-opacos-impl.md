@@ -545,6 +545,114 @@ Se implementa `IOpaqueTokenStore` mediante un adaptador EF Core que permite crea
 
 ### 9. Agregar pruebas unitarias.
 
+#### 1. Componentes implementados
+
+| Componente               | Acción | Tipo                       | Capa  | Responsabilidad                                                               |
+| ------------------------ | ------ | -------------------------- | ----- | ----------------------------------------------------------------------------- |
+| `OpaqueTokenTests`       | Create | Clase de pruebas unitarias | Tests | Verificar la generación, hash y validación criptográfica de tokens opacos.    |
+| `CreatePersistedToken()` | Create | Método auxiliar            | Tests | Construir registros `HashedUserToken` con datos controlados para las pruebas. |
+
+**Componentes bajo prueba:**
+
+| Componente                | Capa           | Funcionalidad verificada                                      |
+| ------------------------- | -------------- | ------------------------------------------------------------- |
+| `OpaqueTokenGenerator`    | Infrastructure | Generación aleatoria de 32 bytes y codificación Base64Url.    |
+| `OpaqueTokenCryptography` | Infrastructure | Hash SHA-256, comparación de hashes y validación de tokens.   |
+| `HashedUserToken`         | Infrastructure | Representación de los datos necesarios para validar un token. |
+
+#### 2. Métodos principales
+
+| Clase              | Método                                               | Responsabilidad                                                                    |
+| ------------------ | ---------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `OpaqueTokenTests` | `Generate_Returns32RandomBytesAsBase64Url()`         | Verificar que el token contiene 32 bytes y utiliza Base64Url sin padding.          |
+| `OpaqueTokenTests` | `Generate_ProducesDifferentTokens()`                 | Comprobar que dos generaciones consecutivas producen valores diferentes.           |
+| `OpaqueTokenTests` | `Hash_IsFixedLengthAndDoesNotStoreOriginalToken()`   | Verificar la longitud SHA-256 de 32 bytes y la coincidencia del token con su hash. |
+| `OpaqueTokenTests` | `Matches_RejectsDifferentToken()`                    | Rechazar un token cuyo hash no coincide con el esperado.                           |
+| `OpaqueTokenTests` | `IsValid_AcceptsMatchingPurposeStampAndExpiration()` | Aceptar un token vigente con propósito y Security Stamp correctos.                 |
+| `OpaqueTokenTests` | `IsValid_RejectsDifferentPurpose()`                  | Rechazar tokens utilizados con un propósito diferente.                             |
+| `OpaqueTokenTests` | `IsValid_RejectsDifferentSecurityStamp()`            | Rechazar tokens cuyo Security Stamp no coincide con el vigente.                    |
+| `OpaqueTokenTests` | `IsValid_RejectsExpiredToken()`                      | Rechazar tokens cuya fecha de expiración coincide con el instante de validación.   |
+| `OpaqueTokenTests` | `CreatePersistedToken()`                             | Generar una entidad de prueba con valores conocidos y hash SHA-256.                |
+
+#### 3. Componentes de .NET y bibliotecas externas
+
+| Componente / Método                | Origen                      | Función                                           | Uso en el proyecto                                         |
+| ---------------------------------- | --------------------------- | ------------------------------------------------- | ---------------------------------------------------------- |
+| `[Fact]`                           | xUnit (biblioteca externa)  | Identificar métodos de prueba independientes.     | Declarar los ocho casos de prueba.                         |
+| `Assert.Equal()`                   | xUnit                       | Verificar igualdad de valores.                    | Comprobar la longitud del token y del hash.                |
+| `Assert.NotEqual()`                | xUnit                       | Verificar desigualdad de valores.                 | Comprobar diferencias entre tokens y representaciones.     |
+| `Assert.True()` / `Assert.False()` | xUnit                       | Verificar condiciones booleanas.                  | Validar resultados de `Matches()` e `IsValid()`.           |
+| `Assert.DoesNotContain()`          | xUnit                       | Verificar ausencia de caracteres.                 | Comprobar que Base64Url no contiene `=`, `+` ni `/`.       |
+| `WebEncoders.Base64UrlDecode()`    | ASP.NET Core / WebUtilities | Decodificar cadenas Base64Url.                    | Recuperar los bytes originales para verificar su longitud. |
+| `Convert.ToBase64String()`         | .NET / C#                   | Convertir bytes a Base64.                         | Comparar la representación del hash con el token original. |
+| `DateTimeOffset`                   | .NET / C#                   | Representar instantes con desplazamiento horario. | Establecer fechas de validación y expiración.              |
+| `Guid.NewGuid()`                   | .NET / C#                   | Generar identificadores únicos.                   | Asignar identificadores a los registros de prueba.         |
+
+#### 4. Flujo funcional
+
+**Cobertura implementada:**
+
+| Funcionalidad                | Pruebas | Resultado esperado                                                         |
+| ---------------------------- | ------- | -------------------------------------------------------------------------- |
+| Generación Base64Url         | 1       | Token decodificado de 32 bytes sin caracteres incompatibles con Base64Url. |
+| Aleatoriedad                 | 1       | Dos tokens consecutivos diferentes.                                        |
+| Hash SHA-256                 | 1       | Hash de 32 bytes y coincidencia con el token original.                     |
+| Comparación de hashes        | 1       | Rechazo de tokens diferentes.                                              |
+| Validación de token vigente  | 1       | Aceptación del token válido.                                               |
+| Validación de propósito      | 1       | Rechazo por propósito incorrecto.                                          |
+| Validación de Security Stamp | 1       | Rechazo por sello de seguridad diferente.                                  |
+| Validación de expiración     | 1       | Rechazo en el instante exacto de expiración.                               |
+| **Total**                    | **8**   | **Pruebas unitarias definidas.**                                           |
+
+**Alcance:**
+
+- Las pruebas ejecutan directamente los servicios sin base de datos ni contenedor de dependencias.
+- `CreatePersistedToken()` proporciona datos controlados para verificar diferentes escenarios.
+- No se incluyen pruebas de persistencia de `OpaqueTokenStore`.
+- No se verifica experimentalmente la distribución aleatoria ni el tiempo constante de comparación.
+- El código proporcionado no incluye resultados de ejecución de las pruebas.
+
+#### 5. Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    subgraph TEST["Tests - xUnit"]
+        T["OpaqueTokenTests"]
+        HELPER["CreatePersistedToken"]
+        ASSERT["Assert"]
+    end
+
+    subgraph INF["Infrastructure"]
+        GEN["OpaqueTokenGenerator"]
+        CRYPTO["OpaqueTokenCryptography"]
+        TOKEN["HashedUserToken"]
+    end
+
+    subgraph NET[".NET / ASP.NET Core"]
+        B64["WebEncoders.Base64UrlDecode"]
+        RNG["RandomNumberGenerator"]
+        SHA["SHA256"]
+    end
+
+    T -->|Prueba generación| GEN
+    T -->|Prueba hash y validación| CRYPTO
+    T -->|Prepara datos| HELPER
+    T -->|Verifica resultados| ASSERT
+
+    HELPER -->|Construye| TOKEN
+    HELPER -->|Calcula hash| CRYPTO
+
+    T -->|Decodifica token| B64
+
+    GEN -->|Utiliza| RNG
+    CRYPTO -->|Utiliza| SHA
+    CRYPTO -->|Valida| TOKEN
+```
+
+#### 6. Resultado
+
+Se incorporan ocho pruebas unitarias con xUnit para verificar la generación Base64Url, el hash SHA-256 y las reglas de validación de tokens opacos. Las pruebas cubren escenarios válidos e inválidos sin depender de infraestructura de persistencia.
+
 ---
 
 ### 10. Ejecutar build, pruebas, API y verificación del esquema.
