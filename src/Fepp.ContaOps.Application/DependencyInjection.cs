@@ -1,5 +1,8 @@
 using Microsoft.Extensions.DependencyInjection;
+using Fepp.ContaOps.Application.Users.ActivateUser;
+using Fepp.ContaOps.Application.Users.CreateUserInvitation;
 using Fepp.ContaOps.Application.Users.LoginUser;
+using Fepp.ContaOps.Application.Users.ResendUserInvitation;
 
 namespace Fepp.ContaOps.Application;
 
@@ -16,6 +19,9 @@ public static class DependencyInjection
     public static IServiceCollection AddApplication(this IServiceCollection services)
     {
         services.AddScoped<LoginUser>();
+        services.AddScoped<CreateUserInvitation>();
+        services.AddScoped<ActivateUser>();
+        services.AddScoped<ResendUserInvitation>();
         return services;
     }
 }

@@ -2,6 +2,7 @@ using FluentValidation.Results;
 using Fepp.ContaOps.Application.Results;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.ModelBinding;
 
 namespace Fepp.ContaOps.Api.Validation;
 
@@ -23,6 +24,7 @@ public static class ProblemDetailsResponseFactory
         int status = error switch
         {
             ValidationError => StatusCodes.Status400BadRequest,
+            InvalidActivationTokenError => StatusCodes.Status400BadRequest,
             AuthenticationError => StatusCodes.Status401Unauthorized,
             ResourceNotFoundError => StatusCodes.Status404NotFound,
             ConflictError => StatusCodes.Status409Conflict,
@@ -32,6 +34,7 @@ public static class ProblemDetailsResponseFactory
         string detail = error switch
         {
             ValidationError => "One or more validation errors occurred.",
+            InvalidActivationTokenError invalidToken => invalidToken.Message,
             AuthenticationError => "The supplied credentials are invalid.",
             ResourceNotFoundError notFound => notFound.Message,
             ConflictError conflict => conflict.Message,
@@ -81,6 +84,44 @@ public static class ProblemDetailsResponseFactory
                 group => group.Select(error => error.ErrorMessage).Distinct(StringComparer.Ordinal).ToArray(),
                 StringComparer.Ordinal);
 
+        return CreateValidationResult(httpContext, errors);
+    }
+
+    /// <summary>
+    /// Construye una respuesta uniforme para errores de model binding y JSON.
+    /// </summary>
+    /// <param name="httpContext">Contexto HTTP de la solicitud actual.</param>
+    /// <param name="modelState">Estado de model binding producido por ASP.NET Core.</param>
+    /// <returns>Resultado HTTP con los errores agrupados por campo.</returns>
+    public static BadRequestObjectResult CreateModelStateValidationResult(
+        HttpContext httpContext,
+        ModelStateDictionary modelState)
+    {
+        Dictionary<string, string[]> errors = modelState
+            .Where(entry => entry.Value is not null)
+            .ToDictionary(
+                entry => entry.Key,
+                entry => entry.Value!.Errors
+                    .Select(error => string.IsNullOrWhiteSpace(error.ErrorMessage)
+                        ? "The supplied value is invalid."
+                        : error.ErrorMessage)
+                    .Distinct(StringComparer.Ordinal)
+                    .ToArray(),
+                StringComparer.Ordinal);
+
+        return CreateValidationResult(httpContext, errors);
+    }
+
+    /// <summary>
+    /// Construye una respuesta de validación a partir de errores agrupados.
+    /// </summary>
+    /// <param name="httpContext">Contexto HTTP de la solicitud actual.</param>
+    /// <param name="errors">Errores agrupados por nombre de campo.</param>
+    /// <returns>Resultado HTTP con el contrato uniforme de validación.</returns>
+    private static BadRequestObjectResult CreateValidationResult(
+        HttpContext httpContext,
+        Dictionary<string, string[]> errors)
+    {
         ProblemDetails problemDetails = Create(
             httpContext,
             StatusCodes.Status400BadRequest,

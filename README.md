@@ -50,6 +50,8 @@ usar el script recomendado o asignar las variables con
 | pgAdmin | `PGADMIN_DEFAULT_EMAIL`, `PGADMIN_DEFAULT_PASSWORD` | Contraseña |
 | JWT | `Jwt__Issuer`, `Jwt__Audience`, `Jwt__SigningKey`, `Jwt__AccessTokenLifetimeMinutes` | `SigningKey` |
 | Administrador | `BootstrapAdmin__Email`, `BootstrapAdmin__Password` | Contraseña |
+| Contraseña Identity | `Identity__Password__*` | No |
+| Bloqueo Identity | `Identity__Lockout__*` | No |
 | Invitaciones | `UserInvitation__TokenLifetimeHours`, `UserInvitation__ActivationBaseUrl` | No |
 | SMTP | `Email__Smtp__*` | `Password` |
 | Plantillas | `Email__Templates__RootPath` | No |
@@ -66,7 +68,7 @@ Reglas principales:
 | Autenticación Gmail | Contraseña de aplicación; no API key |
 | URL de activación | HTTPS obligatorio |
 | SMTP seguro | Solo `StartTls` en 587 o `TlsOnConnect` en 465 |
-| Usuarios regulares | Se crean mediante invitación; no existe configuración `BootstrapUser` |
+| Usuarios regulares | Se crean exclusivamente mediante invitación |
 | Valores reales | Solo en `.env`, User Secrets o variables seguras |
 
 El listado completo de placeholders debe mantenerse en `.env.example`.
@@ -90,11 +92,15 @@ contiene `templates.json`, `invitation.html` e `invitation.txt`. Se puede
 reemplazar mediante `Email__Templates__RootPath`; el manifest y ambos formatos
 se validan al iniciar.
 
-`DataProtection__KeyRingPath` es opcional para desarrollo local. En Docker o
-un despliegue persistente debe apuntar a un directorio montado desde un named
-volume con permisos de lectura y escritura para la API. El volumen debe
-conservarse al recrear el contenedor; el almacenamiento anfitrión debe contar
-con protección en reposo. En Windows local se puede usar DPAPI.
+`DataProtection__KeyRingPath` es opcional para desarrollo local. En Windows
+local, el key ring puede protegerse mediante DPAPI. La API actualmente se
+ejecuta en el host con `run-local.ps1`; por ello el `docker-compose.yml` actual
+no monta todavía un volumen de key ring para la API.
+
+Cuando la API se ejecute en Docker, `DataProtection__KeyRingPath` deberá apuntar
+a un directorio montado desde un named volume con permisos de lectura y
+escritura para la API. El volumen deberá conservarse al recrear el contenedor;
+el almacenamiento anfitrión deberá contar con protección en reposo.
 
 ## Servicios y direcciones
 
@@ -131,6 +137,47 @@ dotnet build FEPP-ContaOps.slnx
 dotnet run --project src/Fepp.ContaOps.Api --launch-profile https
 ```
 
+### Pruebas automatizadas
+
+```powershell
+# Pruebas unitarias; no requieren Docker.
+dotnet test tests/Fepp.ContaOps.UnitTests/Fepp.ContaOps.UnitTests.csproj
+
+# Pruebas de integración; requieren Docker activo.
+dotnet test tests/Fepp.ContaOps.IntegrationTests/Fepp.ContaOps.IntegrationTests.csproj
+
+# Suite completa.
+dotnet test FEPP-ContaOps.slnx
+```
+
+Las pruebas de integración utilizan PostgreSQL efímero mediante Testcontainers,
+un notificador de invitaciones falso y autenticación aislada para comprobar los
+roles `Admin` y `User`. No utilizan Gmail ni credenciales SMTP reales.
+
+Si el build informa que `Fepp.ContaOps.Api.exe` está bloqueado, detén primero
+la API con `Ctrl+C` y vuelve a ejecutar el comando.
+
+### Pruebas manuales desde Swagger
+
+Para probar la API manualmente:
+
+1. Copia `.env.example` a `.env` y edita `.env`; `.env.example` nunca se carga.
+2. Inicia PostgreSQL y pgAdmin con Docker.
+3. Ejecuta `.\run-local.ps1` desde la raíz del repositorio.
+4. Abre exclusivamente `https://localhost:7077/swagger`.
+5. Ejecuta `POST /api/auth/login` con el administrador configurado.
+6. Copia únicamente `accessToken` y pulsa **Authorize**. Swagger añade
+   automáticamente el prefijo `Bearer`.
+
+No utilices `http://localhost:5282/swagger` para esta prueba. Si el navegador
+indica `Failed to fetch`, acepta el certificado HTTPS de desarrollo y verifica
+que la API se esté ejecutando con el perfil `https`.
+
+El seed crea el administrador solo si no existe y no reemplaza su contraseña.
+Cambiar `BootstrapAdmin__Password` después del primer arranque no cambia la
+contraseña almacenada; para una base local descartable se puede recrear el
+volumen con `docker compose down --volumes`.
+
 ## Identity y endpoints
 
 El seed se ejecuta al iniciar la API:
@@ -142,6 +189,8 @@ El seed se ejecuta al iniciar la API:
 | Administrador | Se crea si no existe |
 | Contraseña existente | No se reemplaza |
 | Usuario regular | Se crea mediante invitación |
+| Política de contraseña | Se valida y configura mediante `Identity__Password__*` |
+| Bloqueo | Se configura mediante `Identity__Lockout__*` |
 | Configuración inválida | Impide el arranque |
 
 | Método | Ruta | Acceso | Uso |
@@ -164,9 +213,115 @@ Las credenciales inválidas devuelven `401` con `code` y `traceId`. Para usar
 Swagger, abrir `/swagger`, ejecutar login, pulsar **Authorize** e introducir
 `Bearer <accessToken>`.
 
+### Invitaciones y activación
+
+Un administrador autenticado crea una cuenta pendiente:
+
+```http
+POST /api/users/invitations
+Authorization: Bearer <admin-jwt>
+Content-Type: application/json
+```
+
+```json
+{
+  "email": "user@example.com"
+}
+```
+
+La respuesta `201 Created` contiene únicamente `id`, `email` y `role`. El token
+y el enlace se entregan exclusivamente mediante el correo de invitación.
+
+El cliente activa la cuenta de forma anónima con el token recibido:
+
+```http
+POST /api/auth/activate
+Content-Type: application/json
+```
+
+```json
+{
+  "userId": "<user-id>",
+  "token": "<opaque-token>",
+  "newPassword": "<password>"
+}
+```
+
+Una activación correcta devuelve `204 No Content`. La contraseña debe cumplir
+la política efectiva de Identity; la API solo valida los límites de transporte.
+
+La cuenta creada por invitación recibe el rol `User`. Puede iniciar sesión,
+pero no puede crear ni reenviar invitaciones; esas operaciones requieren el rol
+`Admin` y devuelven `403 forbidden` para un usuario regular.
+
+#### Activación sin frontend
+
+`UserInvitation__ActivationBaseUrl` debe apuntar a una ruta HTTPS real del
+frontend, por ejemplo:
+
+```env
+UserInvitation__ActivationBaseUrl='https://frontend.local/activate'
+```
+
+La API no implementa una página `GET /activate`; solo expone
+`POST /api/auth/activate`. Por eso, abrir un enlace configurado como
+`https://localhost:7077/activate` devuelve `404` si no existe un frontend en
+esa ruta.
+
+Mientras no exista frontend, se puede activar desde Swagger con:
+
+```json
+{
+  "userId": "<user-id>",
+  "token": "<decoded-token>",
+  "newPassword": "<password>"
+}
+```
+
+El token incluido en el fragmento de la URL debe decodificarse antes de enviarlo
+(`%2F` es `/`, `%2B` es `+`). Por ejemplo, en el navegador:
+
+```javascript
+decodeURIComponent("TOKEN_COPIADO_DE_LA_URL")
+```
+
+Solo funciona el token más reciente: reenviar una invitación invalida el token
+anterior. Una activación correcta devuelve `204 No Content`.
+
+Para una cuenta que todavía está pendiente, un administrador puede invalidar la
+invitación anterior y enviar una nueva:
+
+```http
+POST /api/users/{id}/invitations
+Authorization: Bearer <admin-jwt>
+```
+
+El reenvío correcto devuelve `204 No Content`. No se puede reenviar una cuenta
+activa.
+
+### Errores de API
+
+Los errores usan `application/problem+json` e incluyen `code` y `traceId`.
+
+| Situación | HTTP | Código |
+|---|---:|---|
+| Request inválido | 400 | `validation_error` |
+| Token inválido, vencido o usado | 400 | `invalid_activation_token` |
+| Sin JWT | 401 | `authentication_required` |
+| JWT sin rol `Admin` | 403 | `forbidden` |
+| Usuario inexistente para reenvío | 404 | `resource_not_found` |
+| Email duplicado o cuenta activa | 409 | `resource_conflict` |
+| Correo no disponible | 503 | `email_delivery_unavailable` |
+
+Las respuestas no exponen contraseñas, tokens, enlaces completos, security
+stamps ni credenciales SMTP.
+
 ## pgAdmin
 
 Abrir `http://localhost:5050` e iniciar sesión con las variables del `.env`.
+El login web de pgAdmin utiliza `PGADMIN_DEFAULT_EMAIL` y
+`PGADMIN_DEFAULT_PASSWORD`; el usuario PostgreSQL `app` se utiliza después,
+al registrar el servidor, y no sirve para entrar a la pantalla de pgAdmin.
 Registrar PostgreSQL con estos valores:
 
 | Campo | Valor |
@@ -204,6 +359,28 @@ Las pruebas de integración requieren Docker activo y no conectan con Gmail real
 Las pruebas SMTP usan servidores en proceso y nunca credenciales ni servidores
 Gmail reales.
 
+## Diagnóstico rápido
+
+| Síntoma | Causa probable | Acción |
+|---|---|---|
+| `Failed to fetch` en Swagger | HTTP, certificado HTTPS o API detenida | Abrir `https://localhost:7077/swagger` y confiar en el certificado |
+| `401` con `/Account/Login` | Esquema de cookies en vez de JWT | Reiniciar la API con la versión actual y usar el JWT del administrador |
+| `401 authentication_required` | JWT ausente, inválido o vencido | Volver a ejecutar login y autorizar Swagger |
+| `403 forbidden` | JWT válido con rol `User` | Usar el token del administrador |
+| `404` en `/activate` | No existe frontend de activación | Activar mediante `POST /api/auth/activate` |
+| `invalid_activation_token` | Token codificado, usado, vencido o anterior | Decodificarlo o reenviar la invitación |
+| El enlace sigue usando `cliente.local` | `.env` incorrecto, API antigua o enlace anterior | Reiniciar la API y generar una invitación nueva |
+| Fallo de build por `.exe` bloqueado | La API sigue ejecutándose | Detenerla con `Ctrl+C` |
+
+Para verificar la configuración cargada por el script sin mostrar secretos:
+
+```powershell
+Select-String -Path .env -Pattern '^UserInvitation__'
+```
+
+Los tokens, contraseñas y enlaces completos no deben copiarse en capturas ni
+logs. Si un token fue expuesto, reenvía la invitación para invalidarlo.
+
 ## Seguridad y logs
 
 | Regla | Aplicación |
@@ -224,3 +401,4 @@ Gmail reales.
 | [Arquitectura Web API](sdd/webapi-architecture.md) | Capas y dependencias |
 | [Balance global](sdd/global-balance-sheet.md) | Modelo e importación contable |
 | [Naming y documentación](sdd/dotnet-naming-and-code-documentation.md) | Convenciones .NET |
+| [API de invitaciones](sdd/api-invitations.md) | Endpoints, autorización y errores |

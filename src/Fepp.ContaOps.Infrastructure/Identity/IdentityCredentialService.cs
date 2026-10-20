@@ -53,7 +53,7 @@ public sealed class IdentityCredentialService : IUserCredentialService
         }
 
         ApplicationIdentityUser? identityUser = await _userManager.FindByIdAsync(user.Id.Value);
-        if (identityUser is null)
+        if (identityUser is null || string.IsNullOrEmpty(identityUser.PasswordHash))
         {
             return false;
         }

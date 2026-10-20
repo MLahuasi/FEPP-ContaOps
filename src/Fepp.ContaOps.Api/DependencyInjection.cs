@@ -34,12 +34,24 @@ public static class DependencyInjection
         services.AddScoped<ValidationFilter>();
         services.AddScoped<ApplicationErrorProblemDetailsMapper>();
         services.AddControllers(options => options.Filters.AddService<ValidationFilter>());
+        services.Configure<ApiBehaviorOptions>(options =>
+        {
+            options.InvalidModelStateResponseFactory = context =>
+                ProblemDetailsResponseFactory.CreateModelStateValidationResult(
+                    context.HttpContext,
+                    context.ModelState);
+        });
         JwtOptions jwtOptions = configuration
             .GetSection(JwtOptions.SectionName)
             .Get<JwtOptions>()
             ?? throw new InvalidOperationException("Jwt configuration must be configured.");
 
-        services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+        services.AddAuthentication(options =>
+            {
+                options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
+                options.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
+                options.DefaultForbidScheme = JwtBearerDefaults.AuthenticationScheme;
+            })
             .AddJwtBearer(options =>
             {
                 options.TokenValidationParameters = new TokenValidationParameters
@@ -94,7 +106,9 @@ public static class DependencyInjection
             {
                 Title = "FEPP-ContaOps API",
                 Version = "v1",
-                Description = "API para los procesos operativos contables de FEPP."
+                Description = "API para los procesos operativos contables de FEPP. "
+                    + "Incluye autenticación JWT y el ciclo administrativo de invitaciones. "
+                    + "Las respuestas de error usan application/problem+json con code y traceId."
             });
 
             string documentationFile = Path.Combine(

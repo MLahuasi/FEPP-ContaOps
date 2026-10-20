@@ -41,9 +41,23 @@ public static class DependencyInjection
                 options => options.IsValid(),
                 "UserInvitation:TokenLifetimeHours must be finite and greater than zero, and UserInvitation:ActivationBaseUrl must be an HTTPS URL.")
             .ValidateOnStart();
+        services.AddOptions<IdentityPasswordOptions>()
+            .Bind(configuration.GetSection(IdentityPasswordOptions.SectionName))
+            .Validate(
+                options => options.IsValid(),
+                "Identity:Password contains invalid password policy values.")
+            .ValidateOnStart();
+        services.AddOptions<IdentityLockoutOptions>()
+            .Bind(configuration.GetSection(IdentityLockoutOptions.SectionName))
+            .Validate(
+                options => options.IsValid(),
+                "Identity:Lockout contains invalid lockout policy values.")
+            .ValidateOnStart();
 
         string? keyRingPath = configuration["DataProtection:KeyRingPath"];
-        IDataProtectionBuilder dataProtectionBuilder = services.AddDataProtection();
+        IDataProtectionBuilder dataProtectionBuilder = services
+            .AddDataProtection()
+            .SetApplicationName("FEPP-ContaOps");
         if (!string.IsNullOrWhiteSpace(keyRingPath))
         {
             DirectoryInfo keyRingDirectory = new(keyRingPath);
@@ -75,21 +89,27 @@ public static class DependencyInjection
         services.AddSingleton<IEmailSender, MailKitSmtpEmailSender>();
         services.AddIdentity<ApplicationIdentityUser, IdentityRole>(options =>
             {
-                options.Password.RequiredLength = 12;
-                options.Password.RequireUppercase = true;
-                options.Password.RequireLowercase = true;
-                options.Password.RequireDigit = true;
-                options.Password.RequireNonAlphanumeric = true;
-                options.Password.RequiredUniqueChars = 6;
-                options.Lockout.DefaultLockoutTimeSpan = TimeSpan.FromMinutes(15);
-                options.Lockout.MaxFailedAccessAttempts = 5;
-                options.Lockout.AllowedForNewUsers = true;
                 options.User.RequireUniqueEmail = true;
             })
             .AddEntityFrameworkStores<AppDbContext>()
             .AddTokenProvider<UserInvitationTokenProvider>(
                 IdentityUserInvitationService.TokenProviderName)
             .AddDefaultTokenProviders();
+        services.AddOptions<IdentityOptions>()
+            .Configure<IOptions<IdentityPasswordOptions>, IOptions<IdentityLockoutOptions>>(
+                (identityOptions, passwordOptions, lockoutOptions) =>
+                {
+                    identityOptions.Password.RequiredLength = passwordOptions.Value.RequiredLength;
+                    identityOptions.Password.RequireUppercase = passwordOptions.Value.RequireUppercase;
+                    identityOptions.Password.RequireLowercase = passwordOptions.Value.RequireLowercase;
+                    identityOptions.Password.RequireDigit = passwordOptions.Value.RequireDigit;
+                    identityOptions.Password.RequireNonAlphanumeric = passwordOptions.Value.RequireNonAlphanumeric;
+                    identityOptions.Password.RequiredUniqueChars = passwordOptions.Value.RequiredUniqueChars;
+                    identityOptions.Lockout.DefaultLockoutTimeSpan = TimeSpan.FromMinutes(
+                        lockoutOptions.Value.DefaultLockoutTimeSpanMinutes);
+                    identityOptions.Lockout.MaxFailedAccessAttempts = lockoutOptions.Value.MaxFailedAccessAttempts;
+                    identityOptions.Lockout.AllowedForNewUsers = lockoutOptions.Value.AllowedForNewUsers;
+                });
 
         services.AddScoped<IUserRepository, IdentityUserRepository>();
         services.AddScoped<IUserCredentialService, IdentityCredentialService>();
@@ -115,12 +135,6 @@ public static class DependencyInjection
             .Validate(
                 options => options.IsValid(),
                 "BootstrapAdmin:Email and BootstrapAdmin:Password must be configured with valid values.")
-            .ValidateOnStart();
-        services.AddOptions<BootstrapUserOptions>()
-            .Bind(configuration.GetSection(BootstrapUserOptions.SectionName))
-            .Validate(
-                options => options.IsValid(),
-                "BootstrapUser:Email and BootstrapUser:Password must both be configured when a regular user is enabled.")
             .ValidateOnStart();
         services.AddSingleton<ITokenIssuer, JwtTokenIssuer>();
         services.AddScoped<IdentitySeeder>();

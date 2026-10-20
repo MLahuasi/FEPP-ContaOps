@@ -3,7 +3,9 @@ using Fepp.ContaOps.Api.Contracts.Requests;
 using Fepp.ContaOps.Api.Contracts.Responses;
 using Fepp.ContaOps.Application.Abstractions;
 using Fepp.ContaOps.Application.Results;
+using Fepp.ContaOps.Application.Users.ActivateUser;
 using Fepp.ContaOps.Application.Users.LoginUser;
+using Fepp.ContaOps.Domain.Users;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -22,6 +24,11 @@ public sealed class AuthController : ControllerBase
     private readonly LoginUser _loginUser;
 
     /// <summary>
+    /// Caso de uso de activación de usuarios.
+    /// </summary>
+    private readonly ActivateUser _activateUser;
+
+    /// <summary>
     /// Traductor de errores de Application a respuestas HTTP.
     /// </summary>
     private readonly ApplicationErrorProblemDetailsMapper _errorMapper;
@@ -30,12 +37,15 @@ public sealed class AuthController : ControllerBase
     /// Inicializa el controlador de autenticación.
     /// </summary>
     /// <param name="loginUser">Caso de uso de inicio de sesión.</param>
+    /// <param name="activateUser">Caso de uso de activación.</param>
     /// <param name="errorMapper">Traductor de errores esperados.</param>
     public AuthController(
         LoginUser loginUser,
+        ActivateUser activateUser,
         ApplicationErrorProblemDetailsMapper errorMapper)
     {
         _loginUser = loginUser;
+        _activateUser = activateUser;
         _errorMapper = errorMapper;
     }
 
@@ -64,5 +74,41 @@ public sealed class AuthController : ControllerBase
 
         TokenResult token = result.Value!;
         return Ok(new LoginResponse(token.AccessToken, "Bearer", token.ExpiresIn));
+    }
+
+    /// <summary>
+    /// Activa una cuenta pendiente mediante un token válido.
+    /// </summary>
+    /// <param name="request">Datos de activación de la cuenta.</param>
+    /// <param name="cancellationToken">Token de cancelación de la solicitud.</param>
+    /// <returns>Una respuesta sin contenido cuando la cuenta fue activada.</returns>
+    [AllowAnonymous]
+    [HttpPost("activate")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> Activate(
+        ActivateUserRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (!Guid.TryParse(request.UserId, out Guid userId))
+        {
+            ModelState.AddModelError(nameof(request.UserId), "UserId must be a valid identifier.");
+            return ProblemDetailsResponseFactory.CreateModelStateValidationResult(
+                HttpContext,
+                ModelState);
+        }
+
+        Result<User> result = await _activateUser.ExecuteAsync(
+            new ActivateUserInput(
+                new UserId(userId.ToString()),
+                request.Token,
+                request.NewPassword),
+            cancellationToken);
+        if (!result.IsSuccess)
+        {
+            return _errorMapper.Map(HttpContext, result.Error!);
+        }
+
+        return NoContent();
     }
 }
