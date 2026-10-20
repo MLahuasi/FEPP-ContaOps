@@ -92,7 +92,7 @@ public static class DependencyInjection
                 options.User.RequireUniqueEmail = true;
             })
             .AddEntityFrameworkStores<AppDbContext>()
-            .AddTokenProvider<UserInvitationTokenProvider>(
+            .AddTokenProvider<HashedUserTokenProvider>(
                 IdentityUserInvitationService.TokenProviderName)
             .AddDefaultTokenProviders();
         services.AddOptions<IdentityOptions>()

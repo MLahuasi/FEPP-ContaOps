@@ -115,6 +115,139 @@ La validez del token depende de su propósito, SecurityStamp y fecha de expiraci
 
 ### 3. Registrar únicamente el proveedor dedicado en Identity.
 
+Modificación de `DependencyInjection` para registrar `HashedUserTokenProvider` como proveedor personalizado de tokens de invitación en ASP.NET Core Identity.
+
+#### 1. Componentes implementados
+
+| Componente                                        | Acción   | Tipo                        | Capa                         | Responsabilidad                                                                                     |
+| ------------------------------------------------- | -------- | --------------------------- | ---------------------------- | --------------------------------------------------------------------------------------------------- |
+| `DependencyInjection`                             | Update   | Clase estática              | Infrastructure               | Centraliza el registro de servicios y adaptadores mediante inyección de dependencias.               |
+| `AddInfrastructure()`                             | Update   | Método de extensión         | Infrastructure               | Configura Identity, persistencia, servicios criptográficos y demás dependencias de infraestructura. |
+| `HashedUserTokenProvider`                         | Register | Proveedor personalizado     | Infrastructure/Identity      | Genera y valida tokens opacos de invitación mediante `IOpaqueTokenStore`.                           |
+| `IdentityUserInvitationService.TokenProviderName` | Consume  | Constante de identificación | Infrastructure/Identity      | Identifica el proveedor personalizado utilizado para invitaciones.                                  |
+| `OpaqueTokenCryptography`                         | Register | Servicio criptográfico      | Infrastructure/Security      | Verifica tokens opacos mediante sus hashes.                                                         |
+| `IOpaqueTokenStore` → `OpaqueTokenStore`          | Register | Interfaz / implementación   | Application / Infrastructure | Abstrae e implementa la persistencia de tokens opacos.                                              |
+| `IOpaqueTokenGenerator` → `OpaqueTokenGenerator`  | Register | Interfaz / implementación   | Application / Infrastructure | Proporciona generación de tokens opacos.                                                            |
+
+#### 2. Métodos principales
+
+| Clase                 | Método                                                        | Responsabilidad                                                                 |
+| --------------------- | ------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `DependencyInjection` | `AddInfrastructure()`                                         | Registra las dependencias de infraestructura y configura ASP.NET Core Identity. |
+| `IdentityBuilder`     | `AddTokenProvider<HashedUserTokenProvider>()`                 | Asocia el proveedor personalizado con el nombre definido para las invitaciones. |
+| `IdentityBuilder`     | `AddDefaultTokenProviders()`                                  | Registra los proveedores predeterminados adicionales de Identity.               |
+| `IServiceCollection`  | `AddSingleton<OpaqueTokenCryptography>()`                     | Registra el servicio criptográfico con ciclo de vida Singleton.                 |
+| `IServiceCollection`  | `AddScoped<IOpaqueTokenStore, OpaqueTokenStore>()`            | Registra el almacén de tokens con ciclo de vida Scoped.                         |
+| `IServiceCollection`  | `AddSingleton<IOpaqueTokenGenerator, OpaqueTokenGenerator>()` | Registra el generador de tokens con ciclo de vida Singleton.                    |
+
+#### 3. Componentes de .NET y bibliotecas externas
+
+| Componente / Método                         | Origen                          | Función                                                   | Uso en el proyecto                                                              |
+| ------------------------------------------- | ------------------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `IServiceCollection`                        | .NET / DependencyInjection      | Contenedor de registros de servicios.                     | Registra las dependencias de infraestructura.                                   |
+| `AddIdentity<TUser, TRole>()`               | ASP.NET Core Identity           | Configura la gestión de usuarios y roles.                 | Registra `ApplicationIdentityUser` e `IdentityRole`.                            |
+| `AddEntityFrameworkStores<TContext>()`      | ASP.NET Core Identity / EF Core | Integra la persistencia de Identity mediante EF Core.     | Utiliza `AppDbContext`.                                                         |
+| `AddTokenProvider<TProvider>()`             | ASP.NET Core Identity           | Registra un proveedor de tokens con un nombre específico. | Registra `HashedUserTokenProvider` para invitaciones.                           |
+| `AddDefaultTokenProviders()`                | ASP.NET Core Identity           | Incorpora proveedores predeterminados de tokens.          | Mantiene disponibles los proveedores estándar de Identity.                      |
+| `AddScoped<TService, TImplementation>()`    | .NET / DependencyInjection      | Registra servicios con alcance Scoped.                    | Registra `OpaqueTokenStore` y otros adaptadores.                                |
+| `AddSingleton<TService, TImplementation>()` | .NET / DependencyInjection      | Registra servicios con instancia compartida.              | Registra los servicios criptográficos y generadores.                            |
+| `AddDataProtection()`                       | ASP.NET Core Data Protection    | Configura los servicios de protección de datos.           | Mantiene la configuración del sistema de claves de Data Protection.             |
+| `PersistKeysToFileSystem()`                 | ASP.NET Core Data Protection    | Persiste claves criptográficas en el sistema de archivos. | Configura la ubicación del Key Ring cuando existe `DataProtection:KeyRingPath`. |
+| `ProtectKeysWithDpapi()`                    | ASP.NET Core Data Protection    | Protege claves mediante Windows DPAPI.                    | Se aplica cuando existe una ruta configurada y el sistema operativo es Windows. |
+
+#### 4. Flujo funcional
+
+| Operación                       | Implementación                                                                               | Resultado                                                              |
+| ------------------------------- | -------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| Registro de Identity            | `AddIdentity<ApplicationIdentityUser, IdentityRole>()`                                       | Configura usuarios y roles.                                            |
+| Persistencia de Identity        | `AddEntityFrameworkStores<AppDbContext>()`                                                   | Integra Identity con Entity Framework Core.                            |
+| Registro del proveedor dedicado | `AddTokenProvider<HashedUserTokenProvider>(IdentityUserInvitationService.TokenProviderName)` | Asocia el proveedor de tokens opacos al identificador de invitaciones. |
+| Proveedores adicionales         | `AddDefaultTokenProviders()`                                                                 | Conserva los proveedores predeterminados de Identity.                  |
+| Persistencia de tokens          | `AddScoped<IOpaqueTokenStore, OpaqueTokenStore>()`                                           | Permite resolver el almacén de tokens desde el contenedor.             |
+| Validación criptográfica        | `AddSingleton<OpaqueTokenCryptography>()`                                                    | Permite resolver el servicio encargado de verificar hashes.            |
+| Generación criptográfica        | `AddSingleton<IOpaqueTokenGenerator, OpaqueTokenGenerator>()`                                | Permite resolver el generador de tokens opacos.                        |
+
+**Consideraciones de implementación:**
+
+- `HashedUserTokenProvider` queda registrado exclusivamente bajo el nombre `IdentityUserInvitationService.TokenProviderName` dentro de la configuración personalizada mostrada.
+- `AddDefaultTokenProviders()` permanece configurado, por lo que no se eliminan los proveedores predeterminados de Identity.
+- La configuración de Data Protection y su Key Ring continúa presente en `AddInfrastructure()`.
+- `UserInvitationTokenProviderOptions` continúa configurándose, aunque el `HashedUserTokenProvider` del paso 2 obtiene su vigencia directamente desde `UserInvitationOptions`.
+- El registro no demuestra que los demás flujos de Identity utilicen el proveedor personalizado; esto depende del nombre de proveedor seleccionado en cada operación.
+
+#### 5. Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    subgraph Infrastructure["Infrastructure"]
+        DI["DependencyInjection.AddInfrastructure()"]
+
+        subgraph Identity["Identity"]
+            HP["HashedUserTokenProvider"]
+            UIS["IdentityUserInvitationService"]
+            AU["ApplicationIdentityUser"]
+        end
+
+        subgraph Security["Security"]
+            CR["OpaqueTokenCryptography"]
+            GEN["OpaqueTokenGenerator"]
+        end
+
+        subgraph Persistence["Persistence"]
+            TS["OpaqueTokenStore"]
+            DB["AppDbContext"]
+        end
+    end
+
+    subgraph Application["Application / Abstractions"]
+        ITS["IOpaqueTokenStore"]
+        ITG["IOpaqueTokenGenerator"]
+    end
+
+    subgraph Framework["ASP.NET Core Identity"]
+        AI["AddIdentity"]
+        ATP["AddTokenProvider"]
+        DTP["AddDefaultTokenProviders"]
+        UM["UserManager"]
+    end
+
+    subgraph External["Servicios de plataforma"]
+        EF["Entity Framework Core"]
+        DP["ASP.NET Core Data Protection"]
+    end
+
+    DI --> AI
+    AI --> AU
+    AI --> ATP
+    AI --> DTP
+
+    ATP -->|"Registra con TokenProviderName"| HP
+    UIS -.->|"Define TokenProviderName"| ATP
+
+    HP --> UM
+    HP --> ITS
+    HP --> CR
+
+    ITS -.->|"Implementado por"| TS
+    ITG -.->|"Implementado por"| GEN
+
+    DI --> CR
+    DI --> GEN
+    DI --> TS
+    DI --> DB
+
+    TS --> DB
+    DB --> EF
+
+    DI -->|"Configuración existente"| DP
+```
+
+#### 6. Resultado
+
+Se registró `HashedUserTokenProvider` como proveedor dedicado de tokens de invitación, junto con sus dependencias criptográficas y de persistencia.
+
+Los proveedores predeterminados de Identity y la configuración de Data Protection permanecen activos; este paso no elimina el Key Ring del proyecto.
+
 ---
 
 ### 4. Adaptar la creación de invitaciones para usar el nuevo token.
