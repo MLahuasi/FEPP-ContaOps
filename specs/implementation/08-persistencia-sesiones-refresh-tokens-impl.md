@@ -56,6 +56,109 @@ Cuando la pantalla de login esté disponible, iniciar sesión con
 
 ### 4. Crear entidades en Infrastructure.
 
+#### 1. Componentes implementados
+
+| Componente          | Acción | Tipo  | Capa                         | Responsabilidad                                                                             |
+| ------------------- | ------ | ----- | ---------------------------- | ------------------------------------------------------------------------------------------- |
+| `UserSession`       | Create | Clase | Infrastructure / Persistence | Representa una sesión de usuario con estado, vigencia y datos de revocación.                |
+| `UserRefreshToken`  | Create | Clase | Infrastructure / Persistence | Representa un refresh token asociado a una sesión, almacenando su hash y fechas de control. |
+| `UserSessionStatus` | Create | Enum  | Infrastructure / Persistence | Define los estados posibles de una sesión: `Active`, `Revoked` y `Expired`.                 |
+
+#### 2. Métodos principales
+
+Las clases implementadas no contienen métodos propios. Su comportamiento se representa mediante propiedades.
+
+| Clase              | Propiedad                          | Responsabilidad                                                              |
+| ------------------ | ---------------------------------- | ---------------------------------------------------------------------------- |
+| `UserSession`      | `SessionId`                        | Identifica de manera única la sesión.                                        |
+| `UserSession`      | `UserId`                           | Identifica al usuario propietario de la sesión.                              |
+| `UserSession`      | `SecurityStamp`                    | Almacena el sello de seguridad del usuario al crear la sesión.               |
+| `UserSession`      | `Status`                           | Representa el estado de la sesión mediante `UserSessionStatus`.              |
+| `UserSession`      | `ExpiresAtUtc`                     | Establece la fecha de expiración de la sesión.                               |
+| `UserSession`      | `RevokedAtUtc`, `RevocationReason` | Almacenan información de revocación.                                         |
+| `UserRefreshToken` | `TokenId`                          | Identifica el registro del refresh token.                                    |
+| `UserRefreshToken` | `SessionId`                        | Identifica la sesión a la que pertenece el token.                            |
+| `UserRefreshToken` | `TokenHash`                        | Almacena el hash SHA-256 del token opaco, sin conservar el secreto original. |
+| `UserRefreshToken` | `ExpiresAtUtc`                     | Define la expiración del refresh token.                                      |
+| `UserRefreshToken` | `ConsumedAtUtc`                    | Registra cuándo fue utilizado el token.                                      |
+| `UserRefreshToken` | `RevokedAtUtc`                     | Registra cuándo fue revocado el token.                                       |
+
+Ambas clases incluyen `CreatedAtUtc` para registrar su fecha de creación.
+
+#### 3. Componentes de .NET y bibliotecas externas
+
+| Componente / Método | Origen        | Función                                           | Uso en el proyecto                                   |
+| ------------------- | ------------- | ------------------------------------------------- | ---------------------------------------------------- |
+| `Guid`              | .NET / System | Identificador de 128 bits.                        | Identifica sesiones y refresh tokens.                |
+| `DateTimeOffset`    | .NET / System | Representa fechas y horas con desplazamiento UTC. | Registra creación, expiración, consumo y revocación. |
+| `byte[]`            | .NET / C#     | Arreglo de bytes.                                 | Almacena el hash SHA-256 del refresh token.          |
+| `enum`              | C#            | Define un conjunto de constantes.                 | Implementa `UserSessionStatus`.                      |
+| `UserSession`       | Código propio | Modelo de persistencia.                           | Representa sesiones de usuarios.                     |
+| `UserRefreshToken`  | Código propio | Modelo de persistencia.                           | Representa refresh tokens asociados a sesiones.      |
+| `UserSessionStatus` | Código propio | Enumeración.                                      | Define los estados persistentes de una sesión.       |
+
+**Nota:** Las clases no implementan directamente operaciones criptográficas ni acceso a bases de datos. Tampoco se incluye configuración de Entity Framework Core en este paso.
+
+#### 4. Flujo funcional
+
+| Operación                 | Componente          | Descripción                                                 |
+| ------------------------- | ------------------- | ----------------------------------------------------------- |
+| Identificación de sesión  | `UserSession`       | Utiliza `SessionId` como identificador.                     |
+| Asociación usuario-sesión | `UserSession`       | Almacena `UserId` y `SecurityStamp`.                        |
+| Control de estado         | `UserSessionStatus` | Representa sesiones activas, revocadas o expiradas.         |
+| Asociación token-sesión   | `UserRefreshToken`  | Utiliza `SessionId` para referenciar la sesión propietaria. |
+| Almacenamiento del token  | `UserRefreshToken`  | Conserva `TokenHash` en lugar del token original.           |
+| Control de consumo        | `UserRefreshToken`  | Dispone de `ConsumedAtUtc` para registrar su utilización.   |
+| Control de revocación     | Ambas clases        | Disponen de propiedades para registrar revocaciones.        |
+| Control de expiración     | Ambas clases        | Almacenan sus respectivas fechas de expiración.             |
+
+**Relación lógica:** Una sesión puede estar asociada a varios registros de refresh tokens mediante `SessionId`. La cardinalidad y las restricciones de integridad referencial todavía no están configuradas en el código proporcionado.
+
+#### 5. Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    subgraph Infrastructure["Infrastructure - Persistence"]
+        US["UserSession"]
+        RT["UserRefreshToken"]
+        SS["UserSessionStatus"]
+    end
+
+    subgraph SessionData["Datos de sesión"]
+        UID["UserId"]
+        STAMP["SecurityStamp"]
+        STATE["Status"]
+        EXP["ExpiresAtUtc"]
+        REV["RevokedAtUtc / RevocationReason"]
+    end
+
+    subgraph TokenData["Datos del refresh token"]
+        HASH["TokenHash - SHA-256"]
+        CONSUMED["ConsumedAtUtc"]
+        TOKENEXP["ExpiresAtUtc"]
+        TOKENREV["RevokedAtUtc"]
+    end
+
+    US -->|"Estado"| SS
+    US --> UID
+    US --> STAMP
+    US --> STATE
+    US --> EXP
+    US --> REV
+
+    RT -.->|"SessionId - Asociación lógica"| US
+    RT --> HASH
+    RT --> CONSUMED
+    RT --> TOKENEXP
+    RT --> TOKENREV
+```
+
+#### 6. Resultado
+
+Se crean los modelos de persistencia `UserSession` y `UserRefreshToken`, junto con la enumeración `UserSessionStatus`, para representar sesiones y refresh tokens sin almacenar el secreto original.
+
+La configuración de persistencia, las relaciones de Entity Framework Core y las operaciones de gestión de sesiones no forman parte de este paso.
+
 ---
 
 ### 5. Configurar relaciones, índices, unicidad y cascada.
