@@ -647,6 +647,152 @@ Se incorporan operaciones transaccionales para consumir refresh tokens, detectar
 
 ### 9. Agregar pruebas unitarias.
 
+#### 1. Componentes implementados
+
+| Componente                             | Acción | Tipo                     | Capa                         | Responsabilidad                                                                                    |
+| -------------------------------------- | ------ | ------------------------ | ---------------------------- | -------------------------------------------------------------------------------------------------- |
+| `Fepp.ContaOps.UnitTests.csproj`       | Update | Proyecto de pruebas      | Tests                        | Incorpora SQLite como proveedor de EF Core para ejecutar pruebas con una base de datos en memoria. |
+| `UserSessionStoreTests`                | Create | Clase de pruebas         | Tests                        | Verifica la persistencia, unicidad, consumo y expiración de sesiones y refresh tokens.             |
+| `Microsoft.EntityFrameworkCore.Sqlite` | Add    | Paquete NuGet            | Tests                        | Proporciona una base de datos relacional SQLite para las pruebas.                                  |
+| `AppDbContext`                         | Uso    | Contexto EF Core         | Infrastructure / Persistence | Utiliza el modelo persistente real de la aplicación durante las pruebas.                           |
+| `UserSessionStore`                     | Uso    | Servicio de persistencia | Infrastructure / Security    | Componente sometido a pruebas funcionales de persistencia.                                         |
+
+**Pruebas implementadas:**
+
+| Prueba                                                              | Comportamiento verificado                                                                       |
+| ------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `ReplaceActiveSession_LeavesOneActiveSessionAndHashesRefreshTokens` | El reemplazo conserva una sola sesión activa, revoca la anterior y persiste hashes de 32 bytes. |
+| `Database_RejectsTwoActiveSessionsForOneUser`                       | El índice único filtrado impide almacenar dos sesiones activas del mismo usuario.               |
+| `ConsumeRefreshToken_RejectsReuseAndRevokesSession`                 | El primer consumo es válido y la reutilización revoca la sesión.                                |
+| `ConsumeRefreshToken_WhenSessionExpired_MarksSessionExpired`        | Consumir un token asociado a una sesión vencida devuelve `Expired` y actualiza su estado.       |
+
+#### 2. Métodos principales
+
+| Clase                   | Método                                                                | Responsabilidad                                                                                      |
+| ----------------------- | --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `UserSessionStoreTests` | `InitializeAsync()`                                                   | Crea SQLite en memoria, inicializa `AppDbContext`, genera el esquema e inserta un usuario de prueba. |
+| `UserSessionStoreTests` | `DisposeAsync()`                                                      | Libera el contexto EF Core y la conexión SQLite.                                                     |
+| `UserSessionStoreTests` | `ReplaceActiveSession_LeavesOneActiveSessionAndHashesRefreshTokens()` | Comprueba el reemplazo de sesiones y el almacenamiento del hash del refresh token.                   |
+| `UserSessionStoreTests` | `Database_RejectsTwoActiveSessionsForOneUser()`                       | Verifica la restricción de unicidad de sesiones activas.                                             |
+| `UserSessionStoreTests` | `ConsumeRefreshToken_RejectsReuseAndRevokesSession()`                 | Comprueba consumo único, detección de reutilización y revocación.                                    |
+| `UserSessionStoreTests` | `ConsumeRefreshToken_WhenSessionExpired_MarksSessionExpired()`        | Verifica la expiración de una sesión durante el consumo.                                             |
+| `UserSessionStoreTests` | `CreateStore()`                                                       | Construye `UserSessionStore` con las dependencias reales y el contexto de prueba.                    |
+| `UserSessionStoreTests` | `UtcNow`                                                              | Proporciona una fecha UTC fija para ejecutar pruebas deterministas.                                  |
+
+#### 3. Componentes de .NET y bibliotecas externas
+
+| Componente / Método                    | Origen                                   | Función                                               | Uso en el proyecto                                                       |
+| -------------------------------------- | ---------------------------------------- | ----------------------------------------------------- | ------------------------------------------------------------------------ |
+| `net10.0`                              | .NET 10                                  | Framework de ejecución.                               | Plataforma del proyecto de pruebas.                                      |
+| `xUnit`                                | Biblioteca externa                       | Framework de pruebas automatizadas.                   | Define y ejecuta los casos de prueba mediante `[Fact]`.                  |
+| `IAsyncLifetime`                       | xUnit                                    | Gestiona inicialización y liberación asíncronas.      | Prepara y libera la base de datos utilizada por cada prueba.             |
+| `Assert`                               | xUnit                                    | Proporciona verificaciones de resultados.             | Comprueba estados, registros, hashes y excepciones.                      |
+| `Microsoft.EntityFrameworkCore.Sqlite` | Entity Framework Core                    | Proveedor relacional para SQLite.                     | Ejecuta las pruebas utilizando SQLite en memoria.                        |
+| `SqliteConnection`                     | Microsoft.Data.Sqlite                    | Administra conexiones SQLite.                         | Mantiene abierta la conexión para conservar la base de datos en memoria. |
+| `UseSqlite()`                          | Entity Framework Core SQLite             | Configura SQLite como proveedor de EF Core.           | Configura `AppDbContext` para las pruebas.                               |
+| `EnsureCreatedAsync()`                 | Entity Framework Core                    | Crea el esquema de base de datos a partir del modelo. | Inicializa las tablas y restricciones sin ejecutar migraciones.          |
+| `DbContextOptionsBuilder<T>`           | Entity Framework Core                    | Construye las opciones del contexto.                  | Configura `AppDbContext` con la conexión SQLite.                         |
+| `DbUpdateException`                    | Entity Framework Core                    | Representa errores durante la persistencia.           | Verifica el rechazo de sesiones activas duplicadas.                      |
+| `Microsoft.NET.Test.Sdk`               | Microsoft / Herramientas de pruebas .NET | Proporciona infraestructura para ejecutar pruebas.    | Permite ejecutar el proyecto mediante `dotnet test`.                     |
+| `xunit.runner.visualstudio`            | Biblioteca externa                       | Adaptador de ejecución de pruebas xUnit.              | Permite descubrir y ejecutar pruebas mediante herramientas compatibles.  |
+| `coverlet.collector`                   | Biblioteca externa                       | Recopila cobertura de código.                         | Disponible como dependencia del proyecto de pruebas.                     |
+| `UserSessionStore`                     | Código propio / Infrastructure           | Gestiona sesiones y refresh tokens.                   | Componente bajo prueba.                                                  |
+| `OpaqueTokenGenerator`                 | Código propio / Infrastructure           | Genera tokens opacos.                                 | Proporciona tokens reales durante las pruebas.                           |
+| `OpaqueTokenCryptography`              | Código propio / Infrastructure           | Realiza operaciones criptográficas sobre tokens.      | Calcula y verifica hashes durante las pruebas.                           |
+
+#### 4. Flujo funcional
+
+**Preparación del entorno de pruebas:**
+
+| Paso | Operación                                         | Componente                   |
+| ---- | ------------------------------------------------- | ---------------------------- |
+| 1    | Abrir conexión SQLite en memoria.                 | `SqliteConnection`           |
+| 2    | Configurar EF Core mediante `UseSqlite()`.        | `DbContextOptionsBuilder`    |
+| 3    | Crear `AppDbContext`.                             | Infrastructure / Persistence |
+| 4    | Crear tablas, índices y restricciones del modelo. | `EnsureCreatedAsync()`       |
+| 5    | Insertar usuario `user-1` con `SecurityStamp`.    | `ApplicationIdentityUser`    |
+| 6    | Construir el servicio bajo prueba.                | `CreateStore()`              |
+| 7    | Ejecutar las operaciones y verificar resultados.  | xUnit                        |
+| 8    | Liberar contexto y conexión.                      | `DisposeAsync()`             |
+
+**Cobertura funcional implementada:**
+
+| Funcionalidad         | Verificación                                     | Resultado esperado           |
+| --------------------- | ------------------------------------------------ | ---------------------------- |
+| Reemplazo de sesión   | Crear dos sesiones consecutivas.                 | Una activa y otra revocada.  |
+| Hash de refresh token | Consultar los tokens persistidos.                | Hashes de 32 bytes.          |
+| Unicidad de sesión    | Insertar dos sesiones activas del mismo usuario. | `DbUpdateException`.         |
+| Consumo inicial       | Consumir un refresh token válido.                | `Consumed`.                  |
+| Reutilización         | Consumir nuevamente el mismo token.              | `Reused` y sesión revocada.  |
+| Expiración            | Consumir un token de una sesión vencida.         | `Expired` y sesión expirada. |
+
+**Alcance:** Las pruebas utilizan SQLite en memoria, no PostgreSQL. Verifican cuatro escenarios de persistencia y comportamiento, pero no incluyen pruebas de concurrencia, revocación explícita, expiración masiva ni compatibilidad con migraciones de PostgreSQL.
+
+#### 5. Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    subgraph Tests["Tests - Fepp.ContaOps.UnitTests"]
+        TEST["UserSessionStoreTests"]
+        INIT["InitializeAsync()"]
+        FACTS["Pruebas xUnit"]
+        DISPOSE["DisposeAsync()"]
+    end
+
+    subgraph Infrastructure["Infrastructure - Security"]
+        STORE["UserSessionStore"]
+        GENERATOR["OpaqueTokenGenerator"]
+        CRYPTO["OpaqueTokenCryptography"]
+    end
+
+    subgraph Persistence["Infrastructure - Persistence"]
+        DB["AppDbContext"]
+        SESSION["UserSession"]
+        TOKEN["UserRefreshToken"]
+        USER["ApplicationIdentityUser"]
+    end
+
+    subgraph Framework["Entity Framework Core"]
+        SQLITEPROVIDER["Microsoft.EntityFrameworkCore.Sqlite"]
+        SCHEMA["EnsureCreatedAsync()"]
+    end
+
+    subgraph Database["Base de datos de pruebas"]
+        SQLITE[("SQLite en memoria")]
+    end
+
+    TEST --> INIT
+    TEST --> FACTS
+    TEST --> DISPOSE
+
+    INIT --> DB
+    INIT --> SCHEMA
+    INIT --> USER
+
+    FACTS --> STORE
+    FACTS -->|"Verifica registros"| DB
+
+    STORE --> GENERATOR
+    STORE --> CRYPTO
+    STORE --> DB
+
+    DB --> SESSION
+    DB --> TOKEN
+    DB --> SQLITEPROVIDER
+
+    SCHEMA --> SQLITEPROVIDER
+    SQLITEPROVIDER --> SQLITE
+
+    DISPOSE -->|"Libera recursos"| DB
+    DISPOSE -->|"Cierra conexión"| SQLITE
+```
+
+#### 6. Resultado
+
+Se incorporan cuatro pruebas automatizadas con xUnit y SQLite en memoria para verificar el reemplazo, unicidad, consumo y expiración de sesiones.
+
+Las pruebas utilizan `AppDbContext` y los componentes criptográficos reales, sin depender de PostgreSQL ni de servicios externos.
+
 ---
 
 ### 10. Iniciar API, verificar tablas y ejecutar build/pruebas.
