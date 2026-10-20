@@ -69,12 +69,6 @@ public static class DependencyInjection
             }
         }
 
-        services.AddOptions<UserInvitationTokenProviderOptions>()
-            .Configure<IOptions<UserInvitationOptions>>((tokenOptions, invitationOptions) =>
-            {
-                tokenOptions.TokenLifespan = TimeSpan.FromHours(
-                    invitationOptions.Value.TokenLifetimeHours);
-            });
         services.AddOptions<EmailSmtpOptions>()
             .Bind(configuration.GetSection(EmailSmtpOptions.SectionName))
             .Validate(

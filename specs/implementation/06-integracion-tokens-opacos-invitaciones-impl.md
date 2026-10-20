@@ -430,6 +430,112 @@ El consumo, la asignación de contraseña y la actualización del usuario se int
 
 ### 7. Invalidar tokens antiguos de Data Protection.
 
+Eliminación de la configuración de vigencia del proveedor anterior de tokens de invitación basado en Data Protection. El flujo de invitaciones continúa utilizando `HashedUserTokenProvider`, que genera y valida tokens opacos mediante hashes persistidos.
+
+#### 1. Componentes implementados
+
+| Componente                           | Acción                 | Tipo                            | Capa                    | Responsabilidad                                                               |
+| ------------------------------------ | ---------------------- | ------------------------------- | ----------------------- | ----------------------------------------------------------------------------- |
+| `DependencyInjection`                | Update                 | Clase estática                  | Infrastructure          | Centraliza la configuración de dependencias.                                  |
+| `AddInfrastructure()`                | Update                 | Método de extensión             | Infrastructure          | Elimina la configuración de vigencia del proveedor anterior.                  |
+| `UserInvitationTokenProviderOptions` | Delete (configuración) | Opciones de proveedor de tokens | Infrastructure/Identity | Deja de configurarse mediante `AddOptions()`.                                 |
+| `HashedUserTokenProvider`            | Sin cambios            | Proveedor personalizado         | Infrastructure/Identity | Continúa como proveedor dedicado para tokens opacos de invitación.            |
+| `UserInvitationOptions`              | Sin cambios            | Clase de configuración          | Infrastructure          | Mantiene `TokenLifetimeHours` como parámetro de vigencia de las invitaciones. |
+
+#### 2. Métodos principales
+
+| Clase                 | Método                                        | Responsabilidad                                                    |
+| --------------------- | --------------------------------------------- | ------------------------------------------------------------------ |
+| `DependencyInjection` | `AddInfrastructure()`                         | Elimina el registro de opciones del proveedor anterior.            |
+| `IdentityBuilder`     | `AddTokenProvider<HashedUserTokenProvider>()` | Mantiene registrado el proveedor dedicado de invitaciones.         |
+| `IdentityBuilder`     | `AddDefaultTokenProviders()`                  | Conserva los proveedores predeterminados de ASP.NET Core Identity. |
+
+#### 3. Componentes de .NET y bibliotecas externas
+
+| Componente / Método          | Origen                              | Función                                        | Uso en el proyecto                                                   |
+| ---------------------------- | ----------------------------------- | ---------------------------------------------- | -------------------------------------------------------------------- |
+| `AddOptions<T>()`            | .NET / Microsoft.Extensions.Options | Registra opciones configurables.               | Se elimina su utilización para `UserInvitationTokenProviderOptions`. |
+| `IOptions<T>`                | .NET / Microsoft.Extensions.Options | Proporciona acceso a configuraciones tipadas.  | Continúa utilizándose para configurar otras opciones del proyecto.   |
+| `AddTokenProvider<T>()`      | ASP.NET Core Identity               | Registra proveedores personalizados de tokens. | Mantiene `HashedUserTokenProvider` asociado a `TokenProviderName`.   |
+| `AddDefaultTokenProviders()` | ASP.NET Core Identity               | Registra proveedores estándar de Identity.     | Permanece configurado.                                               |
+| `AddDataProtection()`        | ASP.NET Core Data Protection        | Registra servicios de protección de datos.     | Permanece configurado junto con el Key Ring.                         |
+
+#### 4. Flujo funcional
+
+| Operación                  | Comportamiento                                                                                                       |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| Configuración anterior     | `UserInvitationTokenProviderOptions.TokenLifespan` se establecía desde `UserInvitationOptions.TokenLifetimeHours`.   |
+| Configuración eliminada    | Se retira el bloque `AddOptions<UserInvitationTokenProviderOptions>()`.                                              |
+| Generación de invitaciones | `IdentityUserInvitationService` continúa utilizando `HashedUserTokenProvider`.                                       |
+| Vigencia de nuevos tokens  | `HashedUserTokenProvider` calcula la expiración mediante `UserInvitationOptions.TokenLifetimeHours`.                 |
+| Validación de invitaciones | Se verifica el token opaco contra su hash persistido.                                                                |
+| Tokens antiguos            | Los tokens anteriores basados en Data Protection no son compatibles con la validación del proveedor dedicado actual. |
+
+**Consideraciones:**
+
+- La eliminación afecta únicamente a la configuración de `UserInvitationTokenProviderOptions`.
+- Los tokens antiguos no se eliminan físicamente mediante este cambio.
+- Su rechazo depende de que las operaciones de invitación utilicen exclusivamente `HashedUserTokenProvider`.
+- Data Protection y su Key Ring permanecen configurados porque `AddDataProtection()` no fue eliminado.
+
+#### 5. Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    subgraph Infrastructure["Infrastructure"]
+        DI["DependencyInjection.AddInfrastructure()"]
+
+        subgraph Identity["Identity"]
+            UIS["IdentityUserInvitationService"]
+            HP["HashedUserTokenProvider"]
+            OPT["UserInvitationOptions"]
+        end
+
+        subgraph Security["Security"]
+            STORE["OpaqueTokenStore"]
+        end
+    end
+
+    subgraph Application["Application"]
+        ITS["IOpaqueTokenStore"]
+    end
+
+    subgraph Framework["ASP.NET Core Identity"]
+        UM["UserManager"]
+        ATP["AddTokenProvider"]
+        DTP["AddDefaultTokenProviders"]
+    end
+
+    subgraph DataProtection["ASP.NET Core Data Protection"]
+        DP["AddDataProtection"]
+        KR["Key Ring"]
+    end
+
+    DI --> ATP
+    ATP -->|Registra proveedor dedicado| HP
+
+    DI --> DTP
+    DI --> DP
+    DP --> KR
+
+    UIS -->|GenerateUserTokenAsync / VerifyUserTokenAsync| UM
+    UM -->|UserInvitation| HP
+
+    HP -->|Consulta vigencia| OPT
+    HP -->|StoreAsync / FindAsync| ITS
+    ITS -.->|Implementado por| STORE
+```
+
+**Configuración eliminada:** `UserInvitationTokenProviderOptions.TokenLifespan`.
+
+**Configuración vigente:** `UserInvitationOptions.TokenLifetimeHours`, utilizada directamente por `HashedUserTokenProvider`.
+
+#### 6. Resultado
+
+Se eliminó la configuración de vigencia del proveedor anterior basado en Data Protection, consolidando `HashedUserTokenProvider` como mecanismo de tokens de invitación.
+
+Los tokens antiguos no son compatibles con este proveedor; Data Protection y su Key Ring permanecen configurados para los servicios que puedan utilizarlos.
+
 ---
 
 ### 8. Agregar pruebas de tokens válidos, inválidos, vencidos, usados, de otro usuario y de reenvío.
