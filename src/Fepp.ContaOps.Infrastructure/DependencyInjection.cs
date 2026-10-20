@@ -10,8 +10,6 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Microsoft.EntityFrameworkCore;
 using System.Text;
-using Microsoft.AspNetCore.DataProtection;
-using System.IO;
 
 namespace Fepp.ContaOps.Infrastructure;
 
@@ -53,21 +51,6 @@ public static class DependencyInjection
                 options => options.IsValid(),
                 "Identity:Lockout contains invalid lockout policy values.")
             .ValidateOnStart();
-
-        string? keyRingPath = configuration["DataProtection:KeyRingPath"];
-        IDataProtectionBuilder dataProtectionBuilder = services
-            .AddDataProtection()
-            .SetApplicationName("FEPP-ContaOps");
-        if (!string.IsNullOrWhiteSpace(keyRingPath))
-        {
-            DirectoryInfo keyRingDirectory = new(keyRingPath);
-            keyRingDirectory.Create();
-            dataProtectionBuilder.PersistKeysToFileSystem(keyRingDirectory);
-            if (OperatingSystem.IsWindows())
-            {
-                dataProtectionBuilder.ProtectKeysWithDpapi();
-            }
-        }
 
         services.AddOptions<EmailSmtpOptions>()
             .Bind(configuration.GetSection(EmailSmtpOptions.SectionName))

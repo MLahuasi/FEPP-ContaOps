@@ -16,6 +16,107 @@
 
 ### 4. Eliminar registros de Data Protection, persistencia, DPAPI y using asociados.
 
+#### 1. Componentes implementados
+
+| Componente                            | Acción | Tipo                     | Capa           | Responsabilidad                                                                                               |
+| ------------------------------------- | ------ | ------------------------ | -------------- | ------------------------------------------------------------------------------------------------------------- |
+| `DependencyInjection`                 | Update | Clase estática           | Infrastructure | Elimina la configuración explícita de Data Protection y conserva el registro de servicios de infraestructura. |
+| `AddInfrastructure()`                 | Update | Método de extensión      | Infrastructure | Elimina el registro, persistencia y protección de claves de Data Protection.                                  |
+| `IDataProtectionBuilder`              | Delete | Interfaz de ASP.NET Core | Infrastructure | Se elimina su utilización para configurar Data Protection.                                                    |
+| `DataProtection:KeyRingPath`          | Delete | Lectura de configuración | Infrastructure | Elimina la lectura de la ruta de almacenamiento de claves criptográficas.                                     |
+| `Microsoft.AspNetCore.DataProtection` | Delete | Using                    | Infrastructure | Elimina la importación explícita de Data Protection.                                                          |
+| `System.IO`                           | Delete | Using                    | Infrastructure | Elimina la importación utilizada para gestionar el directorio de claves.                                      |
+
+#### 2. Métodos principales
+
+| Clase                 | Método                | Responsabilidad                                                                         |
+| --------------------- | --------------------- | --------------------------------------------------------------------------------------- |
+| `DependencyInjection` | `AddInfrastructure()` | Registra los servicios de Infrastructure sin configurar explícitamente Data Protection. |
+
+**Operaciones eliminadas:**
+
+| Método / Propiedad            | Función anterior                                                            |
+| ----------------------------- | --------------------------------------------------------------------------- |
+| `AddDataProtection()`         | Registraba explícitamente los servicios de Data Protection.                 |
+| `SetApplicationName()`        | Establecía el identificador de aplicación utilizado para aislar las claves. |
+| `PersistKeysToFileSystem()`   | Configuraba la persistencia del Key Ring en el sistema de archivos.         |
+| `ProtectKeysWithDpapi()`      | Protegía las claves mediante DPAPI en Windows.                              |
+| `DirectoryInfo.Create()`      | Creaba el directorio destinado al almacenamiento de claves.                 |
+| `OperatingSystem.IsWindows()` | Comprobaba si el sistema operativo era Windows.                             |
+
+#### 3. Componentes de .NET y bibliotecas externas
+
+| Componente / Método           | Origen                                          | Función                                                   | Uso en el proyecto                           |
+| ----------------------------- | ----------------------------------------------- | --------------------------------------------------------- | -------------------------------------------- |
+| `IServiceCollection`          | .NET / Microsoft.Extensions.DependencyInjection | Contenedor de registro de servicios.                      | Mantiene los registros de Infrastructure.    |
+| `IConfiguration`              | .NET / Microsoft.Extensions.Configuration       | Acceso a configuración.                                   | Obtiene las opciones y cadenas de conexión.  |
+| `AddDataProtection()`         | ASP.NET Core Data Protection                    | Registra servicios criptográficos de protección de datos. | Eliminado del registro explícito.            |
+| `IDataProtectionBuilder`      | ASP.NET Core Data Protection                    | Configura los servicios de protección de datos.           | Eliminado.                                   |
+| `SetApplicationName()`        | ASP.NET Core Data Protection                    | Define el discriminador de aplicación.                    | Eliminado.                                   |
+| `PersistKeysToFileSystem()`   | ASP.NET Core Data Protection                    | Persiste el Key Ring en archivos.                         | Eliminado.                                   |
+| `ProtectKeysWithDpapi()`      | ASP.NET Core Data Protection                    | Protege claves mediante Windows DPAPI.                    | Eliminado.                                   |
+| `DirectoryInfo`               | .NET / System.IO                                | Representa y administra directorios.                      | Eliminado de esta configuración.             |
+| `OperatingSystem.IsWindows()` | .NET / System                                   | Identifica el sistema operativo.                          | Eliminado de esta configuración.             |
+| `AddIdentity()`               | ASP.NET Core Identity                           | Registra servicios de identidad.                          | Se mantiene sin modificaciones en este paso. |
+| `AddDefaultTokenProviders()`  | ASP.NET Core Identity                           | Registra proveedores de tokens predeterminados.           | Se mantiene en el código mostrado.           |
+| `AddTokenProvider<T>()`       | ASP.NET Core Identity                           | Registra un proveedor de tokens personalizado.            | Mantiene `HashedUserTokenProvider`.          |
+
+#### 4. Flujo funcional
+
+| Operación                         | Antes                                      | Después      |
+| --------------------------------- | ------------------------------------------ | ------------ |
+| Registro de Data Protection       | `AddDataProtection()` explícito.           | Eliminado.   |
+| Identificación de aplicación      | `SetApplicationName("FEPP-ContaOps")`.     | Eliminada.   |
+| Configuración del Key Ring        | Lectura de `DataProtection:KeyRingPath`.   | Eliminada.   |
+| Persistencia de claves            | `PersistKeysToFileSystem()`.               | Eliminada.   |
+| Protección en Windows             | `ProtectKeysWithDpapi()`.                  | Eliminada.   |
+| Registro de Identity              | `AddIdentity()` con proveedores de tokens. | Se mantiene. |
+| Registro de tokens personalizados | `HashedUserTokenProvider`.                 | Se mantiene. |
+
+**Alcance:** Se elimina la configuración explícita de Data Protection, pero no se demuestra su desactivación completa. `AddDefaultTokenProviders()` permanece registrado y puede incorporar proveedores que utilizan Data Protection.
+
+#### 5. Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    subgraph Infrastructure["Infrastructure - Código propio"]
+        DI["DependencyInjection.AddInfrastructure()"]
+        HTP["HashedUserTokenProvider"]
+        DB["AppDbContext"]
+    end
+
+    subgraph Identity["ASP.NET Core Identity"]
+        AI["AddIdentity()"]
+        DTP["AddDefaultTokenProviders()"]
+        ATP["AddTokenProvider()"]
+    end
+
+    subgraph DataProtection["ASP.NET Core Data Protection"]
+        DP["Data Protection"]
+    end
+
+    subgraph Persistence["Persistencia"]
+        PG[("PostgreSQL")]
+    end
+
+    DI --> AI
+    DI --> DB
+
+    AI --> DTP
+    AI --> ATP
+    ATP --> HTP
+
+    DTP -.->|"Puede registrar proveedores basados en"| DP
+
+    DB --> PG
+```
+
+**Configuración explícita eliminada:** `AddDataProtection()`, `SetApplicationName()`, `PersistKeysToFileSystem()` y `ProtectKeysWithDpapi()`.
+
+#### 6. Resultado
+
+Se elimina de `DependencyInjection` la configuración explícita de Data Protection, la persistencia del Key Ring y su protección mediante DPAPI. Se conserva el registro de ASP.NET Core Identity y sus proveedores de tokens, por lo que la ausencia total de dependencias de Data Protection todavía no queda demostrada.
+
 ---
 
 ### 5. Registrar explícitamente solo los proveedores de Identity necesarios.
