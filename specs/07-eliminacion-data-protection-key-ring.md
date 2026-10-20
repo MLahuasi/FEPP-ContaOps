@@ -1,6 +1,6 @@
 # SPEC 07 — Eliminación de Data Protection y key ring
 
-> **Estado:** Borrador
+> **Estado:** Aprobado
 > **Dependencias:** SPEC 06
 > **Fecha:** 2026-10-20
 > **Objetivo:** Eliminar el uso operativo de ASP.NET Core Data Protection y toda configuración de key ring después de migrar las invitaciones.
