@@ -1,6 +1,6 @@
 # SPEC 08 — Persistencia de sesiones y refresh tokens
 
-> **Estado:** Borrador
+> **Estado:** Aprobado
 > **Dependencias:** SPEC 07
 > **Fecha:** 2026-10-20
 > **Objetivo:** Crear el almacenamiento seguro de una sesión por usuario y de refresh tokens rotatorios sin persistir JWT completos.
