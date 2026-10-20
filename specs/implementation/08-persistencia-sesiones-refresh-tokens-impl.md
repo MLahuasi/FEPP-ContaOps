@@ -311,6 +311,154 @@ La base de datos queda modelada para restringir a una sesión activa por usuario
 
 ### 7. Implementar sesión activa y refresh activo.
 
+#### 1. Componentes implementados
+
+| Componente                  | Acción | Tipo                             | Capa                         | Responsabilidad                                                                                      |
+| --------------------------- | ------ | -------------------------------- | ---------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `UserSessionStore`          | Create | Clase / Servicio de persistencia | Infrastructure / Security    | Reemplaza la sesión activa de un usuario y genera su refresh token inicial mediante una transacción. |
+| `UserSessionCreationResult` | Create | Record                           | Infrastructure / Security    | Devuelve el identificador de la nueva sesión y el refresh token original.                            |
+| `DependencyInjection`       | Update | Clase estática                   | Infrastructure               | Registra `UserSessionStore` en el contenedor de dependencias.                                        |
+| `UserSession`               | Uso    | Entidad de persistencia          | Infrastructure / Persistence | Representa la sesión creada o revocada.                                                              |
+| `UserRefreshToken`          | Uso    | Entidad de persistencia          | Infrastructure / Persistence | Almacena el hash del refresh token y permite registrar su revocación.                                |
+| `UserSessionStatus`         | Uso    | Enum                             | Infrastructure / Persistence | Identifica los estados `Active` y `Revoked` utilizados durante el reemplazo.                         |
+
+**Registro de dependencias:**
+
+```csharp
+services.AddScoped<UserSessionStore>();
+```
+
+#### 2. Métodos principales
+
+| Clase                     | Método                        | Responsabilidad                                                                                                                           |
+| ------------------------- | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `UserSessionStore`        | `ReplaceActiveSessionAsync()` | Revoca las sesiones activas anteriores y sus refresh tokens no consumidos ni revocados; crea una nueva sesión y su refresh token inicial. |
+| `UserSessionStore`        | `ValidateRequiredValue()`     | Valida que `userId` y `securityStamp` no sean nulos ni vacíos.                                                                            |
+| `UserSessionStore`        | `ValidateExpiration()`        | Comprueba que las fechas de expiración sean posteriores a la fecha de creación.                                                           |
+| `IOpaqueTokenGenerator`   | `Generate()`                  | Genera el valor opaco del refresh token.                                                                                                  |
+| `OpaqueTokenCryptography` | `Hash()`                      | Calcula el hash criptográfico del refresh token antes de persistirlo.                                                                     |
+
+**Resultado de la operación:**
+
+| Propiedad      | Tipo     | Responsabilidad                                                                                           |
+| -------------- | -------- | --------------------------------------------------------------------------------------------------------- |
+| `SessionId`    | `Guid`   | Identifica la nueva sesión.                                                                               |
+| `RefreshToken` | `string` | Contiene el token original que se devuelve al llamador, sin almacenarlo directamente en la base de datos. |
+
+#### 3. Componentes de .NET y bibliotecas externas
+
+| Componente / Método                      | Origen                         | Función                                              | Uso en el proyecto                                                          |
+| ---------------------------------------- | ------------------------------ | ---------------------------------------------------- | --------------------------------------------------------------------------- |
+| `AddScoped<T>()`                         | .NET / Dependency Injection    | Registra un servicio con ciclo de vida por ámbito.   | Registra `UserSessionStore`.                                                |
+| `BeginTransactionAsync()`                | Entity Framework Core          | Inicia una transacción de base de datos.             | Agrupa revocación y creación de sesiones y tokens.                          |
+| `IsolationLevel.Serializable`            | .NET / System.Data             | Define el nivel de aislamiento serializable.         | Solicita el máximo aislamiento transaccional para el reemplazo de sesiones. |
+| `IDbContextTransaction`                  | Entity Framework Core          | Representa una transacción administrada por EF Core. | Controla confirmación y reversión de los cambios.                           |
+| `ToListAsync()`                          | Entity Framework Core          | Ejecuta consultas asíncronas.                        | Obtiene sesiones activas y refresh tokens anteriores.                       |
+| `SaveChangesAsync()`                     | Entity Framework Core          | Persiste los cambios pendientes.                     | Guarda revocaciones y nuevos registros.                                     |
+| `CommitAsync()`                          | Entity Framework Core          | Confirma una transacción.                            | Confirma el reemplazo de sesión.                                            |
+| `RollbackAsync()`                        | Entity Framework Core          | Revierte una transacción.                            | Deshace los cambios ante una excepción.                                     |
+| `Guid.NewGuid()`                         | .NET / System                  | Genera identificadores GUID.                         | Identifica la nueva sesión y el refresh token.                              |
+| `ArgumentException.ThrowIfNullOrEmpty()` | .NET / System                  | Valida argumentos de texto.                          | Rechaza identificadores y sellos de seguridad vacíos.                       |
+| `CancellationToken`                      | .NET / System.Threading        | Permite solicitar la cancelación de operaciones.     | Se propaga a operaciones asíncronas de EF Core.                             |
+| `IOpaqueTokenGenerator`                  | Código propio / Application    | Contrato de generación de tokens opacos.             | Proporciona el refresh token inicial.                                       |
+| `OpaqueTokenCryptography`                | Código propio / Infrastructure | Servicio de operaciones criptográficas sobre tokens. | Calcula el hash del refresh token.                                          |
+| `AppDbContext`                           | Código propio / Infrastructure | Contexto de persistencia EF Core.                    | Consulta y modifica sesiones y refresh tokens.                              |
+
+#### 4. Flujo funcional
+
+**Operación: `ReplaceActiveSessionAsync()`**
+
+| Paso | Operación                                                                                       | Componente                       |
+| ---- | ----------------------------------------------------------------------------------------------- | -------------------------------- |
+| 1    | Validar `userId`, `securityStamp` y fechas de expiración.                                       | `UserSessionStore`               |
+| 2    | Iniciar transacción con aislamiento `Serializable`.                                             | EF Core                          |
+| 3    | Consultar sesiones del usuario con estado `Active`.                                             | `AppDbContext.UserSessions`      |
+| 4    | Buscar refresh tokens de esas sesiones que no estén consumidos ni revocados.                    | `AppDbContext.UserRefreshTokens` |
+| 5    | Establecer `RevokedAtUtc` en los refresh tokens encontrados.                                    | `UserRefreshToken`               |
+| 6    | Cambiar las sesiones anteriores a `Revoked`, registrando fecha y motivo `ReplacedByNewSession`. | `UserSession`                    |
+| 7    | Generar un nuevo refresh token opaco.                                                           | `IOpaqueTokenGenerator`          |
+| 8    | Crear una sesión con estado `Active` y el `SecurityStamp` recibido.                             | `UserSession`                    |
+| 9    | Crear el refresh token asociado, almacenando únicamente su hash.                                | `UserRefreshToken`               |
+| 10   | Persistir los cambios y confirmar la transacción.                                               | EF Core                          |
+| 11   | Devolver `SessionId` y refresh token original.                                                  | `UserSessionCreationResult`      |
+
+**Reglas implementadas:**
+
+| Regla                           | Implementación                                                                                                                     |
+| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| Una sesión activa por usuario   | Revoca las sesiones activas existentes antes de crear la nueva. La unicidad se complementa con el índice configurado en el paso 5. |
+| Revocación de tokens anteriores | Revoca los refresh tokens no consumidos ni revocados de las sesiones reemplazadas.                                                 |
+| Protección del refresh token    | Persiste `TokenHash`; el valor original se devuelve únicamente al llamador.                                                        |
+| Atomicidad                      | Las modificaciones se ejecutan dentro de una misma transacción.                                                                    |
+| Manejo de errores               | Ejecuta `RollbackAsync()` y propaga la excepción.                                                                                  |
+| Validación temporal             | Exige expiraciones posteriores a `createdAtUtc`.                                                                                   |
+
+**Alcance:** No se implementan en este paso la rotación posterior de refresh tokens, la validación de sesiones durante solicitudes HTTP ni la emisión de JWT. La transacción serializable y los índices proporcionan mecanismos de consistencia, pero el código no implementa reintentos ante conflictos de concurrencia.
+
+#### 5. Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    subgraph Application["Application - Código propio"]
+        ITG["IOpaqueTokenGenerator"]
+    end
+
+    subgraph Infrastructure["Infrastructure - Security / Código propio"]
+        DI["DependencyInjection"]
+        STORE["UserSessionStore"]
+        RESULT["UserSessionCreationResult"]
+        CRYPTO["OpaqueTokenCryptography"]
+        GENERATOR["OpaqueTokenGenerator"]
+    end
+
+    subgraph Persistence["Infrastructure - Persistence"]
+        DB["AppDbContext"]
+        SESSION["UserSession"]
+        TOKEN["UserRefreshToken"]
+        STATUS["UserSessionStatus"]
+    end
+
+    subgraph Framework["Entity Framework Core"]
+        TX["Transaccion Serializable"]
+        SAVE["SaveChangesAsync"]
+        COMMIT["CommitAsync / RollbackAsync"]
+    end
+
+    subgraph Database["PostgreSQL"]
+        SESSIONS[("UserSessions")]
+        TOKENS[("UserRefreshTokens")]
+    end
+
+    DI -->|"AddScoped"| STORE
+
+    STORE -->|"Genera token"| ITG
+    ITG -.->|"Implementado por"| GENERATOR
+
+    STORE -->|"Calcula hash"| CRYPTO
+    STORE -->|"Consulta y modifica"| DB
+
+    DB --> SESSION
+    DB --> TOKEN
+
+    SESSION --> STATUS
+    TOKEN -.->|"SessionId"| SESSION
+
+    STORE -->|"Inicia"| TX
+    TX --> SAVE
+    SAVE --> COMMIT
+
+    DB --> SESSIONS
+    DB --> TOKENS
+
+    STORE -->|"Devuelve"| RESULT
+```
+
+#### 6. Resultado
+
+Se implementa `UserSessionStore` para reemplazar transaccionalmente la sesión activa de un usuario, revocando sus sesiones y refresh tokens anteriores no utilizados.
+
+La nueva sesión y el hash del refresh token se persisten en PostgreSQL; el token original se devuelve al llamador mediante `UserSessionCreationResult`.
+
 ---
 
 ### 8. Implementar consumo, revocación y expiración.
