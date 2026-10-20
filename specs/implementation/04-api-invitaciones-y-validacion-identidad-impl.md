@@ -5299,13 +5299,767 @@ dotnet test FEPP-ContaOps.slnx
 
 ```powershell
 /spec-acceptance-validator @specs/03-registro-invitacion-activacion.md
+/spec-acceptance-validator @specs/04-api-invitaciones-y-validacion-identidad.md
 ```
 
 Revisar el spec: [`04-api-invitaciones-y-validacion-identidad.md`](../04-api-invitaciones-y-validacion-identidad.md).
 
+#### Componentes implementados
+
+| Componente                      | Acción                   | Tipo           | Capa           | Responsabilidad                                                                                                        |
+| ------------------------------- | ------------------------ | -------------- | -------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `DependencyInjection`           | Update                   | class (static) | Presentation   | Mantiene la configuración explícita de autenticación JWT Bearer, autorización `AdminOnly` y respuestas HTTP uniformes. |
+| `DependencyInjection`           | Update                   | class (static) | Infrastructure | Configura un nombre estable para Data Protection y conserva el registro de Identity, persistencia e invitaciones.      |
+| `IdentityUserInvitationService` | Sin cambios verificables | class          | Infrastructure | Implementa el registro, activación y reenvío de invitaciones utilizando ASP.NET Core Identity.                         |
+| `InvitationIntegrationTests`    | Update                   | class          | Tests          | Amplía la cobertura de integración para verificar restricciones y casos excepcionales del ciclo de invitaciones.       |
+| `TestApiFactory`                | Sin cambios verificables | class          | Tests          | Proporciona una instancia de la API con PostgreSQL temporal, configuración aislada y servicios de prueba.              |
+| `TestAuthenticationHandler`     | Sin cambios verificables | class          | Tests          | Sustituye la autenticación HTTP de producción por un esquema controlado durante las pruebas.                           |
+
+**Ubicaciones:**
+
+- `Fepp.ContaOps.Api.DependencyInjection`
+- `Fepp.ContaOps.Infrastructure.DependencyInjection`
+- `Fepp.ContaOps.Infrastructure.Identity.IdentityUserInvitationService`
+- `Fepp.ContaOps.IntegrationTests.InvitationIntegrationTests`
+
+El paso consolida ajustes de configuración y amplía las pruebas de integración para verificar el comportamiento del ciclo de invitaciones implementado en SPEC 04.
+
+El cambio funcional identificable en Infrastructure es la configuración de un nombre de aplicación estable para Data Protection.
+
+También se incorporan seis nuevos escenarios de integración respecto a los documentados en el paso 13.
+
+#### Métodos y funciones principales
+
+| Clase                                  | Método                                                           | Responsabilidad                                                                                  |
+| -------------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `DependencyInjection` (Infrastructure) | `AddInfrastructure()`                                            | Registra los adaptadores y configura Data Protection con un identificador de aplicación estable. |
+| `DependencyInjection` (Presentation)   | `AddApi()`                                                       | Configura validación HTTP, autenticación JWT Bearer y autorización administrativa.               |
+| `IdentityUserInvitationService`        | `RegisterPendingAsync()`                                         | Registra una cuenta pendiente, asigna el rol `User` y genera un token de invitación.             |
+| `IdentityUserInvitationService`        | `ActivateAsync()`                                                | Valida el token, establece la contraseña y activa la cuenta.                                     |
+| `IdentityUserInvitationService`        | `ResendAsync()`                                                  | Invalida el token anterior mediante el Security Stamp y genera uno nuevo.                        |
+| `InvitationIntegrationTests`           | `UsedInvitationToken_CannotBeConsumedAgain()`                    | Verifica que una invitación utilizada no permita activar nuevamente la cuenta.                   |
+| `InvitationIntegrationTests`           | `ResendActiveInvitation_ReturnsConflict()`                       | Comprueba que una cuenta activa no pueda recibir nuevas invitaciones.                            |
+| `InvitationIntegrationTests`           | `ResendUnknownInvitation_ReturnsNotFound()`                      | Verifica que reenviar una invitación a un usuario inexistente genere HTTP 404.                   |
+| `InvitationIntegrationTests`           | `InvalidActivationPassword_ReturnsValidationAndPreservesToken()` | Comprueba que una contraseña inválida no consuma el token de activación.                         |
+| `InvitationIntegrationTests`           | `InvalidJson_ReturnsValidationProblemDetails()`                  | Verifica que un JSON mal formado genere una respuesta uniforme de validación.                    |
+| `InvitationIntegrationTests`           | `InvalidActivationUserId_ReturnsValidationProblemDetails()`      | Comprueba que un identificador inválido genere HTTP 400.                                         |
+| `InvitationIntegrationTests`           | `InvalidActivationToken_ReturnsUniformError()`                   | Verifica que un token arbitrario produzca el error público `invalid_activation_token`.           |
+
+#### Configuración estable de Data Protection
+
+**Componente:** `Infrastructure.DependencyInjection`
+
+Se incorpora `SetApplicationName("FEPP-ContaOps")` al registro de ASP.NET Core Data Protection.
+
+**Configuración anterior:**
+
+```csharp
+IDataProtectionBuilder dataProtectionBuilder =
+    services.AddDataProtection();
+```
+
+**Configuración actual:**
+
+```csharp
+IDataProtectionBuilder dataProtectionBuilder = services
+    .AddDataProtection()
+    .SetApplicationName("FEPP-ContaOps");
+```
+
+**Responsabilidades:**
+
+| Componente                  | Responsabilidad                                                                                                                 |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `AddDataProtection()`       | Registra los servicios de protección criptográfica.                                                                             |
+| `SetApplicationName()`      | Establece un identificador de aplicación utilizado para aislar las operaciones de protección.                                   |
+| `PersistKeysToFileSystem()` | Permite conservar las claves criptográficas en un directorio configurado.                                                       |
+| `ProtectKeysWithDpapi()`    | Configura protección de claves mediante DPAPI cuando la aplicación se ejecuta en Windows y se utiliza una ruta de persistencia. |
+
+**Relación con los tokens de invitación:**
+
+El proveedor `UserInvitationTokenProvider` utiliza los mecanismos de ASP.NET Core Identity y Data Protection para generar y validar tokens.
+
+La configuración de un identificador de aplicación estable contribuye a que distintas instancias de FEPP ContaOps utilicen el mismo discriminador de aplicación.
+
+Para que los tokens puedan validarse entre instancias también deben compartirse las claves criptográficas correspondientes y mantenerse compatibles los demás parámetros de protección.
+
+**Importante:** `SetApplicationName()` no configura por sí mismo la persistencia ni el cifrado de las claves criptográficas.
+
+#### Verificación del ciclo de invitaciones
+
+**Componente:** `IdentityUserInvitationService`
+
+La implementación conserva tres operaciones principales:
+
+| Método                   | Operación                                           | Resultado esperado             |
+| ------------------------ | --------------------------------------------------- | ------------------------------ |
+| `RegisterPendingAsync()` | Crear una cuenta pendiente y generar su invitación. | `Result<UserInvitationResult>` |
+| `ActivateAsync()`        | Verificar el token y activar una cuenta.            | `Result<User>`                 |
+| `ResendAsync()`          | Invalidar la invitación anterior y generar otra.    | `Result<UserInvitationResult>` |
+
+**1. Registro de invitación**
+
+El método `RegisterPendingAsync()` realiza las siguientes operaciones:
+
+| Orden | Operación                                                  | Componente responsable                 |
+| ----- | ---------------------------------------------------------- | -------------------------------------- |
+| 1     | Comprobar que no exista un usuario con el correo indicado. | `UserManager.FindByEmailAsync()`       |
+| 2     | Iniciar una transacción de base de datos.                  | `AppDbContext`                         |
+| 3     | Crear una cuenta con estado `PendingActivation`.           | `UserManager.CreateAsync()`            |
+| 4     | Asignar el rol `User`.                                     | `UserManager.AddToRoleAsync()`         |
+| 5     | Generar un token dedicado de invitación.                   | `UserManager.GenerateUserTokenAsync()` |
+| 6     | Confirmar la transacción.                                  | `CommitAsync()`                        |
+| 7     | Devolver la información de la invitación.                  | `Result<UserInvitationResult>`         |
+
+**2. Activación de cuenta**
+
+El método `ActivateAsync()` valida el identificador, el estado de la cuenta y el token antes de establecer la contraseña.
+
+```csharp
+bool tokenIsValid = await _userManager.VerifyUserTokenAsync(
+    identityUser,
+    TokenProviderName,
+    TokenPurpose,
+    token);
+```
+
+Cuando el token es válido, utiliza:
+
+```csharp
+IdentityResult passwordResult =
+    await _userManager.AddPasswordAsync(
+        identityUser,
+        newPassword);
+```
+
+Si Identity rechaza la contraseña:
+
+```csharp
+if (!passwordResult.Succeeded)
+{
+    await transaction.RollbackAsync(cancellationToken);
+
+    return Result<User>.Failure(
+        ToPasswordValidationError(passwordResult));
+}
+```
+
+**Comportamiento:**
+
+- La contraseña se valida mediante ASP.NET Core Identity.
+- Los errores se traducen a `ValidationError`.
+- Se revierte la transacción cuando falla la creación de la contraseña.
+- La cuenta no se activa.
+- El token permanece disponible para un nuevo intento mientras continúe siendo válido.
+
+Cuando la contraseña es aceptada, se confirma el correo, se establece el estado `Active` y se actualiza el Security Stamp.
+
+**3. Reenvío de invitación**
+
+El método `ResendAsync()` actualiza el Security Stamp antes de generar el nuevo token.
+
+```csharp
+EnsureSuccess(
+    await _userManager.UpdateSecurityStampAsync(identityUser),
+    "The invitation security state could not be updated.");
+
+string token = await _userManager.GenerateUserTokenAsync(
+    identityUser,
+    TokenProviderName,
+    TokenPurpose);
+```
+
+La actualización del Security Stamp invalida los tokens anteriores que dependen de este valor.
+
+La operación solo permite reenviar invitaciones a cuentas con estado `PendingActivation`.
+
+#### Ampliación de pruebas de integración
+
+**Componente:** `InvitationIntegrationTests`
+
+Respecto al conjunto documentado en el paso 13, se incorporan los siguientes escenarios:
+
+| Prueba                                                           | Escenario                                                               | Resultado esperado                   |
+| ---------------------------------------------------------------- | ----------------------------------------------------------------------- | ------------------------------------ |
+| `UsedInvitationToken_CannotBeConsumedAgain()`                    | Reutilizar un token después de activar la cuenta.                       | HTTP 400, `invalid_activation_token` |
+| `ResendActiveInvitation_ReturnsConflict()`                       | Reenviar una invitación a una cuenta activa.                            | HTTP 409, `resource_conflict`        |
+| `ResendUnknownInvitation_ReturnsNotFound()`                      | Reenviar una invitación a un identificador inexistente.                 | HTTP 404, `resource_not_found`       |
+| `InvalidActivationPassword_ReturnsValidationAndPreservesToken()` | Activar con una contraseña inválida y volver a intentar con una válida. | HTTP 400 y posteriormente HTTP 204   |
+| `InvalidJson_ReturnsValidationProblemDetails()`                  | Enviar un cuerpo JSON mal formado.                                      | HTTP 400, `validation_error`         |
+| `InvalidActivationUserId_ReturnsValidationProblemDetails()`      | Activar utilizando un identificador que no es GUID.                     | HTTP 400, `validation_error`         |
+| `InvalidActivationToken_ReturnsUniformError()`                   | Activar utilizando un token arbitrario.                                 | HTTP 400, `invalid_activation_token` |
+
+En total, el archivo proporcionado contiene **12 métodos de prueba de integración**: los cinco escenarios anteriores y siete escenarios adicionales.
+
+#### Validación de tokens de activación
+
+**1. Token utilizado anteriormente**
+
+La prueba `UsedInvitationToken_CannotBeConsumedAgain()` ejecuta dos solicitudes de activación con el mismo token.
+
+| Solicitud                                 | Resultado esperado         |
+| ----------------------------------------- | -------------------------- |
+| Primera activación.                       | `204 No Content`           |
+| Segunda activación con el mismo token.    | `400 Bad Request`          |
+| Código de error de la segunda activación. | `invalid_activation_token` |
+
+Esta prueba verifica que una invitación ya utilizada no pueda activar nuevamente la cuenta.
+
+**2. Token arbitrario**
+
+La prueba `InvalidActivationToken_ReturnsUniformError()` envía un token que no fue generado por Identity.
+
+El resultado esperado es:
+
+```text
+HTTP 400 Bad Request
+code: invalid_activation_token
+```
+
+Este comportamiento evita proporcionar detalles específicos sobre la causa del rechazo del token.
+
+**3. Token anterior después de un reenvío**
+
+Se mantiene `ResendInvitation_InvalidatesPreviousToken()`.
+
+| Token                               | Resultado esperado |
+| ----------------------------------- | ------------------ |
+| Token anterior al reenvío.          | HTTP 400           |
+| Token generado después del reenvío. | HTTP 204           |
+
+Las pruebas verifican el rechazo de tokens reutilizados, arbitrarios e invalidados mediante reenvío.
+
+#### Validación de restricciones funcionales
+
+**1. Reenvío a una cuenta activa**
+
+La prueba `ResendActiveInvitation_ReturnsConflict()` comprueba que una cuenta ya activada no pueda recibir una nueva invitación.
+
+| Operación            | Resultado esperado  |
+| -------------------- | ------------------- |
+| Crear invitación.    | HTTP 201            |
+| Activar cuenta.      | HTTP 204            |
+| Reenviar invitación. | HTTP 409            |
+| Código de error.     | `resource_conflict` |
+
+**2. Reenvío a un usuario inexistente**
+
+La prueba `ResendUnknownInvitation_ReturnsNotFound()` utiliza un identificador generado mediante `Guid.NewGuid()`.
+
+| Operación                                           | Resultado esperado   |
+| --------------------------------------------------- | -------------------- |
+| Solicitar reenvío con un identificador inexistente. | HTTP 404             |
+| Código de error.                                    | `resource_not_found` |
+
+Estas pruebas verifican las restricciones implementadas en `IdentityUserInvitationService.ResendAsync()`.
+
+#### Validación de contraseñas y conservación del token
+
+**Prueba:** `InvalidActivationPassword_ReturnsValidationAndPreservesToken()`
+
+El escenario comprueba que el rechazo de una contraseña no consuma la invitación.
+
+| Orden | Operación                                              | Resultado esperado     |
+| ----- | ------------------------------------------------------ | ---------------------- |
+| 1     | Crear una invitación.                                  | Invitación registrada. |
+| 2     | Intentar activar con la contraseña `simple`.           | HTTP 400               |
+| 3     | Comprobar el código de error.                          | `validation_error`     |
+| 4     | Reintentar con el mismo token y una contraseña válida. | HTTP 204               |
+
+**Relación con el paso 7:**
+
+`ToPasswordValidationError()` transforma los errores de política de ASP.NET Core Identity en errores de validación asociados a `newPassword`.
+
+**Relación con el paso 8:**
+
+La contraseña debe cumplir las políticas definidas mediante `IdentityPasswordOptions`.
+
+**Resultado funcional esperado:**
+
+Una contraseña inválida no debe consumir definitivamente el token ni activar parcialmente la cuenta.
+
+El usuario puede corregirla y volver a intentar la activación mientras el token continúe siendo válido.
+
+#### Validación uniforme de errores HTTP
+
+Se incorporan pruebas adicionales para comprobar el tratamiento de solicitudes inválidas.
+
+**1. JSON mal formado**
+
+Prueba: `InvalidJson_ReturnsValidationProblemDetails()`
+
+Se envía el contenido:
+
+```json
+{
+```
+
+El cuerpo está incompleto y no representa un documento JSON válido.
+
+**Validaciones:**
+
+| Propiedad    | Resultado esperado         |
+| ------------ | -------------------------- |
+| HTTP Status  | `400 Bad Request`          |
+| `code`       | `validation_error`         |
+| Content-Type | `application/problem+json` |
+
+**2. Identificador de usuario inválido**
+
+Prueba: `InvalidActivationUserId_ReturnsValidationProblemDetails()`
+
+Se envía:
+
+```json
+{
+  "userId": "not-a-guid",
+  "token": "opaque-token",
+  "newPassword": "Password123!"
+}
+```
+
+**Resultado esperado:**
+
+```text
+HTTP 400 Bad Request
+code: validation_error
+```
+
+**Relación con Presentation:**
+
+La configuración de `ApiBehaviorOptions.InvalidModelStateResponseFactory` mantiene la conversión de errores de ModelState al contrato uniforme.
+
+```csharp
+services.Configure<ApiBehaviorOptions>(options =>
+{
+    options.InvalidModelStateResponseFactory = context =>
+        ProblemDetailsResponseFactory.CreateModelStateValidationResult(
+            context.HttpContext,
+            context.ModelState);
+});
+```
+
+Esta configuración complementa el `ValidationFilter` utilizado para ejecutar las validaciones de FluentValidation.
+
+#### Componentes de .NET y proveedores externos
+
+| Componente / Método          | Origen                       | Función                                                                            |
+| ---------------------------- | ---------------------------- | ---------------------------------------------------------------------------------- |
+| `SetApplicationName()`       | ASP.NET Core Data Protection | Establece un identificador estable de aplicación para la protección criptográfica. |
+| `AddDataProtection()`        | ASP.NET Core Data Protection | Registra los servicios criptográficos.                                             |
+| `GenerateUserTokenAsync()`   | ASP.NET Core Identity        | Genera tokens asociados a un proveedor y propósito.                                |
+| `VerifyUserTokenAsync()`     | ASP.NET Core Identity        | Comprueba la validez de un token.                                                  |
+| `UpdateSecurityStampAsync()` | ASP.NET Core Identity        | Actualiza el Security Stamp de una cuenta.                                         |
+| `AddPasswordAsync()`         | ASP.NET Core Identity        | Asigna una contraseña aplicando las reglas de Identity.                            |
+| `BeginTransactionAsync()`    | Entity Framework Core        | Inicia una transacción de base de datos.                                           |
+| `CommitAsync()`              | Entity Framework Core        | Confirma una transacción.                                                          |
+| `RollbackAsync()`            | Entity Framework Core        | Revierte una transacción.                                                          |
+| `WebApplicationFactory<T>`   | ASP.NET Core Testing         | Ejecuta la aplicación en un entorno de integración.                                |
+| `PostgreSqlContainer`        | Testcontainers.PostgreSql    | Administra PostgreSQL temporal.                                                    |
+| `Assert.Equal()`             | xUnit                        | Comprueba la igualdad de valores esperados y obtenidos.                            |
+
+#### Flujo funcional o relaciones
+
+| Orden | Operación                                                               | Componente responsable                         |
+| ----- | ----------------------------------------------------------------------- | ---------------------------------------------- |
+| 1     | Registrar la configuración HTTP y los servicios de Infrastructure.      | `DependencyInjection`                          |
+| 2     | Configurar Data Protection con el nombre de aplicación `FEPP-ContaOps`. | `AddInfrastructure()`                          |
+| 3     | Registrar Identity y el proveedor de tokens de invitación.              | `AddIdentity()`                                |
+| 4     | Iniciar PostgreSQL temporal.                                            | `InvitationIntegrationTests.InitializeAsync()` |
+| 5     | Crear el host de integración.                                           | `TestApiFactory`                               |
+| 6     | Configurar autenticación y notificación simuladas.                      | `ConfigureWebHost()`                           |
+| 7     | Ejecutar operaciones de invitación mediante solicitudes HTTP.           | `HttpClient`                                   |
+| 8     | Validar reglas de activación, reenvío y seguridad de tokens.            | `IdentityUserInvitationService`                |
+| 9     | Comprobar respuestas HTTP uniformes.                                    | xUnit                                          |
+| 10    | Liberar el contenedor PostgreSQL.                                       | `InvitationIntegrationTests.DisposeAsync()`    |
+
+#### Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    subgraph Tests["Integration Tests"]
+        TESTS["InvitationIntegrationTests"]
+        FACTORY["TestApiFactory"]
+        CLIENT["HttpClient"]
+        POSTGRES["PostgreSQL - Testcontainers"]
+        FAKE["FakeInvitationNotifier"]
+        TESTAUTH["TestAuthenticationHandler"]
+    end
+
+    subgraph Presentation
+        AUTH["AuthController"]
+        INV["UserInvitationsController"]
+        VALIDATION["ValidationFilter / ProblemDetails"]
+    end
+
+    subgraph Application
+        CREATE["CreateUserInvitation"]
+        ACTIVATE["ActivateUser"]
+        RESEND["ResendUserInvitation"]
+    end
+
+    subgraph Infrastructure
+        SERVICE["IdentityUserInvitationService"]
+        IDENTITY["ASP.NET Core Identity"]
+        PROTECTION["Data Protection"]
+        DATABASE["AppDbContext"]
+    end
+
+    TESTS --> FACTORY
+    TESTS --> CLIENT
+
+    FACTORY --> POSTGRES
+    FACTORY --> FAKE
+    FACTORY --> TESTAUTH
+
+    CLIENT --> AUTH
+    CLIENT --> INV
+
+    AUTH --> ACTIVATE
+    INV --> CREATE
+    INV --> RESEND
+
+    CREATE --> SERVICE
+    ACTIVATE --> SERVICE
+    RESEND --> SERVICE
+
+    SERVICE --> IDENTITY
+    IDENTITY --> PROTECTION
+    IDENTITY --> DATABASE
+
+    DATABASE --> POSTGRES
+
+    AUTH --> VALIDATION
+    INV --> VALIDATION
+```
+
+**Interpretación:**
+
+- **Tests:** comprueba los flujos HTTP y las restricciones de seguridad utilizando PostgreSQL temporal.
+- **Presentation:** procesa solicitudes, validaciones y respuestas uniformes.
+- **Application:** coordina los casos de uso de invitación y activación.
+- **Infrastructure:** implementa las reglas técnicas de Identity, persistencia y protección de tokens.
+- **Data Protection:** utiliza un identificador de aplicación estable.
+- **Servicios simulados:** permiten ejecutar pruebas de integración sin depender del transporte SMTP ni de la validación JWT Bearer de producción.
+
+#### Resultado
+
+Se amplió la validación del ciclo de invitaciones incorporando pruebas para detectar reutilización de tokens, reenvíos inválidos, contraseñas rechazadas y solicitudes HTTP mal formadas.
+
+También se configuró un identificador estable para ASP.NET Core Data Protection mediante `SetApplicationName("FEPP-ContaOps")`.
+
+La implementación conserva el uso de PostgreSQL real en contenedores temporales y la ejecución de los casos de uso a través de los endpoints HTTP.
+
+El conjunto documentado contiene **12 pruebas de integración**, orientadas a verificar el ciclo de invitaciones, las restricciones de acceso y la uniformidad de los errores HTTP.
+
+**Estado de verificación:** los archivos proporcionados permiten confirmar que las pruebas están implementadas, pero no incluyen sus resultados de ejecución. Por tanto, no es posible afirmar que la validación completa del spec haya finalizado correctamente sin consultar la salida de `dotnet test`.
+
+**Alcance adicional:** las pruebas utilizan `TestAuthenticationHandler`, que interpreta los claims de los JWT sin verificar criptográficamente la firma. En consecuencia, comprueban la autorización basada en roles dentro del entorno de integración, pero no validan de extremo a extremo el middleware JWT Bearer de producción.
+
 ---
 
-### 21. Diagrama Final: Arquitectura del spec 03-registro-invitacion-activacion
+### 21. Diagrama Final: Arquitectura del spec-04-api-invitaciones-y-validacion-identidad
+
+#### Arquitectura consolidada
+
+El siguiente diagrama integra los componentes y relaciones implementados durante SPEC 04, considerando su estado final después de los ajustes de configuración, seguridad y validación.
+
+Se utiliza como referencia la implementación más reciente de cada componente, evitando representar configuraciones anteriores que fueron modificadas o reemplazadas.
+
+El diagrama está organizado según las capas de **Clean Architecture / DDD** y muestra los cuatro procesos principales:
+
+1. Autenticación de usuarios mediante JWT.
+2. Creación y notificación de invitaciones.
+3. Activación de cuentas mediante tokens.
+4. Reenvío e invalidación de invitaciones.
+
+También incorpora los mecanismos transversales de autorización, validación HTTP, gestión de errores, configuración de Identity y persistencia.
+
+#### Diagrama de arquitectura final
+
+```mermaid
+flowchart TD
+    CLIENT["Cliente HTTP"]
+
+    subgraph Presentation["PRESENTATION - Fepp.ContaOps.Api"]
+        direction TB
+
+        AUTH["AuthController"]
+        INV["UserInvitationsController"]
+
+        REQUESTS["Requests / Responses HTTP"]
+
+        VALIDATION["FluentValidation / ValidationFilter"]
+
+        SECURITY["JWT Bearer Authentication"]
+        POLICY["Política AdminOnly"]
+
+        MAPPER["ApplicationErrorProblemDetailsMapper"]
+        PROBLEM["ProblemDetailsResponseFactory"]
+        HANDLER["GlobalExceptionHandler"]
+
+        SWAGGER["Swagger / OpenAPI"]
+    end
+
+    subgraph Application["APPLICATION - Fepp.ContaOps.Application"]
+        direction TB
+
+        LOGIN["LoginUser"]
+        CREATE["CreateUserInvitation"]
+        ACTIVATE["ActivateUser"]
+        RESEND["ResendUserInvitation"]
+
+        USERREPO["IUserRepository"]
+        CREDENTIALS["IUserCredentialService"]
+        TOKENISSUER["ITokenIssuer"]
+
+        INVITATIONS["IUserInvitationService"]
+        NOTIFIER["IInvitationNotifier"]
+
+        RESULTS["Result / ApplicationError"]
+    end
+
+    subgraph Domain["DOMAIN - Fepp.ContaOps.Domain"]
+        direction TB
+
+        USER["User"]
+        USERID["UserId"]
+        STATUS["UserStatus"]
+    end
+
+    subgraph Infrastructure["INFRASTRUCTURE - Fepp.ContaOps.Infrastructure"]
+        direction TB
+
+        REPOSITORY["IdentityUserRepository"]
+        CREDENTIALSERVICE["IdentityCredentialService"]
+        JWTISSUER["JwtTokenIssuer"]
+
+        INVITATIONSERVICE["IdentityUserInvitationService"]
+
+        EMAILNOTIFIER["InvitationEmailNotifier"]
+        EMAILSENDER["MailKitSmtpEmailSender"]
+        TEMPLATES["InvitationTemplateCatalog / Renderer"]
+
+        IDENTITY["ASP.NET Core Identity"]
+        USERMANAGER["UserManager / RoleManager"]
+        SIGNIN["SignInManager"]
+
+        TOKENPROVIDER["UserInvitationTokenProvider"]
+        PROTECTION["ASP.NET Core Data Protection"]
+
+        OPTIONS["IdentityOptions / Password / Lockout"]
+        SEEDER["IdentitySeeder"]
+
+        DBCONTEXT["AppDbContext"]
+    end
+
+    subgraph External["SERVICIOS EXTERNOS"]
+        direction TB
+
+        POSTGRES[("PostgreSQL")]
+        SMTP["Servidor SMTP"]
+    end
+
+    CONFIG["IConfiguration / Variables de entorno"]
+
+    %% Entrada HTTP
+    CLIENT --> REQUESTS
+    REQUESTS --> AUTH
+    REQUESTS --> INV
+
+    %% Validación y seguridad
+    AUTH -.-> VALIDATION
+    INV -.-> VALIDATION
+
+    CLIENT -->|"Bearer JWT"| SECURITY
+    SECURITY -->|"Claims / Roles"| POLICY
+    POLICY -->|"Protege"| INV
+
+    %% Controllers y casos de uso
+    AUTH --> LOGIN
+    AUTH --> ACTIVATE
+
+    INV --> CREATE
+    INV --> RESEND
+
+    %% Login
+    LOGIN --> USERREPO
+    LOGIN --> CREDENTIALS
+    LOGIN --> TOKENISSUER
+
+    %% Invitaciones
+    CREATE --> INVITATIONS
+    CREATE --> NOTIFIER
+
+    ACTIVATE --> INVITATIONS
+
+    RESEND --> INVITATIONS
+    RESEND --> NOTIFIER
+
+    %% Interfaces e implementaciones
+    REPOSITORY -.->|"Implementa"| USERREPO
+    CREDENTIALSERVICE -.->|"Implementa"| CREDENTIALS
+    JWTISSUER -.->|"Implementa"| TOKENISSUER
+
+    INVITATIONSERVICE -.->|"Implementa"| INVITATIONS
+    EMAILNOTIFIER -.->|"Implementa"| NOTIFIER
+
+    %% Dominio
+    USERREPO -.-> USER
+    INVITATIONS -.-> USERID
+    USER --> USERID
+    USER --> STATUS
+
+    %% Identity
+    REPOSITORY --> USERMANAGER
+    CREDENTIALSERVICE --> USERMANAGER
+    CREDENTIALSERVICE --> SIGNIN
+
+    INVITATIONSERVICE --> USERMANAGER
+    INVITATIONSERVICE --> DBCONTEXT
+
+    SIGNIN --> IDENTITY
+    USERMANAGER --> IDENTITY
+
+    IDENTITY --> TOKENPROVIDER
+    TOKENPROVIDER --> PROTECTION
+
+    %% Configuración de Identity
+    CONFIG --> OPTIONS
+    OPTIONS --> IDENTITY
+
+    %% Seed
+    CONFIG --> SEEDER
+    SEEDER --> USERMANAGER
+    SEEDER --> DBCONTEXT
+
+    %% JWT
+    CONFIG --> JWTISSUER
+    CONFIG --> SECURITY
+    JWTISSUER -->|"Genera JWT"| SECURITY
+
+    %% Correo
+    EMAILNOTIFIER --> EMAILSENDER
+    EMAILNOTIFIER --> TEMPLATES
+    EMAILSENDER --> SMTP
+
+    %% Persistencia
+    IDENTITY --> DBCONTEXT
+    DBCONTEXT --> POSTGRES
+
+    %% Errores HTTP
+    LOGIN -.-> RESULTS
+    CREATE -.-> RESULTS
+    ACTIVATE -.-> RESULTS
+    RESEND -.-> RESULTS
+
+    RESULTS --> MAPPER
+    MAPPER --> PROBLEM
+
+    VALIDATION --> PROBLEM
+    SECURITY -.->|"401 / 403"| PROBLEM
+
+    HANDLER --> PROBLEM
+
+    %% Documentación
+    SWAGGER -.-> AUTH
+    SWAGGER -.-> INV
+
+    %% Respuestas
+    AUTH --> CLIENT
+    INV --> CLIENT
+    PROBLEM --> CLIENT
+```
+
+#### Relaciones principales entre capas
+
+| Origen                          | Destino                  | Relación   | Responsabilidad                                            |
+| ------------------------------- | ------------------------ | ---------- | ---------------------------------------------------------- |
+| `AuthController`                | `LoginUser`              | Invoca     | Ejecutar la autenticación.                                 |
+| `AuthController`                | `ActivateUser`           | Invoca     | Activar una cuenta mediante un token.                      |
+| `UserInvitationsController`     | `CreateUserInvitation`   | Invoca     | Crear una invitación administrativa.                       |
+| `UserInvitationsController`     | `ResendUserInvitation`   | Invoca     | Generar una nueva invitación.                              |
+| `LoginUser`                     | `IUserRepository`        | Depende    | Localizar el usuario.                                      |
+| `LoginUser`                     | `IUserCredentialService` | Depende    | Verificar sus credenciales.                                |
+| `LoginUser`                     | `ITokenIssuer`           | Depende    | Solicitar un token de acceso.                              |
+| `CreateUserInvitation`          | `IUserInvitationService` | Depende    | Registrar una cuenta pendiente.                            |
+| `CreateUserInvitation`          | `IInvitationNotifier`    | Depende    | Notificar la invitación generada.                          |
+| `ActivateUser`                  | `IUserInvitationService` | Depende    | Verificar el token y activar la cuenta.                    |
+| `ResendUserInvitation`          | `IUserInvitationService` | Depende    | Invalidar la invitación anterior y generar otra.           |
+| `ResendUserInvitation`          | `IInvitationNotifier`    | Depende    | Enviar la nueva invitación.                                |
+| `IdentityUserInvitationService` | `IUserInvitationService` | Implementa | Ejecutar operaciones sobre ASP.NET Core Identity.          |
+| `IdentityCredentialService`     | `IUserCredentialService` | Implementa | Verificar contraseñas y aplicar bloqueo de cuentas.        |
+| `IdentityUserRepository`        | `IUserRepository`        | Implementa | Consultar usuarios mediante Identity.                      |
+| `JwtTokenIssuer`                | `ITokenIssuer`           | Implementa | Emitir tokens JWT.                                         |
+| `InvitationEmailNotifier`       | `IInvitationNotifier`    | Implementa | Construir y solicitar el envío de invitaciones.            |
+| `MailKitSmtpEmailSender`        | `IEmailSender`           | Implementa | Enviar mensajes mediante SMTP.                             |
+| `IdentityUserInvitationService` | `AppDbContext`           | Utiliza    | Gestionar transacciones de registro, activación y reenvío. |
+| `AppDbContext`                  | PostgreSQL               | Persiste   | Almacenar usuarios y roles de Identity.                    |
+
+**Consideración arquitectónica:** Application depende de interfaces propias. Infrastructure proporciona las implementaciones mediante inyección de dependencias, conservando la independencia de los casos de uso respecto a ASP.NET Core Identity, PostgreSQL y SMTP.
+
+#### Flujos funcionales consolidados
+
+| Proceso             | Endpoint                           | Flujo principal                                                                                         | Resultado exitoso |
+| ------------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------- | ----------------- |
+| Login               | `POST /api/auth/login`             | `AuthController` → `LoginUser` → `IUserRepository` / `IUserCredentialService` → `ITokenIssuer`          | `200 OK` + JWT    |
+| Crear invitación    | `POST /api/users/invitations`      | `UserInvitationsController` → `CreateUserInvitation` → `IUserInvitationService` → `IInvitationNotifier` | `201 Created`     |
+| Activar cuenta      | `POST /api/auth/activate`          | `AuthController` → `ActivateUser` → `IUserInvitationService` → Identity                                 | `204 No Content`  |
+| Reenviar invitación | `POST /api/users/{id}/invitations` | `UserInvitationsController` → `ResendUserInvitation` → `IUserInvitationService` → `IInvitationNotifier` | `204 No Content`  |
+
+#### Seguridad y validaciones transversales
+
+| Componente                             | Capa           | Responsabilidad                                                                        |
+| -------------------------------------- | -------------- | -------------------------------------------------------------------------------------- |
+| `ValidationFilter`                     | Presentation   | Ejecutar los validadores HTTP registrados.                                             |
+| `ProblemDetailsResponseFactory`        | Presentation   | Unificar respuestas de errores de validación y Application.                            |
+| `ApplicationErrorProblemDetailsMapper` | Presentation   | Traducir errores de casos de uso a respuestas HTTP.                                    |
+| `GlobalExceptionHandler`               | Presentation   | Gestionar excepciones no controladas y errores operativos.                             |
+| JWT Bearer                             | Presentation   | Validar firma, emisor, audiencia y expiración del token.                               |
+| `AdminOnly`                            | Presentation   | Restringir la creación y el reenvío de invitaciones al rol `Admin`.                    |
+| `IdentityCredentialService`            | Infrastructure | Verificar credenciales y aplicar el bloqueo mediante `SignInManager`.                  |
+| `IdentityPasswordOptions`              | Infrastructure | Definir los requisitos de complejidad de contraseña.                                   |
+| `IdentityLockoutOptions`               | Infrastructure | Definir los parámetros de bloqueo temporal.                                            |
+| `UserInvitationTokenProvider`          | Infrastructure | Generar y validar tokens dedicados a la activación.                                    |
+| Data Protection                        | Infrastructure | Proporcionar protección criptográfica con identificador de aplicación `FEPP-ContaOps`. |
+| `IdentitySeeder`                       | Infrastructure | Garantizar los roles y el administrador inicial, validando su contraseña.              |
+
+#### Decisiones finales que reemplazan implementaciones anteriores
+
+| Componente                        | Implementación inicial                                      | Implementación final                                                                                                  |
+| --------------------------------- | ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| Autenticación JWT                 | `AddAuthentication(JwtBearerDefaults.AuthenticationScheme)` | Configuración explícita de `DefaultAuthenticateScheme`, `DefaultChallengeScheme` y `DefaultForbidScheme`.             |
+| Políticas de contraseña y bloqueo | Lectura manual de valores con `IConfiguration.Get<T>()`     | Configuración de `IdentityOptions` mediante `IOptions<IdentityPasswordOptions>` e `IOptions<IdentityLockoutOptions>`. |
+| Inicialización de usuarios        | Administrador inicial y configuración de `BootstrapUser`    | Solo inicialización de roles y administrador mediante `IdentitySeeder`.                                               |
+| Validación del administrador      | Validación durante la creación de la cuenta                 | Validación preventiva mediante todos los `PasswordValidators`, incluso cuando el administrador ya existe.             |
+| Data Protection                   | `AddDataProtection()`                                       | `AddDataProtection().SetApplicationName("FEPP-ContaOps")`.                                                            |
+| Manejo de errores                 | Mapeo de errores generales de Application                   | Mapeo uniforme que incluye tokens inválidos, errores de contraseña, fallos SMTP y cancelaciones.                      |
+| Autorización administrativa       | Controladores administrativos sin política explícita        | Política `AdminOnly` aplicada a `UserInvitationsController`.                                                          |
+| Pruebas de integración            | Cinco escenarios iniciales                                  | Doce escenarios, con PostgreSQL temporal, autenticación simulada y notificador en memoria.                            |
+
+#### Arquitectura de pruebas
+
+Las pruebas no forman parte del flujo productivo. Verifican el comportamiento de los componentes utilizando dos enfoques complementarios.
+
+| Tipo                    | Componentes                                                                                                                                                   | Alcance                                                                         |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| Unitarias               | `AdminOnlyPolicyTests`, `IdentityOptionsTests`, `InvitationUseCaseTests`, `InvitationValidationTests`, `LoginUserTests`, `ProblemDetailsResponseFactoryTests` | Reglas aisladas, casos de uso, contratos y configuraciones.                     |
+| Integración             | `InvitationIntegrationTests`, `TestApiFactory`                                                                                                                | Solicitudes HTTP, casos de uso, Identity y persistencia PostgreSQL.             |
+| Servicios simulados     | `FakeInvitationNotifier`, `TestAuthenticationHandler`                                                                                                         | Notificación en memoria y autenticación controlada exclusivamente para pruebas. |
+| Persistencia de pruebas | `PostgreSqlContainer`                                                                                                                                         | PostgreSQL 16 temporal mediante Testcontainers.                                 |
+
+El `TestAuthenticationHandler` utilizado en integración lee los claims del JWT, pero no comprueba criptográficamente su firma. La validación criptográfica de producción corresponde al middleware JWT Bearer configurado en Presentation.
+
+#### Resultado
+
+La arquitectura final de SPEC 04 integra los cuatro procesos de autenticación e invitaciones mediante una separación explícita de responsabilidades:
+
+- **Presentation:** contratos y endpoints HTTP, validación, autenticación JWT, autorización administrativa y respuestas uniformes.
+- **Application:** coordinación de los casos de uso mediante interfaces.
+- **Domain:** entidad `User`, identificador `UserId` y estados funcionales.
+- **Infrastructure:** ASP.NET Core Identity, persistencia PostgreSQL, emisión de JWT, protección de tokens, envío SMTP y configuración de seguridad.
+
+#### El diagrama consolida el estado final documentado hasta el paso 20, reemplazando las configuraciones anteriores por sus versiones más recientes y representando las relaciones entre componentes sin introducir nuevas dependencias arquitectónicas.
 
 ---
 

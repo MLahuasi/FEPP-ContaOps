@@ -92,11 +92,15 @@ contiene `templates.json`, `invitation.html` e `invitation.txt`. Se puede
 reemplazar mediante `Email__Templates__RootPath`; el manifest y ambos formatos
 se validan al iniciar.
 
-`DataProtection__KeyRingPath` es opcional para desarrollo local. En Docker o
-un despliegue persistente debe apuntar a un directorio montado desde un named
-volume con permisos de lectura y escritura para la API. El volumen debe
-conservarse al recrear el contenedor; el almacenamiento anfitrión debe contar
-con protección en reposo. En Windows local se puede usar DPAPI.
+`DataProtection__KeyRingPath` es opcional para desarrollo local. En Windows
+local, el key ring puede protegerse mediante DPAPI. La API actualmente se
+ejecuta en el host con `run-local.ps1`; por ello el `docker-compose.yml` actual
+no monta todavía un volumen de key ring para la API.
+
+Cuando la API se ejecute en Docker, `DataProtection__KeyRingPath` deberá apuntar
+a un directorio montado desde un named volume con permisos de lectura y
+escritura para la API. El volumen deberá conservarse al recrear el contenedor;
+el almacenamiento anfitrión deberá contar con protección en reposo.
 
 ## Servicios y direcciones
 

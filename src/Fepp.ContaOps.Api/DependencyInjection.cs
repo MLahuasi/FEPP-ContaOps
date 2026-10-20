@@ -33,6 +33,7 @@ public static class DependencyInjection
         services.AddValidatorsFromAssembly(typeof(DependencyInjection).Assembly);
         services.AddScoped<ValidationFilter>();
         services.AddScoped<ApplicationErrorProblemDetailsMapper>();
+        services.AddControllers(options => options.Filters.AddService<ValidationFilter>());
         services.Configure<ApiBehaviorOptions>(options =>
         {
             options.InvalidModelStateResponseFactory = context =>
@@ -40,7 +41,6 @@ public static class DependencyInjection
                     context.HttpContext,
                     context.ModelState);
         });
-        services.AddControllers(options => options.Filters.AddService<ValidationFilter>());
         JwtOptions jwtOptions = configuration
             .GetSection(JwtOptions.SectionName)
             .Get<JwtOptions>()

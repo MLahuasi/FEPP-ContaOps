@@ -1,6 +1,6 @@
 # SPEC 03 — Núcleo de invitaciones y correo SMTP
 
-> **Estado:** Aprobado
+> **Estado:** Implementado
 > **Dependencias:** SPEC 01, SPEC 02
 > **Fecha:** 2026-10-16
 > **Objetivo:** Definir el ciclo seguro de invitación y activación de usuarios junto con un puerto de correo SMTP reemplazable e inicialmente compatible con Gmail mediante MailKit.
@@ -291,7 +291,7 @@ La plantilla recibe parámetros explícitos, como `userId` y `activationLink`. C
 
 - `DataProtection:KeyRingPath` es opcional durante el desarrollo local.
 - En ejecución local de Windows se puede proteger el key ring mediante DPAPI.
-- En Docker se debe montar un named volume persistente para el directorio del key ring.
+- Cuando la API se ejecute en Docker, se debe montar un named volume persistente para el directorio del key ring.
 - El volumen debe conservar las claves al recrear el contenedor.
 - El proceso debe tener permisos mínimos de lectura y escritura sobre el directorio.
 - El disco anfitrión o volumen Docker debe contar con protección en reposo disponible en el equipo.
@@ -316,29 +316,30 @@ La plantilla recibe parámetros explícitos, como `userId` y `activationLink`. C
 
 - [x] Domain no referencia ASP.NET Core, Identity, EF Core, Gmail ni MailKit.
 - [x] Application no referencia Api, Infrastructure, Gmail ni MailKit.
-- [ ] Una cuenta registrada queda pendiente, sin contraseña utilizable y con rol exclusivamente `User`.
-- [ ] Una cuenta pendiente no puede iniciar sesión.
-- [ ] El registro confirma PostgreSQL antes de intentar SMTP.
-- [ ] Un fallo SMTP conserva la cuenta pendiente.
-- [ ] El reenvío invalida invitaciones anteriores.
-- [ ] Una invitación usada o vencida no puede volver a activarse.
-- [ ] La activación aplica la política de contraseña de Identity.
-- [ ] El enlace usa HTTPS, `userId`, token URL-safe y fragmento de cliente.
-- [ ] Ningún log, error o respuesta contiene token, contraseña, security stamp o enlace completo.
+- [x] Una cuenta registrada queda pendiente, sin contraseña utilizable y con rol exclusivamente `User`.
+- [x] Una cuenta pendiente no puede iniciar sesión.
+- [x] El registro confirma PostgreSQL antes de intentar SMTP.
+- [x] Un fallo SMTP conserva la cuenta pendiente.
+- [x] El reenvío invalida invitaciones anteriores.
+- [x] Una invitación usada o vencida no puede volver a activarse.
+- [x] La activación aplica la política de contraseña de Identity.
+- [x] El enlace usa HTTPS, `userId`, token URL-safe y fragmento de cliente.
+- [x] Ningún log, error o respuesta contiene token, contraseña, security stamp o enlace completo.
 - [x] `IEmailSender` no expone tipos MailKit.
 - [x] MailKit solo se utiliza en el adaptador de Infrastructure.
 - [x] `Email:Smtp:SecurityMode` admite `StartTls` y `TlsOnConnect`, sin SMTP sin cifrado.
-- [ ] Gmail funciona con contraseña de aplicación y no con API key.
+- [x] Gmail funciona con contraseña de aplicación y no con API key.
 - [x] El SMTP permite sustituir Gmail por otro proveedor compatible sin modificar Application.
-- [ ] HTML y texto plano se construyen desde la misma clave de plantilla y parámetros.
+- [x] HTML y texto plano se construyen desde la misma clave de plantilla y parámetros.
 - [x] El manifest valida archivos, asunto y parámetros al arrancar.
-- [ ] Las plantillas pueden reemplazarse mediante `Email:Templates:RootPath`.
-- [ ] El key ring local puede usar DPAPI y Docker utiliza un named volume persistente.
+- [x] Las plantillas pueden reemplazarse mediante `Email:Templates:RootPath`.
+- [x] En Windows local, el key ring puede persistir y protegerse mediante DPAPI.
+- [ ] Cuando la API se ejecute en Docker, el key ring se conservará en un named volume persistente.
 - [x] Las pruebas SMTP utilizan un servidor en proceso y nunca Gmail real.
 - [x] `.env.example`, `README.md` y `AGENTS.md` documentan el mismo contrato de configuración.
 - [x] Ningún archivo versionado contiene contraseñas, claves JWT o secretos SMTP reales.
 - [x] Las variables `MAILER_*`, `MAIL_*` y `MAIL_TEMPLATE_EXTENSION` no se usan como configuración vigente.
-- [ ] La configuración inválida o incompleta impide el arranque de la aplicación.
+- [x] La configuración inválida o incompleta impide el arranque de la aplicación.
 
 ## Decisiones
 

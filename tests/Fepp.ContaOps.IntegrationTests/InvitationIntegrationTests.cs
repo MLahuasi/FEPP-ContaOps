@@ -223,6 +223,231 @@ public sealed class InvitationIntegrationTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// Comprueba que un token consumido no puede activar nuevamente la cuenta.
+    /// </summary>
+    [Fact]
+    public async Task UsedInvitationToken_CannotBeConsumedAgain()
+    {
+        await using TestApiFactory factory = CreateFactory();
+        using HttpClient client = CreateHttpsClient(factory);
+        string adminToken = await LoginAsync(client, "admin@example.com", "AdminPassword123!");
+        string email = UniqueEmail();
+
+        await SendAsAdminAsync(
+            client,
+            adminToken,
+            HttpMethod.Post,
+            "/api/users/invitations",
+            JsonContent.Create(new { email }));
+
+        UserInvitationResult invitation = factory.Services
+            .GetRequiredService<FakeInvitationNotifier>()
+            .LastInvitation!;
+
+        HttpResponseMessage firstActivation = await client.PostAsJsonAsync(
+            "/api/auth/activate",
+            new
+            {
+                userId = invitation.User.Id.Value,
+                token = invitation.ActivationToken,
+                newPassword = "Password123!"
+            });
+        Assert.Equal(HttpStatusCode.NoContent, firstActivation.StatusCode);
+
+        HttpResponseMessage secondActivation = await client.PostAsJsonAsync(
+            "/api/auth/activate",
+            new
+            {
+                userId = invitation.User.Id.Value,
+                token = invitation.ActivationToken,
+                newPassword = "AnotherPassword123!"
+            });
+        Assert.Equal(HttpStatusCode.BadRequest, secondActivation.StatusCode);
+        Assert.Equal("invalid_activation_token", await ReadCodeAsync(secondActivation));
+    }
+
+    /// <summary>
+    /// Comprueba que una cuenta activa no puede recibir un reenvío.
+    /// </summary>
+    [Fact]
+    public async Task ResendActiveInvitation_ReturnsConflict()
+    {
+        await using TestApiFactory factory = CreateFactory();
+        using HttpClient client = CreateHttpsClient(factory);
+        string adminToken = await LoginAsync(client, "admin@example.com", "AdminPassword123!");
+        string email = UniqueEmail();
+
+        await SendAsAdminAsync(
+            client,
+            adminToken,
+            HttpMethod.Post,
+            "/api/users/invitations",
+            JsonContent.Create(new { email }));
+        UserInvitationResult invitation = factory.Services
+            .GetRequiredService<FakeInvitationNotifier>()
+            .LastInvitation!;
+
+        HttpResponseMessage activation = await client.PostAsJsonAsync(
+            "/api/auth/activate",
+            new
+            {
+                userId = invitation.User.Id.Value,
+                token = invitation.ActivationToken,
+                newPassword = "Password123!"
+            });
+        Assert.Equal(HttpStatusCode.NoContent, activation.StatusCode);
+
+        HttpResponseMessage resend = await SendAsAdminAsync(
+            client,
+            adminToken,
+            HttpMethod.Post,
+            $"/api/users/{invitation.User.Id.Value}/invitations",
+            content: null);
+
+        Assert.Equal(HttpStatusCode.Conflict, resend.StatusCode);
+        Assert.Equal("resource_conflict", await ReadCodeAsync(resend));
+    }
+
+    /// <summary>
+    /// Comprueba que un identificador inexistente produce un recurso no encontrado.
+    /// </summary>
+    [Fact]
+    public async Task ResendUnknownInvitation_ReturnsNotFound()
+    {
+        await using TestApiFactory factory = CreateFactory();
+        using HttpClient client = CreateHttpsClient(factory);
+        string adminToken = await LoginAsync(client, "admin@example.com", "AdminPassword123!");
+
+        HttpResponseMessage resend = await SendAsAdminAsync(
+            client,
+            adminToken,
+            HttpMethod.Post,
+            $"/api/users/{Guid.NewGuid()}/invitations",
+            content: null);
+
+        Assert.Equal(HttpStatusCode.NotFound, resend.StatusCode);
+        Assert.Equal("resource_not_found", await ReadCodeAsync(resend));
+    }
+
+    /// <summary>
+    /// Comprueba que una contraseña rechazada por Identity no consume la invitación.
+    /// </summary>
+    [Fact]
+    public async Task InvalidActivationPassword_ReturnsValidationAndPreservesToken()
+    {
+        await using TestApiFactory factory = CreateFactory();
+        using HttpClient client = CreateHttpsClient(factory);
+        string adminToken = await LoginAsync(client, "admin@example.com", "AdminPassword123!");
+        string email = UniqueEmail();
+
+        await SendAsAdminAsync(
+            client,
+            adminToken,
+            HttpMethod.Post,
+            "/api/users/invitations",
+            JsonContent.Create(new { email }));
+        UserInvitationResult invitation = factory.Services
+            .GetRequiredService<FakeInvitationNotifier>()
+            .LastInvitation!;
+
+        HttpResponseMessage invalidActivation = await client.PostAsJsonAsync(
+            "/api/auth/activate",
+            new
+            {
+                userId = invitation.User.Id.Value,
+                token = invitation.ActivationToken,
+                newPassword = "simple"
+            });
+        Assert.Equal(HttpStatusCode.BadRequest, invalidActivation.StatusCode);
+        Assert.Equal("validation_error", await ReadCodeAsync(invalidActivation));
+
+        HttpResponseMessage validActivation = await client.PostAsJsonAsync(
+            "/api/auth/activate",
+            new
+            {
+                userId = invitation.User.Id.Value,
+                token = invitation.ActivationToken,
+                newPassword = "Password123!"
+            });
+        Assert.Equal(HttpStatusCode.NoContent, validActivation.StatusCode);
+    }
+
+    /// <summary>
+    /// Comprueba que JSON inválido conserva el contrato uniforme de errores.
+    /// </summary>
+    [Fact]
+    public async Task InvalidJson_ReturnsValidationProblemDetails()
+    {
+        await using TestApiFactory factory = CreateFactory();
+        using HttpClient client = CreateHttpsClient(factory);
+        using StringContent content = new("{", System.Text.Encoding.UTF8, "application/json");
+
+        HttpResponseMessage response = await client.PostAsync("/api/auth/activate", content);
+        string body = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("\"code\"", body, StringComparison.Ordinal);
+        Assert.Contains("validation_error", body, StringComparison.Ordinal);
+        Assert.StartsWith("application/problem+json", response.Content.Headers.ContentType?.ToString());
+    }
+
+    /// <summary>
+    /// Comprueba que un identificador inválido produce validación uniforme.
+    /// </summary>
+    [Fact]
+    public async Task InvalidActivationUserId_ReturnsValidationProblemDetails()
+    {
+        await using TestApiFactory factory = CreateFactory();
+        using HttpClient client = CreateHttpsClient(factory);
+
+        HttpResponseMessage response = await client.PostAsJsonAsync(
+            "/api/auth/activate",
+            new
+            {
+                userId = "not-a-guid",
+                token = "opaque-token",
+                newPassword = "Password123!"
+            });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("validation_error", await ReadCodeAsync(response));
+    }
+
+    /// <summary>
+    /// Comprueba que un token arbitrario usa el mismo error público de activación.
+    /// </summary>
+    [Fact]
+    public async Task InvalidActivationToken_ReturnsUniformError()
+    {
+        await using TestApiFactory factory = CreateFactory();
+        using HttpClient client = CreateHttpsClient(factory);
+        string adminToken = await LoginAsync(client, "admin@example.com", "AdminPassword123!");
+        string email = UniqueEmail();
+
+        await SendAsAdminAsync(
+            client,
+            adminToken,
+            HttpMethod.Post,
+            "/api/users/invitations",
+            JsonContent.Create(new { email }));
+        UserInvitationResult invitation = factory.Services
+            .GetRequiredService<FakeInvitationNotifier>()
+            .LastInvitation!;
+
+        HttpResponseMessage response = await client.PostAsJsonAsync(
+            "/api/auth/activate",
+            new
+            {
+                userId = invitation.User.Id.Value,
+                token = "invalid-token",
+                newPassword = "Password123!"
+            });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("invalid_activation_token", await ReadCodeAsync(response));
+    }
+
+    /// <summary>
     /// Comprueba que un fallo de correo devuelve 503 y conserva la cuenta pendiente.
     /// </summary>
     [Fact]

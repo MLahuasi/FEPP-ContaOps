@@ -55,7 +55,9 @@ public static class DependencyInjection
             .ValidateOnStart();
 
         string? keyRingPath = configuration["DataProtection:KeyRingPath"];
-        IDataProtectionBuilder dataProtectionBuilder = services.AddDataProtection();
+        IDataProtectionBuilder dataProtectionBuilder = services
+            .AddDataProtection()
+            .SetApplicationName("FEPP-ContaOps");
         if (!string.IsNullOrWhiteSpace(keyRingPath))
         {
             DirectoryInfo keyRingDirectory = new(keyRingPath);

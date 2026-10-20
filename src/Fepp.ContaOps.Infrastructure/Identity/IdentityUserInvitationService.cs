@@ -158,10 +158,16 @@ public sealed class IdentityUserInvitationService : IUserInvitationService
     {
         cancellationToken.ThrowIfCancellationRequested();
         ApplicationIdentityUser? identityUser = await _userManager.FindByIdAsync(userId.Value);
-        if (identityUser is null || identityUser.Status != UserStatus.PendingActivation)
+        if (identityUser is null)
         {
             return Result<UserInvitationResult>.Failure(
                 new ResourceNotFoundError("pending user", userId.Value));
+        }
+
+        if (identityUser.Status != UserStatus.PendingActivation)
+        {
+            return Result<UserInvitationResult>.Failure(
+                new ConflictError("An active user cannot receive a new invitation."));
         }
 
         await using Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction transaction =

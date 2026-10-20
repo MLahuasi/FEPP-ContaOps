@@ -440,39 +440,39 @@ nuevo intento de activación y que una cancelación no se transforma en 500.
 
 ## Criterios de aceptación
 
-- [ ] Los endpoints usan exactamente las rutas y métodos definidos en esta spec.
-- [ ] Solo Admin puede crear o reenviar invitaciones.
-- [ ] User recibe 403 y una solicitud sin JWT recibe 401 en endpoints administrativos.
-- [ ] 401 y 403 contienen `code` y `traceId`.
-- [ ] El response de creación nunca contiene token ni enlace.
-- [ ] Activar una cuenta válida devuelve 204 y permite login posterior.
-- [ ] Una cuenta pendiente no puede autenticarse, incluso con contraseña proporcionada.
+- [x] Los endpoints usan exactamente las rutas y métodos definidos en esta spec.
+- [x] Solo Admin puede crear o reenviar invitaciones.
+- [x] User recibe 403 y una solicitud sin JWT recibe 401 en endpoints administrativos.
+- [x] 401 y 403 contienen `code` y `traceId`.
+- [x] El response de creación nunca contiene token ni enlace.
+- [x] Activar una cuenta válida devuelve 204 y permite login posterior.
+- [x] Una cuenta pendiente no puede autenticarse, incluso con contraseña proporcionada.
 - [ ] Tokens usados, inválidos, vencidos o de otra cuenta producen el mismo 400.
-- [ ] Un reenvío invalida el token anterior.
-- [ ] Email duplicado produce 409.
-- [ ] Usuario inexistente para reenvío produce 404.
-- [ ] Reenvío de usuario activo produce 409.
-- [ ] Fallo de correo produce 503 y conserva la cuenta pendiente.
-- [ ] La respuesta 503 administrativa puede incluir `userId`, pero nunca token ni enlace.
+- [x] Un reenvío invalida el token anterior.
+- [x] Email duplicado produce 409.
+- [x] Usuario inexistente para reenvío produce 404.
+- [x] Reenvío de usuario activo produce 409.
+- [x] Fallo de correo produce 503 y conserva la cuenta pendiente.
+- [x] La respuesta 503 administrativa puede incluir `userId`, pero nunca token ni enlace.
 - [ ] El seed no sobrescribe la contraseña de un administrador existente.
-- [ ] La aplicación falla al arrancar con configuración obligatoria inválida.
-- [ ] La política de contraseña y bloqueo se configura sin editar código.
+- [x] La aplicación falla al arrancar con configuración obligatoria inválida.
+- [x] La política de contraseña y bloqueo se configura sin editar código.
 - [ ] Las pruebas cubren todos los escenarios mínimos definidos.
-- [ ] SPEC 02 permanece sin modificaciones.
-- [ ] `.env.example`, `README.md` y `AGENTS.md` no documentan `BootstrapUser` como flujo operativo.
-- [ ] Los tres archivos documentan consistentemente JWT, administrador y políticas de Identity.
-- [ ] Ningún archivo versionado contiene credenciales o secretos reales.
-- [ ] `.env.example` conserva PostgreSQL, pgAdmin, conexión, JWT y `BootstrapAdmin__*`.
-- [ ] `.env.example` incluye `Identity__Password__*`, `Identity__Lockout__*` y las variables de SPEC 03.
-- [ ] `BootstrapUser__Email` y `BootstrapUser__Password` no forman parte del contrato vigente.
-- [ ] Las variables de entorno usan una única convención con doble guion bajo.
-- [ ] La configuración obligatoria inválida impide el arranque.
-- [ ] Los casos de uso de Application coordinan persistencia y notificación sin que los controllers accedan a implementaciones técnicas.
-- [ ] El rechazo de una contraseña por Identity devuelve `400 validation_error` y no invalida una invitación que aún no fue consumida.
-- [ ] JSON inválido y errores de model binding devuelven ProblemDetails con `code` y `traceId`.
-- [ ] `BootstrapUserOptions` y su lógica de seed no forman parte de la implementación operativa.
-- [ ] La cancelación del request no se convierte en `500 unexpected_error`.
-- [ ] No se requiere una migración adicional cuando no cambia el modelo persistido.
+- [x] SPEC 02 permanece sin modificaciones.
+- [x] `.env.example`, `README.md` y `AGENTS.md` no documentan `BootstrapUser` como flujo operativo.
+- [x] Los tres archivos documentan consistentemente JWT, administrador y políticas de Identity.
+- [x] Ningún archivo versionado contiene credenciales o secretos reales.
+- [x] `.env.example` conserva PostgreSQL, pgAdmin, conexión, JWT y `BootstrapAdmin__*`.
+- [x] `.env.example` incluye `Identity__Password__*`, `Identity__Lockout__*` y las variables de SPEC 03.
+- [x] `BootstrapUser__Email` y `BootstrapUser__Password` no forman parte del contrato vigente.
+- [x] Las variables de entorno usan una única convención con doble guion bajo.
+- [x] La configuración obligatoria inválida impide el arranque.
+- [x] Los casos de uso de Application coordinan persistencia y notificación sin que los controllers accedan a implementaciones técnicas.
+- [x] El rechazo de una contraseña por Identity devuelve `400 validation_error` y no invalida una invitación que aún no fue consumida.
+- [x] JSON inválido y errores de model binding devuelven ProblemDetails con `code` y `traceId`.
+- [x] `BootstrapUserOptions` y su lógica de seed no forman parte de la implementación operativa.
+- [x] La cancelación del request no se convierte en `500 unexpected_error`.
+- [x] No se requiere una migración adicional cuando no cambia el modelo persistido.
 
 ## Decisiones
 
