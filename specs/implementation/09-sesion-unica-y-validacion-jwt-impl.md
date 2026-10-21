@@ -151,6 +151,151 @@ La implementación todavía no incorpora `sessionId` al JWT ni utiliza el `jti` 
 
 ### 3. Configurar claims, expiración de 15 minutos, issuer y audience.
 
+#### 1. Componentes implementados
+
+| Componente                 | Acción      | Tipo                   | Capa                       | Responsabilidad                                                                             |
+| -------------------------- | ----------- | ---------------------- | -------------------------- | ------------------------------------------------------------------------------------------- |
+| `JwtOptions`               | Update      | Clase de configuración | Infrastructure / Security  | Establece 15 minutos como duración predeterminada del access token.                         |
+| `JwtTokenIssuer`           | Update      | Servicio / Adaptador   | Infrastructure / Security  | Incorpora los claims `sid` y `jti` recibidos mediante `ITokenIssuer`.                       |
+| `IdentityJwtCriteriaTests` | Update      | Clase de pruebas       | Tests                      | Verifica los nuevos claims, la duración del JWT y las validaciones de seguridad existentes. |
+| `ITokenIssuer`             | Sin cambios | Interfaz               | Application / Abstractions | Mantiene el contrato de emisión definido en el paso anterior.                               |
+| `TokenResult`              | Sin cambios | Record                 | Application / Abstractions | Devuelve el JWT y su duración en segundos.                                                  |
+
+#### 2. Métodos principales
+
+| Clase                      | Método                                                       | Responsabilidad                                                                                 |
+| -------------------------- | ------------------------------------------------------------ | ----------------------------------------------------------------------------------------------- |
+| `JwtTokenIssuer`           | `IssueAsync()`                                               | Genera un JWT firmado con identidad, roles, sesión, identificador único y vigencia configurada. |
+| `IdentityJwtCriteriaTests` | `JwtIssuer_EmitsAdminTokenWithExpectedClaims()`              | Comprueba issuer, audience, claims `email`, `sid`, `jti`, rol y duración de 900 segundos.       |
+| `IdentityJwtCriteriaTests` | `JwtValidation_RejectsIncorrectSignatureIssuerAndAudience()` | Verifica el rechazo de JWT con firma, issuer o audience incorrectos.                            |
+| `IdentityJwtCriteriaTests` | `JwtValidation_RejectsExpiredToken()`                        | Verifica el rechazo de tokens expirados.                                                        |
+| `IdentityJwtCriteriaTests` | `CreateJwtOptions()`                                         | Proporciona configuración JWT de prueba con vigencia de 15 minutos.                             |
+| `IdentityJwtCriteriaTests` | `CreateConfiguration()`                                      | Configura los parámetros JWT utilizados durante las pruebas.                                    |
+| `IdentityJwtCriteriaTests` | `Validate()`                                                 | Valida firma, issuer, audience y expiración mediante `TokenValidationParameters`.               |
+
+**Claims incorporados y conservados:**
+
+| Claim   | Origen del valor       | Responsabilidad                                             |
+| ------- | ---------------------- | ----------------------------------------------------------- |
+| `sub`   | `user.Id.Value`        | Identifica al usuario autenticado.                          |
+| `email` | `user.Email`           | Identifica el correo del usuario.                           |
+| `sid`   | `sessionId.ToString()` | Identifica la sesión asociada al JWT.                       |
+| `jti`   | Parámetro `jti`        | Identifica individualmente el JWT.                          |
+| `role`  | `user.Roles`           | Incorpora los roles del usuario mediante `ClaimTypes.Role`. |
+| `iss`   | `JwtOptions.Issuer`    | Identifica el emisor del JWT.                               |
+| `aud`   | `JwtOptions.Audience`  | Identifica la audiencia permitida.                          |
+| `nbf`   | `issuedAt`             | Establece el inicio de vigencia.                            |
+| `exp`   | `expiresAt`            | Establece la expiración del JWT.                            |
+
+#### 3. Componentes de .NET y bibliotecas externas
+
+| Componente / Método                    | Origen                              | Función                                              | Uso en el proyecto                                            |
+| -------------------------------------- | ----------------------------------- | ---------------------------------------------------- | ------------------------------------------------------------- |
+| `IOptions<T>`                          | .NET / Microsoft.Extensions.Options | Proporciona configuración tipada.                    | Inyecta `JwtOptions` en `JwtTokenIssuer`.                     |
+| `DateTime.UtcNow`                      | .NET / System                       | Obtiene la fecha y hora UTC.                         | Determina emisión y expiración del JWT.                       |
+| `Claim`, `ClaimTypes.Role`             | .NET / System.Security.Claims       | Representan información de identidad y roles.        | Construyen los claims del usuario.                            |
+| `JwtRegisteredClaimNames`              | System.IdentityModel.Tokens.Jwt     | Define nombres estándar de claims JWT.               | Proporciona `Sub`, `Email`, `Sid` y `Jti`.                    |
+| `JwtSecurityToken`                     | System.IdentityModel.Tokens.Jwt     | Representa un JWT.                                   | Construye el token con claims, vigencia y firma.              |
+| `JwtSecurityTokenHandler.WriteToken()` | System.IdentityModel.Tokens.Jwt     | Serializa el JWT.                                    | Genera el access token que recibe el cliente.                 |
+| `SymmetricSecurityKey`                 | Microsoft.IdentityModel.Tokens      | Representa una clave criptográfica simétrica.        | Utiliza `JwtOptions.SigningKey`.                              |
+| `SigningCredentials`                   | Microsoft.IdentityModel.Tokens      | Define las credenciales de firma.                    | Configura la firma del JWT.                                   |
+| `SecurityAlgorithms.HmacSha256`        | Microsoft.IdentityModel.Tokens      | Identifica el algoritmo HMAC-SHA256.                 | Firma los tokens de acceso.                                   |
+| `TokenValidationParameters`            | Microsoft.IdentityModel.Tokens      | Configura reglas de validación JWT.                  | Verifica firma, issuer, audience y expiración en las pruebas. |
+| `ClockSkew`                            | Microsoft.IdentityModel.Tokens      | Define la tolerancia temporal durante la validación. | Se establece en cero en el método de prueba `Validate()`.     |
+| `Assert`                               | xUnit                               | Verifica resultados de pruebas.                      | Comprueba claims, duración y excepciones de validación.       |
+| `JwtOptions`                           | Código propio / Infrastructure      | Define la configuración de emisión JWT.              | Contiene issuer, audience, clave de firma y duración.         |
+| `JwtTokenIssuer`                       | Código propio / Infrastructure      | Implementa el emisor JWT.                            | Genera tokens compatibles con `ITokenIssuer`.                 |
+
+#### 4. Flujo funcional
+
+**Emisión del JWT: `JwtTokenIssuer.IssueAsync()`**
+
+| Paso | Operación                                                 | Componente                |
+| ---- | --------------------------------------------------------- | ------------------------- |
+| 1    | Recibir usuario, `sessionId` y `jti`.                     | `ITokenIssuer`            |
+| 2    | Obtener la fecha UTC de emisión.                          | `DateTime.UtcNow`         |
+| 3    | Calcular expiración sumando `AccessTokenLifetimeMinutes`. | `JwtOptions`              |
+| 4    | Construir claims `sub`, `email`, `sid`, `jti` y roles.    | `Claim`                   |
+| 5    | Obtener issuer, audience y clave de firma.                | `JwtOptions`              |
+| 6    | Configurar firma HMAC-SHA256.                             | `SigningCredentials`      |
+| 7    | Construir el JWT con claims y vigencia.                   | `JwtSecurityToken`        |
+| 8    | Serializar el token.                                      | `JwtSecurityTokenHandler` |
+| 9    | Devolver JWT y duración en segundos.                      | `TokenResult`             |
+
+**Configuración y validaciones:**
+
+| Propiedad / Regla            | Configuración                     | Resultado                                                      |
+| ---------------------------- | --------------------------------- | -------------------------------------------------------------- |
+| `AccessTokenLifetimeMinutes` | `15`                              | Duración predeterminada de 15 minutos.                         |
+| `ExpiresIn`                  | `900`                             | Duración devuelta en segundos cuando se configuran 15 minutos. |
+| `Issuer`                     | `JwtOptions.Issuer`               | Se incorpora al JWT.                                           |
+| `Audience`                   | `JwtOptions.Audience`             | Se incorpora al JWT.                                           |
+| `SigningKey`                 | `JwtOptions.SigningKey`           | Se utiliza para generar la firma.                              |
+| `sid`                        | `sessionId.ToString()`            | Conserva el identificador recibido del llamador.               |
+| `jti`                        | Parámetro `jti`                   | Conserva el identificador recibido del llamador.               |
+| Firma incorrecta             | `ValidateIssuerSigningKey = true` | Token rechazado en las pruebas.                                |
+| Issuer incorrecto            | `ValidateIssuer = true`           | Token rechazado en las pruebas.                                |
+| Audience incorrecta          | `ValidateAudience = true`         | Token rechazado en las pruebas.                                |
+| Token expirado               | `ValidateLifetime = true`         | Token rechazado en las pruebas.                                |
+
+**Cambio respecto al paso 2:** `JwtTokenIssuer` ahora incorpora efectivamente `sessionId` y `jti` en los claims `sid` y `jti`, eliminando la generación interna de un identificador diferente para el JWT.
+
+**Alcance:** Los 15 minutos constituyen el valor predeterminado de `JwtOptions` y el valor utilizado en las pruebas. La duración efectiva continúa dependiendo de la configuración cargada en ejecución. No se incorpora en este paso una validación de la sesión persistida durante la autenticación.
+
+#### 5. Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    subgraph Application["Application - Código propio"]
+        ISSUER["ITokenIssuer"]
+        USER["User"]
+        RESULT["TokenResult"]
+    end
+
+    subgraph Infrastructure["Infrastructure - Security"]
+        JWT["JwtTokenIssuer"]
+        OPTIONS["JwtOptions"]
+    end
+
+    subgraph Framework[".NET / Bibliotecas JWT"]
+        IOPTIONS["IOptions"]
+        CLAIMS["Claim / JwtRegisteredClaimNames"]
+        SIGN["SymmetricSecurityKey / SigningCredentials"]
+        TOKEN["JwtSecurityToken"]
+        HANDLER["JwtSecurityTokenHandler"]
+    end
+
+    subgraph Tests["Tests - xUnit"]
+        TESTS["IdentityJwtCriteriaTests"]
+        VALIDATION["TokenValidationParameters"]
+    end
+
+    USER --> ISSUER
+    ISSUER -.->|"Implementado por"| JWT
+
+    IOPTIONS --> OPTIONS
+    OPTIONS -->|"Issuer / Audience / SigningKey / 15 min"| JWT
+
+    JWT -->|"sub / email / sid / jti / roles"| CLAIMS
+    JWT --> SIGN
+    CLAIMS --> TOKEN
+    SIGN --> TOKEN
+
+    JWT -->|"Construye"| TOKEN
+    TOKEN --> HANDLER
+    HANDLER -->|"AccessToken / ExpiresIn"| RESULT
+
+    TESTS -->|"Verifica emisión"| JWT
+    TESTS --> VALIDATION
+    VALIDATION -.->|"Valida firma, emisor, audiencia y vigencia"| HANDLER
+```
+
+#### 6. Resultado
+
+Se actualiza la emisión JWT incorporando los claims `sid` y `jti` proporcionados por el llamador, manteniendo `sub`, `email`, roles, issuer, audience y firma HMAC-SHA256.
+
+Se establece una duración predeterminada de 15 minutos y se actualizan las pruebas para verificar los claims, la vigencia y las reglas de validación.
+
 ---
 
 ### 4. Crear sesión y revocar la anterior tras validar login.

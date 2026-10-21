@@ -47,7 +47,8 @@ public sealed class JwtTokenIssuer : ITokenIssuer
         [
             new(JwtRegisteredClaimNames.Sub, user.Id.Value),
             new(JwtRegisteredClaimNames.Email, user.Email),
-            new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString("N"))
+            new(JwtRegisteredClaimNames.Sid, sessionId.ToString()),
+            new(JwtRegisteredClaimNames.Jti, jti)
         ];
         claims.AddRange(user.Roles.Select(role => new Claim(ClaimTypes.Role, role)));
 
