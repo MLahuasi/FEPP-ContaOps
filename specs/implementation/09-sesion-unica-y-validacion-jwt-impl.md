@@ -808,6 +808,165 @@ Se incorpora una prueba xUnit con SQLite en memoria que verifica cuatro escenari
 
 ### 8. Probar login sucesivo desde dos equipos.
 
+#### 1. Componentes implementados
+
+| Componente                                                 | Acción | Tipo                             | Capa                      | Responsabilidad                                                                       |
+| ---------------------------------------------------------- | ------ | -------------------------------- | ------------------------- | ------------------------------------------------------------------------------------- |
+| `AuthIntegrationTests`                                     | Update | Clase de pruebas de integración  | Tests                     | Incorpora la validación HTTP de sesiones sucesivas desde dos clientes independientes. |
+| `SuccessiveLogins_LeaveOnlyTheLatestBearerSessionUsable()` | Create | Prueba xUnit                     | Tests                     | Verifica que el segundo login invalida la sesión Bearer del primer cliente.           |
+| `LoginAndReadTokenAsync()`                                 | Create | Método auxiliar                  | Tests                     | Autentica al administrador y obtiene el JWT de la respuesta HTTP.                     |
+| `TestApiFactory`                                           | Uso    | Fábrica de aplicación de pruebas | Tests                     | Ejecuta la API con configuración controlada y PostgreSQL efímero.                     |
+| `UserSessionStore`                                         | Uso    | Servicio de persistencia         | Infrastructure / Security | Reemplaza la sesión activa y revoca la anterior durante el login.                     |
+
+#### 2. Métodos principales
+
+| Clase                  | Método                                                     | Responsabilidad                                                                                 |
+| ---------------------- | ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `AuthIntegrationTests` | `SuccessiveLogins_LeaveOnlyTheLatestBearerSessionUsable()` | Ejecuta dos logins consecutivos y comprueba la validez de sus JWT contra un endpoint protegido. |
+| `AuthIntegrationTests` | `LoginAndReadTokenAsync()`                                 | Envía las credenciales a `/api/auth/login` y extrae `accessToken`.                              |
+| `TestApiFactory`       | `ConfigureWebHost()`                                       | Configura PostgreSQL, JWT, administrador inicial, invitaciones y SMTP para las pruebas.         |
+| `AuthIntegrationTests` | `InitializeAsync()`                                        | Inicia el contenedor PostgreSQL.                                                                |
+| `AuthIntegrationTests` | `DisposeAsync()`                                           | Libera el contenedor PostgreSQL.                                                                |
+| `UserSessionStore`     | `ReplaceActiveSessionAsync()`                              | Reemplaza la sesión activa durante la autenticación.                                            |
+| `UserSessionStore`     | `IsSessionActiveAsync()`                                   | Verifica la vigencia de la sesión asociada al JWT durante la autenticación Bearer.              |
+
+#### 3. Componentes de .NET y bibliotecas externas
+
+| Componente / Método              | Origen                                          | Función                                            | Uso en el proyecto                                             |
+| -------------------------------- | ----------------------------------------------- | -------------------------------------------------- | -------------------------------------------------------------- |
+| `[Fact]`                         | xUnit                                           | Define una prueba automatizada.                    | Identifica la prueba de login sucesivo.                        |
+| `IAsyncLifetime`                 | xUnit                                           | Gestiona inicialización y liberación asíncronas.   | Controla el ciclo de vida de PostgreSQL.                       |
+| `WebApplicationFactory<Program>` | ASP.NET Core / Microsoft.AspNetCore.Mvc.Testing | Ejecuta la aplicación para pruebas de integración. | Proporciona una instancia de la API.                           |
+| `CreateClient()`                 | ASP.NET Core / Microsoft.AspNetCore.Mvc.Testing | Crea clientes HTTP para la aplicación de pruebas.  | Representa dos equipos mediante clientes independientes.       |
+| `HttpClient`                     | .NET / System.Net.Http                          | Ejecuta solicitudes HTTP.                          | Realiza login y solicitudes autenticadas.                      |
+| `PostAsJsonAsync()`              | .NET / System.Net.Http.Json                     | Envía solicitudes HTTP POST con contenido JSON.    | Invoca login y creación de invitaciones.                       |
+| `AuthenticationHeaderValue`      | .NET / System.Net.Http.Headers                  | Representa valores del encabezado Authorization.   | Envía los JWT mediante el esquema Bearer.                      |
+| `HttpStatusCode`                 | .NET / System.Net                               | Representa códigos de estado HTTP.                 | Verifica respuestas 401 y respuestas distintas de 401.         |
+| `JsonDocument`                   | .NET / System.Text.Json                         | Permite consultar contenido JSON.                  | Extrae `accessToken` de la respuesta.                          |
+| `EnsureSuccessStatusCode()`      | .NET / System.Net.Http                          | Comprueba que la respuesta HTTP sea satisfactoria. | Valida el resultado del login antes de obtener el JWT.         |
+| `PostgreSqlBuilder`              | Biblioteca externa / Testcontainers.PostgreSql  | Configura contenedores PostgreSQL para pruebas.    | Construye el contenedor `postgres:16-alpine`.                  |
+| `PostgreSqlContainer`            | Biblioteca externa / Testcontainers.PostgreSql  | Administra un contenedor PostgreSQL.               | Proporciona la base de datos efímera.                          |
+| `UserSessionStore`               | Código propio / Infrastructure                  | Gestiona sesiones persistidas.                     | Permite invalidar la sesión anterior durante el segundo login. |
+
+#### 4. Flujo funcional
+
+**Prueba: `SuccessiveLogins_LeaveOnlyTheLatestBearerSessionUsable()`**
+
+| Paso | Operación                                                   | Componente                  |
+| ---- | ----------------------------------------------------------- | --------------------------- |
+| 1    | Iniciar PostgreSQL efímero.                                 | `PostgreSqlContainer`       |
+| 2    | Crear la aplicación de pruebas utilizando PostgreSQL.       | `TestApiFactory`            |
+| 3    | Crear dos clientes HTTP independientes.                     | `HttpClient`                |
+| 4    | Autenticar al administrador desde el primer cliente.        | `LoginAndReadTokenAsync()`  |
+| 5    | Crear la primera sesión y emitir su JWT.                    | API / `UserSessionStore`    |
+| 6    | Autenticar al mismo administrador desde el segundo cliente. | `LoginAndReadTokenAsync()`  |
+| 7    | Revocar la primera sesión y crear una nueva.                | `UserSessionStore`          |
+| 8    | Configurar cada cliente con su JWT Bearer.                  | `AuthenticationHeaderValue` |
+| 9    | Invocar `/api/users/invitations` desde ambos clientes.      | `PostAsJsonAsync()`         |
+| 10   | Comprobar que el primer cliente recibe HTTP 401.            | xUnit                       |
+| 11   | Comprobar que el segundo cliente no recibe HTTP 401.        | xUnit                       |
+
+**Resultados esperados:**
+
+| Cliente        | Sesión                         | Validación Bearer               | Resultado HTTP                  |
+| -------------- | ------------------------------ | ------------------------------- | ------------------------------- |
+| Primer equipo  | Revocada por el segundo login. | Rechazada.                      | `401 Unauthorized`              |
+| Segundo equipo | Última sesión creada.          | No rechazada por autenticación. | Diferente de `401 Unauthorized` |
+
+**Reglas verificadas:**
+
+| Regla                         | Verificación                                                          |
+| ----------------------------- | --------------------------------------------------------------------- |
+| Una sesión activa por usuario | El segundo login invalida el JWT correspondiente a la primera sesión. |
+| Revocación efectiva           | El primer cliente recibe HTTP 401 al acceder al endpoint protegido.   |
+| Validez de la última sesión   | El segundo cliente obtiene una respuesta diferente de HTTP 401.       |
+| Clientes independientes       | Cada equipo utiliza su propio `HttpClient` y JWT.                     |
+| Persistencia real             | La prueba utiliza PostgreSQL mediante Testcontainers.                 |
+
+**Alcance:**
+
+- Los equipos se simulan mediante dos instancias independientes de `HttpClient`; no se utilizan dispositivos físicos.
+- La prueba verifica la invalidación del JWT anterior, pero no consulta directamente los estados persistidos de `UserSessions`.
+- La respuesta del segundo cliente solo se verifica como diferente de HTTP 401; no necesariamente corresponde a una operación exitosa.
+- No se comprueba la entrega real del correo de invitación.
+- El código implementa la prueba, pero no se proporciona el resultado de su ejecución.
+
+#### 5. Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    subgraph Tests["Tests - AuthIntegrationTests"]
+        TEST["SuccessiveLogins_LeaveOnlyTheLatestBearerSessionUsable()"]
+        FACTORY["TestApiFactory"]
+        LOGINHELPER["LoginAndReadTokenAsync()"]
+    end
+
+    subgraph Clients["Clientes HTTP de prueba"]
+        DEVICE1["HttpClient - Equipo 1"]
+        DEVICE2["HttpClient - Equipo 2"]
+    end
+
+    subgraph Presentation["Presentation - ASP.NET Core API"]
+        LOGIN["POST /api/auth/login"]
+        PROTECTED["POST /api/users/invitations"]
+        BEARER["JWT Bearer - OnTokenValidated"]
+    end
+
+    subgraph Application["Application"]
+        LOGINUSER["LoginUser"]
+        SESSIONPORT["IUserSessionStore"]
+    end
+
+    subgraph Infrastructure["Infrastructure"]
+        SESSIONSTORE["UserSessionStore"]
+        SESSIONCHECK["IsSessionActiveAsync()"]
+        DB["AppDbContext"]
+    end
+
+    subgraph External["Testcontainers / PostgreSQL"]
+        CONTAINER["PostgreSqlContainer"]
+        PG[("PostgreSQL 16")]
+        SESSIONS[("UserSessions")]
+    end
+
+    TEST --> FACTORY
+    TEST --> DEVICE1
+    TEST --> DEVICE2
+
+    FACTORY --> CONTAINER
+    CONTAINER --> PG
+
+    DEVICE1 -->|"Primer login"| LOGIN
+    DEVICE2 -->|"Segundo login"| LOGIN
+
+    TEST --> LOGINHELPER
+    LOGINHELPER --> LOGIN
+
+    LOGIN --> LOGINUSER
+    LOGINUSER --> SESSIONPORT
+    SESSIONPORT -.->|"Implementado por"| SESSIONSTORE
+
+    SESSIONSTORE -->|"Revoca anterior y crea nueva"| DB
+    DB --> PG
+    PG --> SESSIONS
+
+    DEVICE1 -->|"JWT anterior"| PROTECTED
+    DEVICE2 -->|"JWT vigente"| PROTECTED
+
+    PROTECTED --> BEARER
+    BEARER --> SESSIONCHECK
+    SESSIONCHECK --> DB
+
+    BEARER -->|"Equipo 1: sesión revocada"| REJECT["401 Unauthorized"]
+    BEARER -->|"Equipo 2: sesión válida"| ACCEPT["Respuesta diferente de 401"]
+```
+
+#### 6. Resultado
+
+Se incorpora una prueba de integración que simula dos logins consecutivos del mismo usuario mediante clientes HTTP independientes y PostgreSQL efímero.
+
+La prueba verifica que el JWT del primer equipo sea rechazado con HTTP 401 y que el segundo conserve una sesión Bearer utilizable.
+
 ---
 
 ### 9. Probar cambio de stamp y expiración con PostgreSQL real.
