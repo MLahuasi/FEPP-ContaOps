@@ -1,6 +1,7 @@
 using System.Data;
 using Fepp.ContaOps.Application.Abstractions;
 using Fepp.ContaOps.Domain.Users;
+using Fepp.ContaOps.Infrastructure.Identity;
 using Fepp.ContaOps.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 
@@ -314,11 +315,19 @@ public sealed class UserSessionStore : IUserSessionStore
         UserSession? session = await _dbContext.UserSessions
             .AsNoTracking()
             .SingleOrDefaultAsync(item => item.SessionId == sessionId, cancellationToken);
+        ApplicationIdentityUser? user = session is null
+            ? null
+            : await _dbContext.Users
+                .AsNoTracking()
+                .SingleOrDefaultAsync(item => item.Id == session.UserId, cancellationToken);
 
         return session is not null
             && session.UserId == userId
             && session.Status == UserSessionStatus.Active
-            && session.ExpiresAtUtc > nowUtc;
+            && session.ExpiresAtUtc > nowUtc
+            && user is not null
+            && user.Status == UserStatus.Active
+            && session.SecurityStamp == user.SecurityStamp;
     }
 
     /// <summary>

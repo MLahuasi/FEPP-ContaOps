@@ -634,6 +634,172 @@ Un JWT criptográficamente válido deja de ser suficiente para autenticarse: tam
 
 ### 6. Rechazar sesiones inexistentes, revocadas, vencidas o con stamp diferente.
 
+#### 1. Componentes implementados
+
+| Componente                                               | Acción | Tipo                     | Capa                      | Responsabilidad                                                                                       |
+| -------------------------------------------------------- | ------ | ------------------------ | ------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `UserSessionStore`                                       | Update | Servicio de persistencia | Infrastructure / Security | Amplía la validación de sesiones JWT incorporando el estado del usuario y su `SecurityStamp` vigente. |
+| `IsSessionActiveAsync()`                                 | Update | Método asíncrono         | Infrastructure / Security | Comprueba la existencia, propiedad, estado, vigencia y sello de seguridad de la sesión.               |
+| `ApplicationIdentityUser`                                | Uso    | Entidad de Identity      | Infrastructure / Identity | Proporciona el estado y `SecurityStamp` actuales del usuario.                                         |
+| `UserSessionStoreTests`                                  | Update | Clase de pruebas         | Tests                     | Incorpora pruebas para sesiones inexistentes, revocadas, expiradas y con `SecurityStamp` diferente.   |
+| `IsSessionActive_RejectsRevokedExpiredAndChangedStamp()` | Create | Prueba xUnit             | Tests                     | Verifica el rechazo de sesiones inválidas.                                                            |
+| `CreateSession()`                                        | Create | Método auxiliar          | Tests                     | Construye sesiones de prueba con estado, sello de seguridad y expiración configurables.               |
+
+#### 2. Métodos principales
+
+| Clase                   | Método                                                   | Responsabilidad                                                                                               |
+| ----------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `UserSessionStore`      | `IsSessionActiveAsync()`                                 | Consulta la sesión y su usuario propietario; valida las condiciones necesarias para aceptar la autenticación. |
+| `UserSessionStoreTests` | `IsSessionActive_RejectsRevokedExpiredAndChangedStamp()` | Comprueba el rechazo de cuatro escenarios de sesión inválida.                                                 |
+| `UserSessionStoreTests` | `CreateSession()`                                        | Genera entidades `UserSession` con valores controlados para las pruebas.                                      |
+| `UserSessionStoreTests` | `CreateStore()`                                          | Construye `UserSessionStore` utilizando el contexto SQLite de prueba.                                         |
+
+**Condiciones de `IsSessionActiveAsync()`:**
+
+| Validación            | Condición                                     |
+| --------------------- | --------------------------------------------- |
+| Existencia de sesión  | `session is not null`                         |
+| Propietario de sesión | `session.UserId == userId`                    |
+| Estado de sesión      | `session.Status == UserSessionStatus.Active`  |
+| Vigencia de sesión    | `session.ExpiresAtUtc > nowUtc`               |
+| Existencia de usuario | `user is not null`                            |
+| Estado del usuario    | `user.Status == UserStatus.Active`            |
+| Sello de seguridad    | `session.SecurityStamp == user.SecurityStamp` |
+
+El método devuelve `true` únicamente cuando se cumplen las siete condiciones.
+
+#### 3. Componentes de .NET y bibliotecas externas
+
+| Componente / Método       | Origen                                | Función                                               | Uso en el proyecto                                                  |
+| ------------------------- | ------------------------------------- | ----------------------------------------------------- | ------------------------------------------------------------------- |
+| `AsNoTracking()`          | Entity Framework Core                 | Ejecuta consultas sin seguimiento de cambios.         | Consulta sesiones y usuarios sin modificar sus entidades.           |
+| `SingleOrDefaultAsync()`  | Entity Framework Core                 | Obtiene un registro único o `null`.                   | Busca la sesión por `SessionId` y el usuario por `UserId`.          |
+| `DbSet<T>`                | Entity Framework Core                 | Representa un conjunto de entidades persistidas.      | Permite consultar `UserSessions` y `Users`.                         |
+| `Assert.False()`          | xUnit                                 | Verifica que una condición sea falsa.                 | Comprueba el rechazo de sesiones inválidas.                         |
+| `[Fact]`                  | xUnit                                 | Identifica una prueba automatizada.                   | Define la prueba de validación de sesiones.                         |
+| `ApplicationIdentityUser` | Código propio / ASP.NET Core Identity | Representa el usuario persistido de Identity.         | Proporciona `Status` y `SecurityStamp` vigentes.                    |
+| `UserStatus`              | Código propio / Domain                | Define los estados funcionales del usuario.           | Permite exigir que la cuenta esté activa.                           |
+| `UserSessionStatus`       | Código propio / Infrastructure        | Define los estados persistentes de una sesión.        | Permite rechazar sesiones revocadas o expiradas.                    |
+| `UserSessionStore`        | Código propio / Infrastructure        | Gestiona y valida sesiones persistidas.               | Centraliza la validación utilizada durante la autenticación Bearer. |
+| `AppDbContext`            | Código propio / Infrastructure        | Contexto de persistencia de la aplicación e Identity. | Consulta sesiones y usuarios desde EF Core.                         |
+
+#### 4. Flujo funcional
+
+**Validación de sesión: `IsSessionActiveAsync()`**
+
+| Paso | Operación                                                                               | Componente                  |
+| ---- | --------------------------------------------------------------------------------------- | --------------------------- |
+| 1    | Recibir `sessionId`, `userId` y fecha UTC de evaluación.                                | `UserSessionStore`          |
+| 2    | Consultar la sesión por `SessionId`.                                                    | `AppDbContext.UserSessions` |
+| 3    | Consultar el usuario propietario mediante `session.UserId`, si existe la sesión.        | `AppDbContext.Users`        |
+| 4    | Verificar la correspondencia entre el usuario solicitado y el propietario de la sesión. | `UserSessionStore`          |
+| 5    | Comprobar que la sesión esté activa y vigente.                                          | `UserSession`               |
+| 6    | Comprobar que el usuario exista y tenga estado `Active`.                                | `ApplicationIdentityUser`   |
+| 7    | Comparar el `SecurityStamp` almacenado en la sesión con el vigente del usuario.         | `UserSessionStore`          |
+| 8    | Devolver `true` únicamente si todas las condiciones son válidas.                        | `IsSessionActiveAsync()`    |
+
+**Escenarios de rechazo:**
+
+| Escenario                | Condición                                     | Resultado |
+| ------------------------ | --------------------------------------------- | --------- |
+| Sesión inexistente       | No existe el `SessionId`.                     | `false`   |
+| Sesión de otro usuario   | `session.UserId != userId`                    | `false`   |
+| Sesión revocada          | `Status = Revoked`                            | `false`   |
+| Sesión expirada          | `Status = Expired`                            | `false`   |
+| Sesión vencida por fecha | `ExpiresAtUtc <= nowUtc`                      | `false`   |
+| Usuario inexistente      | No existe el propietario en Identity.         | `false`   |
+| Usuario inactivo         | `user.Status != Active`                       | `false`   |
+| SecurityStamp diferente  | `session.SecurityStamp != user.SecurityStamp` | `false`   |
+| Sesión válida            | Todas las condiciones se cumplen.             | `true`    |
+
+**Pruebas incorporadas:**
+
+| Prueba                                                   | Escenario verificado                         | Resultado esperado |
+| -------------------------------------------------------- | -------------------------------------------- | ------------------ |
+| `IsSessionActive_RejectsRevokedExpiredAndChangedStamp()` | `SessionId` inexistente.                     | `false`            |
+| Misma prueba                                             | Sesión con estado `Revoked`.                 | `false`            |
+| Misma prueba                                             | Sesión con estado `Expired`.                 | `false`            |
+| Misma prueba                                             | Sesión activa con `SecurityStamp` diferente. | `false`            |
+
+**Alcance:**
+
+- La validación se integra con el evento `OnTokenValidated` configurado en el paso anterior, que rechaza la autenticación cuando `IsSessionActiveAsync()` devuelve `false`.
+- El método realiza consultas de solo lectura y no modifica automáticamente el estado de las sesiones.
+- La prueba incorporada verifica cuatro escenarios de rechazo. No incluye verificaciones explícitas de sesiones válidas, usuarios inactivos, usuarios inexistentes o propietarios diferentes.
+
+#### 5. Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    subgraph Presentation["Presentation - ASP.NET Core API"]
+        BEARER["JWT Bearer"]
+        EVENT["OnTokenValidated"]
+    end
+
+    subgraph Infrastructure["Infrastructure - Security"]
+        STORE["UserSessionStore"]
+        ACTIVE["IsSessionActiveAsync()"]
+    end
+
+    subgraph Persistence["Infrastructure - Persistence"]
+        DB["AppDbContext"]
+        SESSION["UserSession"]
+        IDENTITYUSER["ApplicationIdentityUser"]
+    end
+
+    subgraph Domain["Domain - Código propio"]
+        USERSTATUS["UserStatus.Active"]
+    end
+
+    subgraph EFCore["Entity Framework Core"]
+        QUERY["AsNoTracking / SingleOrDefaultAsync"]
+    end
+
+    subgraph Database["PostgreSQL"]
+        SESSIONS[("UserSessions")]
+        USERS[("AspNetUsers")]
+    end
+
+    subgraph Result["Resultado de autenticación"]
+        ACCEPT["Sesión válida"]
+        REJECT["Autenticación rechazada"]
+    end
+
+    BEARER --> EVENT
+    EVENT -->|"sid + sub + nowUtc"| STORE
+    STORE --> ACTIVE
+
+    ACTIVE --> DB
+    DB --> QUERY
+
+    QUERY --> SESSIONS
+    QUERY --> USERS
+
+    SESSIONS --> SESSION
+    USERS --> IDENTITYUSER
+
+    SESSION -->|"SessionId / UserId / Status / ExpiresAtUtc"| ACTIVE
+    SESSION -->|"SecurityStamp almacenado"| ACTIVE
+
+    IDENTITYUSER -->|"SecurityStamp vigente"| ACTIVE
+    IDENTITYUSER --> USERSTATUS
+    USERSTATUS --> ACTIVE
+
+    ACTIVE -->|"Todas las condiciones válidas"| ACCEPT
+    ACTIVE -->|"Alguna condición inválida"| REJECT
+
+    ACCEPT --> EVENT
+    REJECT --> EVENT
+```
+
+**Relación principal:** La autenticación Bearer ahora depende tanto de la sesión persistida como del estado y sello de seguridad vigentes del usuario en ASP.NET Core Identity.
+
+#### 6. Resultado
+
+Se amplía `IsSessionActiveAsync()` para rechazar sesiones inexistentes, revocadas, vencidas, asociadas a usuarios inactivos o con un `SecurityStamp` diferente al vigente.
+
+Se incorpora una prueba xUnit con SQLite en memoria que verifica cuatro escenarios de rechazo, complementando la validación JWT Bearer implementada anteriormente.
+
 ---
 
 ### 7. Mapear rechazos a 401 authentication_required.
