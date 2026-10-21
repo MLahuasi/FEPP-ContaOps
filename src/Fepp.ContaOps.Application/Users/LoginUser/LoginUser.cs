@@ -65,7 +65,11 @@ public sealed class LoginUser
             return Result<TokenResult>.Failure(AuthenticationError.Instance);
         }
 
-        TokenResult token = await _tokenIssuer.IssueAsync(user, cancellationToken);
+        TokenResult token = await _tokenIssuer.IssueAsync(
+            user,
+            Guid.NewGuid(),
+            Guid.NewGuid().ToString("N"),
+            cancellationToken);
         return Result<TokenResult>.Success(token);
     }
 }

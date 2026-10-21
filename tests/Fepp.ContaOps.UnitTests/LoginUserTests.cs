@@ -113,7 +113,11 @@ public sealed class LoginUserTests
 
     private sealed class FakeTokenIssuer : ITokenIssuer
     {
-        public Task<TokenResult> IssueAsync(User user, CancellationToken cancellationToken = default)
+        public Task<TokenResult> IssueAsync(
+            User user,
+            Guid sessionId,
+            string jti,
+            CancellationToken cancellationToken = default)
         {
             return Task.FromResult(new TokenResult("token", 900));
         }

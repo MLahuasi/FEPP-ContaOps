@@ -35,7 +35,7 @@ public sealed class IdentityJwtCriteriaTests
         JwtTokenIssuer issuer = new(Options.Create(CreateJwtOptions()));
         User user = new(new UserId("admin-id"), "admin@example.com", [IdentitySeeder.AdminRole]);
 
-        TokenResult result = await issuer.IssueAsync(user);
+        TokenResult result = await issuer.IssueAsync(user, Guid.NewGuid(), Guid.NewGuid().ToString("N"));
         JwtSecurityToken token = new JwtSecurityTokenHandler().ReadJwtToken(result.AccessToken);
 
         Assert.Equal("FEPP-ContaOps.Tests", token.Issuer);
@@ -55,7 +55,10 @@ public sealed class IdentityJwtCriteriaTests
         JwtOptions options = CreateJwtOptions();
         JwtTokenIssuer issuer = new(Options.Create(options));
         User user = new(new UserId("user-id"), "user@example.com", [IdentitySeeder.UserRole]);
-        string accessToken = (await issuer.IssueAsync(user)).AccessToken;
+        string accessToken = (await issuer.IssueAsync(
+            user,
+            Guid.NewGuid(),
+            Guid.NewGuid().ToString("N"))).AccessToken;
 
         JwtOptions incorrectKey = CreateJwtOptions();
         incorrectKey.SigningKey = "different-signing-key-with-32-bytes!!";

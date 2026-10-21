@@ -8,6 +8,145 @@
 
 ### 2. Extender el contrato de emisión con SessionId y Jti.
 
+#### 1. Componentes implementados
+
+| Componente                 | Acción | Tipo             | Capa                       | Responsabilidad                                                            |
+| -------------------------- | ------ | ---------------- | -------------------------- | -------------------------------------------------------------------------- |
+| `ITokenIssuer`             | Update | Interfaz         | Application / Abstractions | Extiende el contrato de emisión incorporando `sessionId` y `jti`.          |
+| `LoginUser`                | Update | Caso de uso      | Application                | Genera identificadores de sesión y token para invocar el emisor.           |
+| `JwtTokenIssuer`           | Update | Servicio         | Infrastructure / Security  | Adapta la firma de `IssueAsync()` para recibir los nuevos identificadores. |
+| `IdentityJwtCriteriaTests` | Update | Clase de pruebas | Tests                      | Actualiza las invocaciones del emisor JWT.                                 |
+| `LoginUserTests`           | Update | Clase de pruebas | Tests                      | Adapta `FakeTokenIssuer` al nuevo contrato.                                |
+
+**Contrato actualizado:**
+
+```csharp
+Task<TokenResult> IssueAsync(
+    User user,
+    Guid sessionId,
+    string jti,
+    CancellationToken cancellationToken = default);
+```
+
+#### 2. Métodos principales
+
+| Clase                      | Método                                                       | Responsabilidad                                                                                       |
+| -------------------------- | ------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------- |
+| `ITokenIssuer`             | `IssueAsync()`                                               | Define la emisión de tokens asociados a un identificador de sesión y un identificador único de token. |
+| `LoginUser`                | `ExecuteAsync()`                                             | Valida las credenciales y genera `sessionId` y `jti` antes de solicitar el token.                     |
+| `JwtTokenIssuer`           | `IssueAsync()`                                               | Implementa el contrato actualizado y genera un JWT firmado.                                           |
+| `IdentityJwtCriteriaTests` | `JwtIssuer_EmitsAdminTokenWithExpectedClaims()`              | Verifica los claims existentes y la configuración del JWT.                                            |
+| `IdentityJwtCriteriaTests` | `JwtValidation_RejectsIncorrectSignatureIssuerAndAudience()` | Verifica el rechazo de JWT con firma, emisor o audiencia incorrectos.                                 |
+| `FakeTokenIssuer`          | `IssueAsync()`                                               | Implementa el contrato actualizado para las pruebas de `LoginUser`.                                   |
+
+**Parámetros incorporados:**
+
+| Parámetro   | Tipo     | Propósito                              | Implementación actual                                                                            |
+| ----------- | -------- | -------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `sessionId` | `Guid`   | Identificar la sesión asociada al JWT. | `LoginUser` genera un GUID, pero `JwtTokenIssuer` todavía no lo incorpora al token.              |
+| `jti`       | `string` | Identificar individualmente el JWT.    | `LoginUser` genera un identificador, pero `JwtTokenIssuer` genera otro GUID para el claim `jti`. |
+
+#### 3. Componentes de .NET y bibliotecas externas
+
+| Componente / Método       | Origen                                     | Función                                        | Uso en el proyecto                                 |
+| ------------------------- | ------------------------------------------ | ---------------------------------------------- | -------------------------------------------------- |
+| `Guid.NewGuid()`          | .NET / System                              | Genera identificadores GUID.                   | Crea `sessionId` y `jti` desde `LoginUser`.        |
+| `Guid.ToString("N")`      | .NET / System                              | Representa un GUID sin separadores.            | Genera el identificador textual `jti`.             |
+| `CancellationToken`       | .NET / System.Threading                    | Permite cancelar operaciones asíncronas.       | Se mantiene en el contrato de emisión.             |
+| `JwtRegisteredClaimNames` | Biblioteca Microsoft.IdentityModel / JWT   | Proporciona nombres registrados de claims JWT. | Define `sub`, `email` y `jti`.                     |
+| `Claim`                   | .NET / System.Security.Claims              | Representa información de identidad.           | Construye los claims del JWT.                      |
+| `JwtSecurityToken`        | Biblioteca System.IdentityModel.Tokens.Jwt | Representa un JWT.                             | Construye el token con claims, vigencia y firma.   |
+| `JwtSecurityTokenHandler` | Biblioteca System.IdentityModel.Tokens.Jwt | Procesa y serializa JWT.                       | Convierte el token firmado en una cadena.          |
+| `SigningCredentials`      | Biblioteca Microsoft.IdentityModel.Tokens  | Define credenciales criptográficas de firma.   | Firma el JWT mediante HMAC-SHA256.                 |
+| `ITokenIssuer`            | Código propio / Application                | Puerto de emisión de tokens.                   | Desacopla el caso de uso de la implementación JWT. |
+| `JwtTokenIssuer`          | Código propio / Infrastructure             | Adaptador de emisión JWT.                      | Implementa `ITokenIssuer`.                         |
+| `TokenResult`             | Código propio / Application                | Resultado de emisión.                          | Devuelve `AccessToken` y `ExpiresIn`.              |
+
+#### 4. Flujo funcional
+
+| Paso | Operación                                         | Componente                             |
+| ---- | ------------------------------------------------- | -------------------------------------- |
+| 1    | Buscar el usuario mediante su correo electrónico. | `LoginUser` → `IUserRepository`        |
+| 2    | Verificar las credenciales del usuario.           | `LoginUser` → `IUserCredentialService` |
+| 3    | Generar un GUID para identificar la sesión.       | `LoginUser`                            |
+| 4    | Generar un GUID textual para identificar el JWT.  | `LoginUser`                            |
+| 5    | Invocar `IssueAsync(user, sessionId, jti)`.       | `ITokenIssuer`                         |
+| 6    | Construir y firmar el JWT.                        | `JwtTokenIssuer`                       |
+| 7    | Devolver `AccessToken` y `ExpiresIn`.             | `TokenResult`                          |
+
+**Estado de los identificadores:**
+
+| Identificador | Comportamiento implementado      | Limitación                                                                                  |
+| ------------- | -------------------------------- | ------------------------------------------------------------------------------------------- |
+| `sessionId`   | Se genera y transmite al emisor. | No se incorpora a los claims ni se vincula con una sesión persistida en el código mostrado. |
+| `jti`         | Se genera y transmite al emisor. | El JWT utiliza un GUID diferente, generado internamente por `JwtTokenIssuer`.               |
+
+**Alcance:** El contrato y sus implementaciones aceptan los nuevos parámetros, pero todavía no se establece una vinculación efectiva entre el JWT y una sesión persistida.
+
+#### 5. Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    subgraph Application["Application - Código propio"]
+        LOGIN["LoginUser.ExecuteAsync()"]
+        REPO["IUserRepository"]
+        CRED["IUserCredentialService"]
+        ISSUER["ITokenIssuer.IssueAsync()"]
+        RESULT["TokenResult"]
+    end
+
+    subgraph Domain["Domain - Código propio"]
+        USER["User"]
+    end
+
+    subgraph Infrastructure["Infrastructure - Código propio"]
+        JWT["JwtTokenIssuer"]
+    end
+
+    subgraph Framework[".NET / Bibliotecas JWT"]
+        GUID["Guid.NewGuid()"]
+        CLAIMS["Claim / JwtRegisteredClaimNames"]
+        TOKEN["JwtSecurityToken"]
+        SIGN["SigningCredentials"]
+        HANDLER["JwtSecurityTokenHandler"]
+    end
+
+    subgraph Tests["Tests"]
+        JWTTEST["IdentityJwtCriteriaTests"]
+        LOGINTEST["LoginUserTests"]
+        FAKE["FakeTokenIssuer"]
+    end
+
+    LOGIN --> REPO
+    REPO -.-> USER
+    LOGIN --> CRED
+
+    LOGIN --> GUID
+    GUID -->|"sessionId + jti"| ISSUER
+
+    ISSUER -.->|"Implementado por"| JWT
+    JWT --> CLAIMS
+    CLAIMS --> TOKEN
+    JWT --> SIGN
+    SIGN --> TOKEN
+    TOKEN --> HANDLER
+
+    JWT --> RESULT
+    RESULT --> LOGIN
+
+    JWTTEST -.->|"Prueba"| JWT
+    LOGINTEST --> FAKE
+    FAKE -.->|"Implementa"| ISSUER
+```
+
+**Nota:** El diagrama representa la transmisión de `sessionId` y `jti` hasta el emisor, no su inclusión efectiva en el JWT.
+
+#### 6. Resultado
+
+Se extiende `ITokenIssuer` para recibir `sessionId` y `jti`, actualizando `LoginUser`, `JwtTokenIssuer` y sus pruebas.
+
+La implementación todavía no incorpora `sessionId` al JWT ni utiliza el `jti` recibido; ambos comportamientos quedan pendientes en el código proporcionado.
+
 ---
 
 ### 3. Configurar claims, expiración de 15 minutos, issuer y audience.

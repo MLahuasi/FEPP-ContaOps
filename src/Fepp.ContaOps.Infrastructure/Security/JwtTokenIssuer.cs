@@ -31,10 +31,14 @@ public sealed class JwtTokenIssuer : ITokenIssuer
     /// Emite un JWT con la identidad y los roles del usuario autenticado.
     /// </summary>
     /// <param name="user">Usuario autenticado.</param>
+    /// <param name="sessionId">Identificador de la sesión asociada al token.</param>
+    /// <param name="jti">Identificador único del token.</param>
     /// <param name="cancellationToken">Token de cancelación.</param>
     /// <returns>Token firmado y duración en segundos.</returns>
     public Task<TokenResult> IssueAsync(
         User user,
+        Guid sessionId,
+        string jti,
         CancellationToken cancellationToken = default)
     {
         DateTime issuedAt = DateTime.UtcNow;
