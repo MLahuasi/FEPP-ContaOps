@@ -799,7 +799,7 @@ Las pruebas utilizan `AppDbContext` y los componentes criptográficos reales, si
 
 ---
 
-### ?. Ajustes por pruebas manuales
+### 11. Ajustes por pruebas manuales
 
 **Levantar PostgreSQL y pgAdmin:**
 
@@ -817,7 +817,7 @@ dotnet test FEPP-ContaOps.slnx
 
 ---
 
-### ?. Validación, ejecución local y Git
+### 12. Validación, ejecución local y Git
 
 **Prerrequisitos:** Docker disponible; crear un archivo `.env` local a partir de `.env.example` y sustituir todos los valores de ejemplo por credenciales y secretos propios. **No subir `.env` a Git.**
 
@@ -829,7 +829,7 @@ dotnet test FEPP-ContaOps.slnx
 
 ---
 
-### ?. Validación del spec (flujo de trabajo existente):
+### 13. Validación del spec (flujo de trabajo existente):
 
 ```powershell
 /spec-acceptance-validator @specs/08-persistencia-sesiones-refresh-tokens.md
@@ -839,11 +839,11 @@ Revisar el spec: [`08-persistencia-sesiones-refresh-tokens.md`](../08-persistenc
 
 ---
 
-### ?. Diagrama Final: Arquitectura del spec-08-persistencia-sesiones-refresh-tokens
+### 14. Diagrama Final: Arquitectura del spec-08-persistencia-sesiones-refresh-tokens
 
 ---
 
-### ?. Comandos Git / PR\*\* (una vez validada la implementación y revisados los cambios)
+### 15. Comandos Git / PR\*\* (una vez validada la implementación y revisados los cambios)
 
 ```powershell
 git add .

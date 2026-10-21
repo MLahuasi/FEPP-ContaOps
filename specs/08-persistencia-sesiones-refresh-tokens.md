@@ -1,6 +1,6 @@
 # SPEC 08 — Persistencia de sesiones y refresh tokens
 
-> **Estado:** Aprobado
+> **Estado:** Implementado
 > **Dependencias:** SPEC 07
 > **Fecha:** 2026-10-20
 > **Objetivo:** Crear el almacenamiento seguro de una sesión por usuario y de refresh tokens rotatorios sin persistir JWT completos.
@@ -44,12 +44,12 @@
 
 ## Criterios de aceptación
 
-- [ ] Un usuario tiene como máximo una sesión activa.
-- [ ] Una sesión tiene como máximo un refresh token utilizable.
-- [ ] El JWT completo no se persiste.
-- [ ] Solo se persisten hashes de refresh tokens.
-- [ ] La revocación conserva trazabilidad suficiente sin secretos.
-- [ ] Las tablas y restricciones se crean en una base nueva.
+- [x] Un usuario tiene como máximo una sesión activa.
+- [x] Una sesión tiene como máximo un refresh token utilizable.
+- [x] El JWT completo no se persiste.
+- [x] Solo se persisten hashes de refresh tokens.
+- [x] La revocación conserva trazabilidad suficiente sin secretos.
+- [x] Las tablas y restricciones se crean en una base nueva.
 
 ## Decisiones
 
