@@ -116,6 +116,7 @@ public static class DependencyInjection
         services.AddSingleton<IOpaqueTokenGenerator, OpaqueTokenGenerator>();
         services.AddSingleton<OpaqueTokenCryptography>();
         services.AddScoped<IOpaqueTokenStore, OpaqueTokenStore>();
+        services.AddScoped<UserSessionStore>();
         services.AddScoped<IdentitySeeder>();
         return services;
     }

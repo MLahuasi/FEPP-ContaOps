@@ -329,6 +329,41 @@ docker compose ps
 docker compose logs --tail=50 pgadmin
 ```
 
+#### `ERR_EMPTY_RESPONSE` al abrir pgAdmin
+
+En el primer arranque, pgAdmin puede tardar en completar la inicialización de
+su base interna. Durante ese intervalo el navegador puede mostrar que
+`localhost` no envió datos. El usuario debe:
+
+1. No ejecutar `docker compose down --volumes`, porque elimina la configuración
+   local de pgAdmin y los datos locales de PostgreSQL.
+2. Comprobar el estado y los logs:
+
+   ```powershell
+   docker compose ps
+   docker compose logs --tail=100 pgadmin
+   ```
+
+3. Esperar hasta que pgAdmin termine la inicialización y los logs indiquen que
+   Gunicorn está escuchando en `http://[::]:80`; el contenedor debe aparecer
+   como `Up`.
+4. Recargar `http://localhost:5050/`. Si continúa sin responder después de
+   finalizar la inicialización, reiniciar solo pgAdmin:
+
+   ```powershell
+   docker compose restart pgadmin
+   ```
+
+5. Esperar nuevamente y abrir la URL. Si persiste el error, revisar los logs:
+
+   ```powershell
+   docker compose logs --tail=200 pgadmin
+   ```
+
+Cuando aparezca la pantalla de login, iniciar sesión con
+`PGADMIN_DEFAULT_EMAIL` y `PGADMIN_DEFAULT_PASSWORD`, y registrar el servidor
+con los valores indicados arriba.
+
 PostgreSQL debe aparecer como `healthy`. Para detener servicios conservando
 datos usar `docker compose down`. `docker compose down --volumes` elimina los
 datos locales.
