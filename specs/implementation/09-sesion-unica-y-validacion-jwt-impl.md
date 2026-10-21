@@ -971,6 +971,176 @@ La prueba verifica que el JWT del primer equipo sea rechazado con HTTP 401 y que
 
 ### 9. Probar cambio de stamp y expiración con PostgreSQL real.
 
+#### 1. Componentes implementados
+
+| Componente                                                    | Acción | Tipo                            | Capa                         | Responsabilidad                                                                                 |
+| ------------------------------------------------------------- | ------ | ------------------------------- | ---------------------------- | ----------------------------------------------------------------------------------------------- |
+| `AuthIntegrationTests`                                        | Update | Clase de pruebas de integración | Tests                        | Incorpora escenarios de invalidación de JWT mediante cambios persistidos en PostgreSQL.         |
+| `SecurityStampChangeAndSessionExpiration_RejectBearerToken()` | Create | Prueba xUnit                    | Tests                        | Verifica que un cambio de `SecurityStamp` o la expiración de la sesión provoquen HTTP 401.      |
+| `SendProtectedAsync()`                                        | Create | Método auxiliar                 | Tests                        | Ejecuta una solicitud HTTP autenticada contra un endpoint protegido utilizando el JWT recibido. |
+| `TestApiFactory`                                              | Uso    | Fábrica de aplicación           | Tests                        | Ejecuta la API con PostgreSQL efímero y configuración controlada.                               |
+| `UserSession`                                                 | Uso    | Entidad de persistencia         | Infrastructure / Persistence | Permite modificar la expiración de una sesión para comprobar su invalidación.                   |
+| `ApplicationIdentityUser`                                     | Uso    | Entidad de Identity             | Infrastructure / Identity    | Representa al usuario cuyo `SecurityStamp` se modifica durante la prueba.                       |
+
+#### 2. Métodos principales
+
+| Clase                                  | Método                                                        | Responsabilidad                                                                                                   |
+| -------------------------------------- | ------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `AuthIntegrationTests`                 | `SecurityStampChangeAndSessionExpiration_RejectBearerToken()` | Comprueba mediante solicitudes HTTP que los cambios de seguridad y expiración invalidan JWT previamente emitidos. |
+| `AuthIntegrationTests`                 | `LoginAndReadTokenAsync()`                                    | Autentica al administrador y recupera su JWT.                                                                     |
+| `AuthIntegrationTests`                 | `SendProtectedAsync()`                                        | Envía una solicitud autenticada a `/api/users/invitations`.                                                       |
+| `UserManager<ApplicationIdentityUser>` | `UpdateSecurityStampAsync()`                                  | Actualiza el sello de seguridad del usuario persistido.                                                           |
+| `AppDbContext`                         | `SaveChangesAsync()`                                          | Persiste la modificación de `ExpiresAtUtc` en PostgreSQL.                                                         |
+| `TestApiFactory`                       | `ConfigureWebHost()`                                          | Configura la aplicación de pruebas y su conexión con PostgreSQL.                                                  |
+
+#### 3. Componentes de .NET y bibliotecas externas
+
+| Componente / Método                      | Origen                                          | Función                                               | Uso en el proyecto                                                    |
+| ---------------------------------------- | ----------------------------------------------- | ----------------------------------------------------- | --------------------------------------------------------------------- |
+| `[Fact]`                                 | xUnit                                           | Identifica una prueba automatizada.                   | Define la prueba de invalidación de JWT.                              |
+| `Assert.Equal()`                         | xUnit                                           | Verifica valores esperados.                           | Comprueba las respuestas HTTP 401.                                    |
+| `Assert.True()`                          | xUnit                                           | Verifica condiciones booleanas.                       | Comprueba que Identity actualice correctamente el `SecurityStamp`.    |
+| `WebApplicationFactory<Program>`         | ASP.NET Core / Microsoft.AspNetCore.Mvc.Testing | Ejecuta la aplicación para pruebas de integración.    | Proporciona la API bajo prueba.                                       |
+| `HttpClient`                             | .NET / System.Net.Http                          | Ejecuta solicitudes HTTP.                             | Realiza login y solicitudes protegidas.                               |
+| `HttpRequestMessage`                     | .NET / System.Net.Http                          | Representa una solicitud HTTP.                        | Construye la solicitud al endpoint protegido.                         |
+| `JsonContent.Create()`                   | .NET / System.Net.Http.Json                     | Serializa objetos como contenido JSON.                | Construye el cuerpo de la solicitud.                                  |
+| `AuthenticationHeaderValue`              | .NET / System.Net.Http.Headers                  | Representa encabezados de autenticación.              | Envía el JWT mediante Bearer.                                         |
+| `JwtSecurityTokenHandler.ReadJwtToken()` | System.IdentityModel.Tokens.Jwt                 | Lee el contenido de un JWT.                           | Recupera el claim `sid` para identificar la sesión.                   |
+| `JwtRegisteredClaimNames.Sid`            | System.IdentityModel.Tokens.Jwt                 | Identifica el claim estándar de sesión.               | Permite obtener `SessionId` desde el JWT.                             |
+| `IServiceScope`                          | .NET / Dependency Injection                     | Delimita el ciclo de vida de servicios Scoped.        | Permite resolver servicios de Identity y EF Core durante las pruebas. |
+| `GetRequiredService<T>()`                | .NET / Dependency Injection                     | Resuelve servicios registrados.                       | Obtiene `UserManager` y `AppDbContext`.                               |
+| `UserManager<TUser>`                     | ASP.NET Core Identity                           | Administra usuarios y sus propiedades de seguridad.   | Permite localizar al usuario y modificar su sello de seguridad.       |
+| `UpdateSecurityStampAsync()`             | ASP.NET Core Identity                           | Actualiza el sello de seguridad de un usuario.        | Invalida la correspondencia con el sello almacenado en la sesión.     |
+| `IdentityResult`                         | ASP.NET Core Identity                           | Representa el resultado de una operación de Identity. | Confirma la actualización del `SecurityStamp`.                        |
+| `SingleAsync()`                          | Entity Framework Core                           | Obtiene un único registro.                            | Localiza la sesión persistida mediante `SessionId`.                   |
+| `SaveChangesAsync()`                     | Entity Framework Core                           | Persiste las modificaciones pendientes.               | Guarda la nueva fecha de expiración.                                  |
+| `PostgreSqlContainer`                    | Biblioteca externa / Testcontainers.PostgreSql  | Administra PostgreSQL en un contenedor de pruebas.    | Proporciona la base de datos real y efímera.                          |
+| `AppDbContext`                           | Código propio / Infrastructure                  | Contexto EF Core de la aplicación.                    | Accede a las sesiones persistidas.                                    |
+| `UserSessionStore`                       | Código propio / Infrastructure                  | Valida sesiones durante la autenticación Bearer.      | Rechaza sesiones con sello diferente o expiración vencida.            |
+
+#### 4. Flujo funcional
+
+**Prueba: `SecurityStampChangeAndSessionExpiration_RejectBearerToken()`**
+
+| Paso | Operación                                                        | Componente                        |
+| ---- | ---------------------------------------------------------------- | --------------------------------- |
+| 1    | Inicializar la API conectada a PostgreSQL efímero.               | `TestApiFactory` / Testcontainers |
+| 2    | Autenticar al administrador y obtener un JWT válido.             | `LoginAndReadTokenAsync()`        |
+| 3    | Crear un ámbito de dependencias.                                 | `IServiceScope`                   |
+| 4    | Obtener el usuario administrador desde Identity.                 | `UserManager`                     |
+| 5    | Actualizar y persistir su `SecurityStamp`.                       | `UpdateSecurityStampAsync()`      |
+| 6    | Enviar el JWT original al endpoint protegido.                    | `SendProtectedAsync()`            |
+| 7    | Verificar que la API devuelve HTTP 401.                          | xUnit                             |
+| 8    | Realizar un nuevo login y obtener otro JWT.                      | `LoginAndReadTokenAsync()`        |
+| 9    | Extraer el identificador de sesión del claim `sid`.              | `JwtSecurityTokenHandler`         |
+| 10   | Consultar la sesión correspondiente en PostgreSQL.               | `AppDbContext.UserSessions`       |
+| 11   | Modificar `ExpiresAtUtc` a una fecha anterior al momento actual. | `UserSession`                     |
+| 12   | Persistir la expiración de la sesión.                            | `SaveChangesAsync()`              |
+| 13   | Reutilizar el JWT emitido antes de modificar la sesión.          | `SendProtectedAsync()`            |
+| 14   | Verificar que la API devuelve HTTP 401.                          | xUnit                             |
+
+**Escenarios verificados:**
+
+| Escenario                 | Modificación persistida                                     | Validación Bearer                                                | Resultado esperado |
+| ------------------------- | ----------------------------------------------------------- | ---------------------------------------------------------------- | ------------------ |
+| Cambio de `SecurityStamp` | Se actualiza el sello de seguridad del usuario en Identity. | El sello vigente no coincide con el almacenado en `UserSession`. | `401 Unauthorized` |
+| Expiración de sesión      | Se establece `ExpiresAtUtc` en el pasado.                   | La sesión deja de cumplir `ExpiresAtUtc > nowUtc`.               | `401 Unauthorized` |
+
+**Relación con `IsSessionActiveAsync()`:**
+
+| Condición                                     | Comportamiento                                          |
+| --------------------------------------------- | ------------------------------------------------------- |
+| `session.SecurityStamp == user.SecurityStamp` | Permite continuar si las demás condiciones son válidas. |
+| `session.SecurityStamp != user.SecurityStamp` | Rechaza la sesión.                                      |
+| `session.ExpiresAtUtc > nowUtc`               | Considera vigente la sesión.                            |
+| `session.ExpiresAtUtc <= nowUtc`              | Rechaza la sesión.                                      |
+
+**Alcance:**
+
+- La prueba utiliza PostgreSQL real mediante un contenedor efímero, no SQLite ni una simulación de persistencia.
+- Se comprueba el rechazo HTTP después de modificar los registros persistidos.
+- El JWT permanece sin modificaciones; su invalidación depende del estado de la sesión y del usuario.
+- La prueba no comprueba directamente que `UserSession.Status` cambie a `Expired` o `Revoked`; verifica el rechazo de autenticación.
+- El código implementa los escenarios, pero no se proporciona el resultado de ejecución de la prueba.
+
+#### 5. Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    subgraph Tests["Tests - Integration"]
+        TEST["AuthIntegrationTests"]
+        CASE["SecurityStampChangeAndSessionExpiration_RejectBearerToken()"]
+        LOGIN["LoginAndReadTokenAsync()"]
+        PROTECTED["SendProtectedAsync()"]
+        FACTORY["TestApiFactory"]
+    end
+
+    subgraph Presentation["Presentation - ASP.NET Core API"]
+        AUTH["POST /api/auth/login"]
+        API["POST /api/users/invitations"]
+        BEARER["JWT Bearer - OnTokenValidated"]
+    end
+
+    subgraph Infrastructure["Infrastructure - Código propio"]
+        STORE["UserSessionStore"]
+        ACTIVE["IsSessionActiveAsync()"]
+        DB["AppDbContext"]
+        IDENTITYUSER["ApplicationIdentityUser"]
+        SESSION["UserSession"]
+    end
+
+    subgraph Framework["ASP.NET Core Identity / EF Core"]
+        UM["UserManager"]
+        STAMP["UpdateSecurityStampAsync()"]
+        SAVE["SaveChangesAsync()"]
+    end
+
+    subgraph External["Testcontainers / PostgreSQL"]
+        CONTAINER["PostgreSqlContainer"]
+        PG[("PostgreSQL 16")]
+        USERS[("AspNetUsers")]
+        SESSIONS[("UserSessions")]
+    end
+
+    TEST --> CASE
+    CASE --> FACTORY
+    FACTORY --> CONTAINER
+    CONTAINER --> PG
+
+    CASE --> LOGIN
+    LOGIN --> AUTH
+
+    CASE -->|"Modificar SecurityStamp"| UM
+    UM --> STAMP
+    STAMP --> IDENTITYUSER
+    IDENTITYUSER --> USERS
+
+    CASE -->|"Modificar ExpiresAtUtc"| DB
+    DB --> SESSION
+    SESSION --> SAVE
+    SAVE --> SESSIONS
+
+    CASE --> PROTECTED
+    PROTECTED -->|"JWT original"| API
+
+    API --> BEARER
+    BEARER --> STORE
+    STORE --> ACTIVE
+    ACTIVE --> DB
+
+    DB --> USERS
+    DB --> SESSIONS
+
+    ACTIVE -->|"Stamp diferente"| REJECT1["401 Unauthorized"]
+    ACTIVE -->|"Sesión vencida"| REJECT2["401 Unauthorized"]
+```
+
+#### 6. Resultado
+
+Se incorpora una prueba de integración con PostgreSQL real para verificar que un cambio de `SecurityStamp` o la expiración de una sesión invalidan su JWT Bearer.
+
+Ambos escenarios se comprueban mediante solicitudes HTTP que deben devolver `401 Unauthorized`, sin modificar el JWT originalmente emitido.
+
 ---
 
 ### 10. Ejecutar build, pruebas y verificación de pgAdmin sin cambios de esquema.
