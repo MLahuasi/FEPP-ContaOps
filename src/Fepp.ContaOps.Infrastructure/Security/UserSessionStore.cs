@@ -1,5 +1,6 @@
 using System.Data;
 using Fepp.ContaOps.Application.Abstractions;
+using Fepp.ContaOps.Domain.Users;
 using Fepp.ContaOps.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 
@@ -8,7 +9,7 @@ namespace Fepp.ContaOps.Infrastructure.Security;
 /// <summary>
 /// Almacena una única sesión activa por usuario y su refresh token inicial.
 /// </summary>
-public sealed class UserSessionStore
+public sealed class UserSessionStore : IUserSessionStore
 {
     /// <summary>
     /// Motivo seguro aplicado a la sesión anterior cuando se reemplaza.
@@ -133,6 +134,30 @@ public sealed class UserSessionStore
             await transaction.RollbackAsync(cancellationToken);
             throw;
         }
+    }
+
+    /// <summary>
+    /// Crea la sesión de login y reemplaza cualquier sesión activa anterior.
+    /// </summary>
+    /// <param name="user">Usuario autenticado.</param>
+    /// <param name="createdAtUtc">Instante UTC de creación.</param>
+    /// <param name="expiresAtUtc">Instante UTC de expiración.</param>
+    /// <param name="cancellationToken">Token de cancelación.</param>
+    /// <returns>Identificador de la nueva sesión.</returns>
+    async Task<UserSessionResult> IUserSessionStore.ReplaceActiveSessionAsync(
+        User user,
+        DateTimeOffset createdAtUtc,
+        DateTimeOffset expiresAtUtc,
+        CancellationToken cancellationToken)
+    {
+        UserSessionCreationResult result = await ReplaceActiveSessionAsync(
+            user.Id.Value,
+            user.SecurityStamp,
+            createdAtUtc,
+            expiresAtUtc,
+            expiresAtUtc,
+            cancellationToken);
+        return new UserSessionResult(result.SessionId);
     }
 
     /// <summary>

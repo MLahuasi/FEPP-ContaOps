@@ -300,6 +300,172 @@ Se establece una duración predeterminada de 15 minutos y se actualizan las prue
 
 ### 4. Crear sesión y revocar la anterior tras validar login.
 
+#### 1. Componentes implementados
+
+| Componente               | Acción | Tipo                     | Capa                       | Responsabilidad                                                                                   |
+| ------------------------ | ------ | ------------------------ | -------------------------- | ------------------------------------------------------------------------------------------------- |
+| `IUserSessionStore`      | Create | Interfaz / Puerto        | Application / Abstractions | Define el contrato para crear una sesión autenticada y reemplazar la anterior.                    |
+| `UserSessionResult`      | Create | Record                   | Application / Abstractions | Devuelve el identificador de la sesión persistida.                                                |
+| `LoginUser`              | Update | Caso de uso              | Application                | Crea la sesión después de validar las credenciales y utiliza su identificador para emitir el JWT. |
+| `User`                   | Update | Entidad                  | Domain / Users             | Incorpora `SecurityStamp` al modelo de usuario.                                                   |
+| `IdentityUserRepository` | Update | Repositorio / Adaptador  | Infrastructure / Identity  | Obtiene el `SecurityStamp` desde ASP.NET Core Identity y lo incorpora al usuario de Domain.       |
+| `UserSessionStore`       | Update | Servicio de persistencia | Infrastructure / Security  | Implementa `IUserSessionStore` reutilizando la operación transaccional de reemplazo de sesiones.  |
+| `DependencyInjection`    | Update | Clase estática           | Infrastructure             | Registra `IUserSessionStore` utilizando la instancia de `UserSessionStore`.                       |
+| `LoginUserTests`         | Update | Clase de pruebas         | Tests                      | Adapta las pruebas del login al nuevo contrato de sesiones.                                       |
+| `FakeUserSessionStore`   | Create | Implementación de prueba | Tests                      | Simula la creación de una sesión sin utilizar persistencia real.                                  |
+
+#### 2. Métodos principales
+
+| Clase                                  | Método                                          | Responsabilidad                                                                                                        |
+| -------------------------------------- | ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `LoginUser`                            | `ExecuteAsync()`                                | Valida credenciales, crea una sesión persistida y emite un JWT asociado a su `SessionId`.                              |
+| `IUserSessionStore`                    | `ReplaceActiveSessionAsync()`                   | Define el reemplazo de la sesión activa de un usuario autenticado.                                                     |
+| `UserSessionStore`                     | `IUserSessionStore.ReplaceActiveSessionAsync()` | Adapta el contrato de Application a la implementación existente de Infrastructure.                                     |
+| `UserSessionStore`                     | `ReplaceActiveSessionAsync()`                   | Revoca sesiones activas anteriores y sus refresh tokens utilizables; crea una nueva sesión y su refresh token inicial. |
+| `IdentityUserRepository`               | `FindByEmailAsync()`                            | Obtiene el usuario, sus roles y su `SecurityStamp` desde Identity.                                                     |
+| `UserManager<ApplicationIdentityUser>` | `GetSecurityStampAsync()`                       | Obtiene el sello de seguridad vigente del usuario.                                                                     |
+| `DependencyInjection`                  | `AddInfrastructure()`                           | Registra `IUserSessionStore` y su implementación.                                                                      |
+
+**Adaptación del contrato:**
+
+| Operación                                       | Entrada                                                     | Resultado                                            |
+| ----------------------------------------------- | ----------------------------------------------------------- | ---------------------------------------------------- |
+| `IUserSessionStore.ReplaceActiveSessionAsync()` | `User`, fecha de creación y expiración                      | `UserSessionResult(SessionId)`                       |
+| `UserSessionStore.ReplaceActiveSessionAsync()`  | `UserId`, `SecurityStamp`, fechas de sesión y refresh token | `UserSessionCreationResult(SessionId, RefreshToken)` |
+
+La implementación explícita de `IUserSessionStore` delega en el método existente de `UserSessionStore`, utilizando la misma fecha de expiración para la sesión y el refresh token.
+
+#### 3. Componentes de .NET y bibliotecas externas
+
+| Componente / Método           | Origen                         | Función                                              | Uso en el proyecto                                                                 |
+| ----------------------------- | ------------------------------ | ---------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `UserManager<TUser>`          | ASP.NET Core Identity          | Administra usuarios y sus propiedades de seguridad.  | Permite consultar el `SecurityStamp` del usuario.                                  |
+| `GetSecurityStampAsync()`     | ASP.NET Core Identity          | Recupera el sello de seguridad vigente.              | Proporciona el valor que se almacena al crear la sesión.                           |
+| `AddScoped<T>()`              | .NET / Dependency Injection    | Registra servicios con ciclo de vida Scoped.         | Mantiene el registro de `UserSessionStore`.                                        |
+| `GetRequiredService<T>()`     | .NET / Dependency Injection    | Resuelve un servicio registrado.                     | Permite que `IUserSessionStore` utilice la instancia Scoped de `UserSessionStore`. |
+| `DateTimeOffset.UtcNow`       | .NET / System                  | Obtiene la fecha y hora UTC.                         | Establece el instante de creación de la sesión.                                    |
+| `DateTimeOffset.AddMinutes()` | .NET / System                  | Calcula una fecha posterior.                         | Establece una vigencia de 15 minutos para la sesión.                               |
+| `Guid.NewGuid()`              | .NET / System                  | Genera identificadores GUID.                         | Genera el `jti` enviado al emisor JWT.                                             |
+| `IUserSessionStore`           | Código propio / Application    | Contrato de persistencia de sesiones.                | Desacopla `LoginUser` de Infrastructure.                                           |
+| `UserSessionStore`            | Código propio / Infrastructure | Gestiona sesiones y refresh tokens mediante EF Core. | Reemplaza la sesión activa después de validar credenciales.                        |
+| `ITokenIssuer`                | Código propio / Application    | Contrato de emisión de tokens.                       | Emite el JWT asociado al identificador de sesión persistido.                       |
+
+#### 4. Flujo funcional
+
+**Inicio de sesión: `LoginUser.ExecuteAsync()`**
+
+| Paso | Operación                                                                          | Componente                          |
+| ---- | ---------------------------------------------------------------------------------- | ----------------------------------- |
+| 1    | Buscar el usuario mediante su correo electrónico.                                  | `IUserRepository`                   |
+| 2    | Obtener sus roles y `SecurityStamp`.                                               | `IdentityUserRepository` / Identity |
+| 3    | Verificar la contraseña.                                                           | `IUserCredentialService`            |
+| 4    | Rechazar credenciales inválidas sin crear una sesión.                              | `LoginUser`                         |
+| 5    | Obtener la fecha UTC y calcular una expiración de 15 minutos.                      | `LoginUser`                         |
+| 6    | Solicitar el reemplazo de la sesión activa.                                        | `IUserSessionStore`                 |
+| 7    | Revocar las sesiones anteriores y sus refresh tokens utilizables.                  | `UserSessionStore`                  |
+| 8    | Crear una sesión activa con el `SecurityStamp` vigente y un refresh token inicial. | `UserSessionStore`                  |
+| 9    | Persistir los cambios mediante una transacción serializable.                       | EF Core / `AppDbContext`            |
+| 10   | Devolver el `SessionId` persistido.                                                | `UserSessionResult`                 |
+| 11   | Generar un `jti` y emitir el JWT utilizando el `SessionId` real.                   | `ITokenIssuer`                      |
+| 12   | Devolver el access token y su duración.                                            | `TokenResult`                       |
+
+**Reglas implementadas:**
+
+| Regla                        | Implementación                                                                 |
+| ---------------------------- | ------------------------------------------------------------------------------ |
+| Credenciales válidas         | La creación de sesión ocurre únicamente después de verificar la contraseña.    |
+| Sesión única                 | Se revocan las sesiones activas anteriores antes de crear una nueva.           |
+| Revocación de refresh tokens | Se revocan los tokens no consumidos ni revocados de las sesiones reemplazadas. |
+| Identificador persistido     | El JWT recibe el `SessionId` devuelto por `UserSessionStore`.                  |
+| Sello de seguridad           | Se obtiene desde Identity y se almacena en la nueva sesión.                    |
+| Vigencia de sesión           | Se establece en 15 minutos desde la ejecución del login.                       |
+| Vigencia del refresh token   | El adaptador utiliza la misma fecha de expiración que la sesión.               |
+| Persistencia transaccional   | El reemplazo de sesión utiliza una transacción serializable.                   |
+| Credenciales inválidas       | Se devuelve `AuthenticationError` sin invocar el almacén de sesiones.          |
+
+**Alcance de la implementación:**
+
+- `UserSessionStore` genera un refresh token inicial, pero la implementación de `IUserSessionStore` devuelve únicamente `SessionId`. El login no entrega ese refresh token al cliente.
+- La emisión del JWT ocurre después de confirmar la transacción de creación de sesión; ambas operaciones no forman parte de una misma transacción.
+- La sesión persistida y el refresh token inicial tienen una vigencia de 15 minutos en este flujo.
+- `LoginUserTests` incorpora `FakeUserSessionStore`, pero las pruebas mostradas no verifican explícitamente la revocación de sesiones anteriores ni la correspondencia entre el `SessionId` persistido y el claim `sid` del JWT.
+
+#### 5. Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    subgraph Application["Application - Código propio"]
+        LOGIN["LoginUser.ExecuteAsync()"]
+        IREPO["IUserRepository"]
+        ICRED["IUserCredentialService"]
+        ISESSION["IUserSessionStore"]
+        ITOKEN["ITokenIssuer"]
+        SRESULT["UserSessionResult"]
+    end
+
+    subgraph Domain["Domain - Código propio"]
+        USER["User"]
+        STAMP["SecurityStamp"]
+    end
+
+    subgraph Infrastructure["Infrastructure - Código propio"]
+        DI["DependencyInjection"]
+        REPO["IdentityUserRepository"]
+        STORE["UserSessionStore"]
+        JWT["JwtTokenIssuer"]
+        DB["AppDbContext"]
+    end
+
+    subgraph Identity["ASP.NET Core Identity"]
+        UM["UserManager"]
+        GETSTAMP["GetSecurityStampAsync()"]
+    end
+
+    subgraph Persistence["Entity Framework Core / PostgreSQL"]
+        TX["Transaccion Serializable"]
+        SESSIONS[("UserSessions")]
+        REFRESH[("UserRefreshTokens")]
+    end
+
+    LOGIN -->|"Consulta usuario"| IREPO
+    IREPO -.->|"Implementado por"| REPO
+
+    REPO --> UM
+    UM --> GETSTAMP
+    REPO -->|"Construye"| USER
+    USER --> STAMP
+
+    LOGIN -->|"Verifica contraseña"| ICRED
+
+    LOGIN -->|"Credenciales válidas"| ISESSION
+    ISESSION -.->|"Implementado por"| STORE
+
+    DI -->|"Registra"| STORE
+    DI -->|"Asocia interfaz"| ISESSION
+
+    STORE -->|"Reemplaza sesión"| TX
+    STORE --> DB
+
+    DB --> SESSIONS
+    DB --> REFRESH
+
+    TX -->|"Revoca anteriores y crea nueva"| SESSIONS
+    TX -->|"Revoca anteriores y crea token inicial"| REFRESH
+
+    STORE --> SRESULT
+    SRESULT -->|"SessionId persistido"| LOGIN
+
+    LOGIN -->|"User + SessionId + Jti"| ITOKEN
+    ITOKEN -.->|"Implementado por"| JWT
+    JWT -->|"JWT con claim sid"| LOGIN
+```
+
+#### 6. Resultado
+
+Se integra la persistencia de sesiones en `LoginUser` mediante `IUserSessionStore`, creando una nueva sesión y revocando las anteriores después de validar las credenciales.
+
+El JWT utiliza el `SessionId` persistido y el usuario incorpora su `SecurityStamp` vigente; el refresh token inicial se almacena, pero no se devuelve al cliente en este flujo.
+
 ---
 
 ### 5. Validar sesión persistida en Bearer.

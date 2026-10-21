@@ -18,7 +18,7 @@ public sealed class LoginUserTests
         FakeUserRepository repository = new(new User(new UserId("user-1"), "user@example.com", ["User"]));
         FakeCredentialService credentials = new(true);
         FakeTokenIssuer issuer = new();
-        LoginUser login = new(repository, credentials, issuer);
+        LoginUser login = new(repository, credentials, issuer, new FakeUserSessionStore());
 
         var result = await login.ExecuteAsync(
             new LoginUserInput("user@example.com", "Password123!"));
@@ -34,7 +34,11 @@ public sealed class LoginUserTests
     [Fact]
     public async Task UnknownUser_ReturnsInvalidCredentials()
     {
-        LoginUser login = new(new FakeUserRepository(null), new FakeCredentialService(true), new FakeTokenIssuer());
+        LoginUser login = new(
+            new FakeUserRepository(null),
+            new FakeCredentialService(true),
+            new FakeTokenIssuer(),
+            new FakeUserSessionStore());
 
         var result = await login.ExecuteAsync(
             new LoginUserInput("unknown@example.com", "Password123!"));
@@ -50,7 +54,11 @@ public sealed class LoginUserTests
     public async Task InvalidPassword_ReturnsInvalidCredentials()
     {
         User user = new(new UserId("user-1"), "user@example.com", ["User"]);
-        LoginUser login = new(new FakeUserRepository(user), new FakeCredentialService(false), new FakeTokenIssuer());
+        LoginUser login = new(
+            new FakeUserRepository(user),
+            new FakeCredentialService(false),
+            new FakeTokenIssuer(),
+            new FakeUserSessionStore());
 
         var result = await login.ExecuteAsync(new LoginUserInput(user.Email, "wrong"));
 
@@ -70,7 +78,8 @@ public sealed class LoginUserTests
         LoginUser login = new(
             new FakeUserRepository(user),
             new FakeCredentialService(false),
-            new FakeTokenIssuer());
+            new FakeTokenIssuer(),
+            new FakeUserSessionStore());
 
         var result = await login.ExecuteAsync(new LoginUserInput(user.Email, "wrong"));
 
@@ -120,6 +129,18 @@ public sealed class LoginUserTests
             CancellationToken cancellationToken = default)
         {
             return Task.FromResult(new TokenResult("token", 900));
+        }
+    }
+
+    private sealed class FakeUserSessionStore : IUserSessionStore
+    {
+        public Task<UserSessionResult> ReplaceActiveSessionAsync(
+            User user,
+            DateTimeOffset createdAtUtc,
+            DateTimeOffset expiresAtUtc,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(new UserSessionResult(Guid.NewGuid()));
         }
     }
 }
