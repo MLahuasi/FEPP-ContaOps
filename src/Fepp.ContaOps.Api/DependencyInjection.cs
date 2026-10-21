@@ -70,6 +70,31 @@ public static class DependencyInjection
                 };
                 options.Events = new JwtBearerEvents
                 {
+                    OnTokenValidated = async context =>
+                    {
+                        string? sessionValue = context.Principal?.FindFirstValue(JwtRegisteredClaimNames.Sid)
+                            ?? context.Principal?.FindFirstValue(ClaimTypes.Sid);
+                        string? userValue = context.Principal?.FindFirstValue(JwtRegisteredClaimNames.Sub)
+                            ?? context.Principal?.FindFirstValue(ClaimTypes.NameIdentifier);
+                        if (!Guid.TryParse(sessionValue, out Guid sessionId)
+                            || string.IsNullOrWhiteSpace(userValue))
+                        {
+                            context.Fail("Authentication is required.");
+                            return;
+                        }
+
+                        UserSessionStore sessionStore = context.HttpContext.RequestServices
+                            .GetRequiredService<UserSessionStore>();
+                        bool isActive = await sessionStore.IsSessionActiveAsync(
+                            sessionId,
+                            userValue,
+                            DateTimeOffset.UtcNow,
+                            context.HttpContext.RequestAborted);
+                        if (!isActive)
+                        {
+                            context.Fail("Authentication is required.");
+                        }
+                    },
                     OnChallenge = context =>
                     {
                         context.HandleResponse();

@@ -298,6 +298,30 @@ public sealed class UserSessionStore : IUserSessionStore
     }
 
     /// <summary>
+    /// Comprueba que una sesión JWT exista, pertenezca al usuario indicado y siga activa.
+    /// </summary>
+    /// <param name="sessionId">Identificador de sesión obtenido del claim sid.</param>
+    /// <param name="userId">Identificador de usuario obtenido del claim sub.</param>
+    /// <param name="nowUtc">Instante UTC utilizado para evaluar la vigencia.</param>
+    /// <param name="cancellationToken">Token para cancelar la consulta.</param>
+    /// <returns><see langword="true"/> cuando la sesión persistida es utilizable.</returns>
+    public async Task<bool> IsSessionActiveAsync(
+        Guid sessionId,
+        string userId,
+        DateTimeOffset nowUtc,
+        CancellationToken cancellationToken = default)
+    {
+        UserSession? session = await _dbContext.UserSessions
+            .AsNoTracking()
+            .SingleOrDefaultAsync(item => item.SessionId == sessionId, cancellationToken);
+
+        return session is not null
+            && session.UserId == userId
+            && session.Status == UserSessionStatus.Active
+            && session.ExpiresAtUtc > nowUtc;
+    }
+
+    /// <summary>
     /// Valida un texto requerido.
     /// </summary>
     /// <param name="value">Valor que se valida.</param>

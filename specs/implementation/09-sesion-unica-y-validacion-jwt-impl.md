@@ -470,6 +470,166 @@ El JWT utiliza el `SessionId` persistido y el usuario incorpora su `SecurityStam
 
 ### 5. Validar sesión persistida en Bearer.
 
+#### 1. Componentes implementados
+
+| Componente               | Acción | Tipo                     | Capa                         | Responsabilidad                                                                      |
+| ------------------------ | ------ | ------------------------ | ---------------------------- | ------------------------------------------------------------------------------------ |
+| `UserSessionStore`       | Update | Servicio de persistencia | Infrastructure / Security    | Incorpora la validación de existencia, propiedad, estado y vigencia de una sesión.   |
+| `IsSessionActiveAsync()` | Create | Método asíncrono         | Infrastructure / Security    | Comprueba que la sesión asociada a un JWT pertenezca al usuario y continúe activa.   |
+| `DependencyInjection`    | Update | Clase estática           | Presentation / API           | Incorpora la validación de sesiones persistidas durante la autenticación JWT Bearer. |
+| `AddApi()`               | Update | Método de extensión      | Presentation / API           | Configura `OnTokenValidated` para verificar la sesión después de validar el JWT.     |
+| `UserSession`            | Uso    | Entidad de persistencia  | Infrastructure / Persistence | Proporciona `SessionId`, `UserId`, `Status` y `ExpiresAtUtc` para validar la sesión. |
+
+#### 2. Métodos principales
+
+| Clase                   | Método                   | Responsabilidad                                                                      |
+| ----------------------- | ------------------------ | ------------------------------------------------------------------------------------ |
+| `UserSessionStore`      | `IsSessionActiveAsync()` | Consulta la sesión y verifica su propietario, estado activo y fecha de expiración.   |
+| `DependencyInjection`   | `AddApi()`               | Registra JWT Bearer y configura los eventos de autenticación.                        |
+| `JwtBearerEvents`       | `OnTokenValidated`       | Comprueba los claims `sid` y `sub` y valida la sesión persistida.                    |
+| `TokenValidatedContext` | `Fail()`                 | Rechaza la autenticación cuando los claims son inválidos o la sesión no está activa. |
+| `JwtBearerEvents`       | `OnChallenge`            | Conserva la respuesta HTTP 401 mediante `ProblemDetails`.                            |
+| `JwtBearerEvents`       | `OnForbidden`            | Conserva la respuesta HTTP 403 mediante `ProblemDetails`.                            |
+
+**Condiciones de `IsSessionActiveAsync()`:**
+
+| Validación  | Condición                                    |
+| ----------- | -------------------------------------------- |
+| Existencia  | La sesión debe existir en `UserSessions`.    |
+| Propietario | `session.UserId == userId`                   |
+| Estado      | `session.Status == UserSessionStatus.Active` |
+| Vigencia    | `session.ExpiresAtUtc > nowUtc`              |
+
+El método devuelve `true` únicamente cuando se cumplen todas las condiciones.
+
+#### 3. Componentes de .NET y bibliotecas externas
+
+| Componente / Método            | Origen                                | Función                                                             | Uso en el proyecto                                                   |
+| ------------------------------ | ------------------------------------- | ------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| `AddAuthentication()`          | ASP.NET Core Authentication           | Registra y configura los esquemas de autenticación.                 | Establece JWT Bearer como esquema predeterminado.                    |
+| `AddJwtBearer()`               | ASP.NET Core Authentication.JwtBearer | Configura la autenticación mediante JWT.                            | Define la validación criptográfica y los eventos Bearer.             |
+| `TokenValidationParameters`    | Microsoft.IdentityModel.Tokens        | Configura las reglas de validación del JWT.                         | Verifica issuer, audience, firma y expiración.                       |
+| `JwtBearerEvents`              | ASP.NET Core Authentication.JwtBearer | Permite intervenir en el procesamiento de autenticación.            | Ejecuta la validación de sesión mediante `OnTokenValidated`.         |
+| `OnTokenValidated`             | ASP.NET Core Authentication.JwtBearer | Evento ejecutado después de validar el token.                       | Comprueba la sesión persistida asociada al JWT.                      |
+| `FindFirstValue()`             | ASP.NET Core Authentication / Claims  | Obtiene el valor de un claim.                                       | Recupera `sid` y `sub` del usuario autenticado.                      |
+| `ClaimTypes.Sid`               | .NET / System.Security.Claims         | Identificador de sesión en claims.                                  | Alternativa para recuperar `sid` cuando existe mapeo de claims.      |
+| `ClaimTypes.NameIdentifier`    | .NET / System.Security.Claims         | Identificador del sujeto.                                           | Alternativa para recuperar `sub`.                                    |
+| `Guid.TryParse()`              | .NET / System                         | Convierte texto a GUID sin lanzar excepciones por formato inválido. | Valida el identificador de sesión recibido.                          |
+| `GetRequiredService<T>()`      | .NET / Dependency Injection           | Resuelve servicios registrados.                                     | Obtiene `UserSessionStore` desde el contenedor de la solicitud HTTP. |
+| `HttpContext.RequestAborted`   | ASP.NET Core HTTP                     | Token de cancelación de la solicitud.                               | Permite cancelar la consulta de sesión.                              |
+| `TokenValidatedContext.Fail()` | ASP.NET Core Authentication           | Marca la autenticación como fallida.                                | Rechaza JWT sin sesión válida.                                       |
+| `AsNoTracking()`               | Entity Framework Core                 | Ejecuta consultas sin seguimiento de entidades.                     | Consulta el estado de la sesión sin preparar modificaciones.         |
+| `SingleOrDefaultAsync()`       | Entity Framework Core                 | Obtiene un registro único o `null`.                                 | Busca la sesión por `SessionId`.                                     |
+| `UserSessionStore`             | Código propio / Infrastructure        | Gestiona y consulta sesiones persistidas.                           | Valida la sesión asociada al JWT.                                    |
+| `AppDbContext`                 | Código propio / Infrastructure        | Contexto de persistencia.                                           | Permite consultar `UserSessions`.                                    |
+
+#### 4. Flujo funcional
+
+**Autenticación JWT Bearer:**
+
+| Paso | Operación                                                                  | Componente                               |
+| ---- | -------------------------------------------------------------------------- | ---------------------------------------- |
+| 1    | Recibir una solicitud con un JWT Bearer.                                   | ASP.NET Core Authentication              |
+| 2    | Validar firma, issuer, audience y expiración.                              | JWT Bearer / `TokenValidationParameters` |
+| 3    | Ejecutar `OnTokenValidated` cuando la validación del JWT es satisfactoria. | `JwtBearerEvents`                        |
+| 4    | Obtener `sid` y `sub` de los claims del JWT.                               | `ClaimsPrincipal`                        |
+| 5    | Validar el formato de `sid` y la presencia de `sub`.                       | `Guid.TryParse()`                        |
+| 6    | Resolver `UserSessionStore` mediante inyección de dependencias.            | `RequestServices`                        |
+| 7    | Consultar la sesión persistida mediante `SessionId`.                       | `IsSessionActiveAsync()`                 |
+| 8    | Verificar propietario, estado y vigencia.                                  | `UserSessionStore`                       |
+| 9    | Rechazar la autenticación si la sesión no cumple las condiciones.          | `context.Fail()`                         |
+| 10   | Continuar con la autenticación satisfactoria si la sesión es válida.       | ASP.NET Core Authentication              |
+
+**Resultados de validación:**
+
+| Condición                                                    | Resultado                |
+| ------------------------------------------------------------ | ------------------------ |
+| JWT con firma inválida                                       | Autenticación rechazada. |
+| JWT expirado                                                 | Autenticación rechazada. |
+| Claim `sid` ausente o inválido                               | `context.Fail()`         |
+| Claim `sub` ausente o vacío                                  | `context.Fail()`         |
+| Sesión inexistente                                           | `context.Fail()`         |
+| Sesión asociada a otro usuario                               | `context.Fail()`         |
+| Sesión revocada                                              | `context.Fail()`         |
+| Sesión expirada                                              | `context.Fail()`         |
+| Sesión existente, activa, vigente y perteneciente al usuario | Autenticación aceptada.  |
+
+**Comportamiento HTTP conservado:**
+
+| Evento        | Código HTTP      | Código de error           |
+| ------------- | ---------------- | ------------------------- |
+| `OnChallenge` | 401 Unauthorized | `authentication_required` |
+| `OnForbidden` | 403 Forbidden    | `forbidden`               |
+
+Ambas respuestas conservan el formato `application/problem+json`.
+
+**Alcance:** La validación consulta `UserSessions` en cada ejecución de `OnTokenValidated`. No actualiza el estado de sesiones vencidas, no comprueba el `SecurityStamp` actual del usuario y no valida el claim `jti` contra un registro persistido.
+
+#### 5. Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    subgraph Presentation["Presentation - ASP.NET Core API"]
+        API["API REST"]
+        DI["DependencyInjection.AddApi()"]
+        EVENTS["JwtBearerEvents.OnTokenValidated"]
+    end
+
+    subgraph Authentication["ASP.NET Core Authentication"]
+        BEARER["JWT Bearer"]
+        PARAMS["TokenValidationParameters"]
+        CLAIMS["ClaimsPrincipal - sid / sub"]
+        FAIL["TokenValidatedContext.Fail()"]
+    end
+
+    subgraph Infrastructure["Infrastructure - Código propio"]
+        STORE["UserSessionStore"]
+        ACTIVE["IsSessionActiveAsync()"]
+    end
+
+    subgraph Persistence["Infrastructure - Persistence"]
+        DB["AppDbContext"]
+        SESSION["UserSession"]
+        STATUS["UserSessionStatus"]
+    end
+
+    subgraph EFCore["Entity Framework Core"]
+        QUERY["AsNoTracking() / SingleOrDefaultAsync()"]
+    end
+
+    subgraph Database["PostgreSQL"]
+        SESSIONS[("UserSessions")]
+    end
+
+    API --> BEARER
+    DI -->|"Configura"| BEARER
+
+    BEARER --> PARAMS
+    PARAMS -->|"JWT válido"| EVENTS
+
+    EVENTS -->|"Obtiene sid y sub"| CLAIMS
+    EVENTS -->|"Resuelve servicio Scoped"| STORE
+
+    STORE --> ACTIVE
+    ACTIVE --> DB
+
+    DB --> QUERY
+    QUERY --> SESSIONS
+    SESSIONS -.-> SESSION
+
+    ACTIVE -->|"Comprueba estado"| STATUS
+    ACTIVE -->|"SessionId / UserId / ExpiresAtUtc"| SESSION
+
+    ACTIVE -->|"Sesión inválida"| FAIL
+    ACTIVE -->|"Sesión válida"| API
+```
+
+#### 6. Resultado
+
+Se incorpora la validación de sesiones persistidas al evento `OnTokenValidated` de ASP.NET Core JWT Bearer, verificando la existencia, propiedad, estado y vigencia de cada sesión.
+
+Un JWT criptográficamente válido deja de ser suficiente para autenticarse: también debe corresponder a una sesión activa y vigente en PostgreSQL.
+
 ---
 
 ### 6. Rechazar sesiones inexistentes, revocadas, vencidas o con stamp diferente.
