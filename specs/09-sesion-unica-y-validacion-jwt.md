@@ -1,6 +1,6 @@
 # SPEC 09 — Sesión única y validación JWT
 
-> **Estado:** Borrador
+> **Estado:** Aprobado
 > **Dependencias:** SPEC 08
 > **Fecha:** 2026-10-20
 > **Objetivo:** Vincular los JWT a una sesión persistida y revocarlos inmediatamente cuando la sesión o el SecurityStamp dejen de ser válidos.
