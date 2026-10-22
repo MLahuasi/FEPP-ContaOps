@@ -178,6 +178,26 @@ public sealed class UserSessionStoreTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// Comprueba que la validación Bearer rechaza estados de sesión y stamps inválidos.
+    /// </summary>
+    [Fact]
+    public async Task IsSessionActive_RejectsRevokedExpiredAndChangedStamp()
+    {
+        UserSessionStore store = CreateStore();
+        DateTimeOffset nowUtc = UtcNow;
+        UserSession revokedSession = CreateSession(UserSessionStatus.Revoked, "stamp-1", nowUtc.AddHours(1));
+        UserSession expiredSession = CreateSession(UserSessionStatus.Expired, "stamp-1", nowUtc.AddMinutes(-1));
+        UserSession changedStampSession = CreateSession(UserSessionStatus.Active, "stamp-previous", nowUtc.AddHours(1));
+        _dbContext.UserSessions.AddRange(revokedSession, expiredSession, changedStampSession);
+        await _dbContext.SaveChangesAsync();
+
+        Assert.False(await store.IsSessionActiveAsync(Guid.NewGuid(), "user-1", nowUtc));
+        Assert.False(await store.IsSessionActiveAsync(revokedSession.SessionId, "user-1", nowUtc));
+        Assert.False(await store.IsSessionActiveAsync(expiredSession.SessionId, "user-1", nowUtc));
+        Assert.False(await store.IsSessionActiveAsync(changedStampSession.SessionId, "user-1", nowUtc));
+    }
+
+    /// <summary>
     /// Crea el almacén con las dependencias criptográficas de prueba.
     /// </summary>
     /// <returns>Almacén de sesiones configurado con el contexto de prueba.</returns>
@@ -187,6 +207,29 @@ public sealed class UserSessionStoreTests : IAsyncLifetime
             _dbContext,
             new OpaqueTokenGenerator(),
             new OpaqueTokenCryptography());
+    }
+
+    /// <summary>
+    /// Crea una sesión de prueba con el estado y stamp indicados.
+    /// </summary>
+    /// <param name="status">Estado persistente de la sesión.</param>
+    /// <param name="securityStamp">Sello almacenado en la sesión.</param>
+    /// <param name="expiresAtUtc">Expiración persistida.</param>
+    /// <returns>Sesión no persistida.</returns>
+    private static UserSession CreateSession(
+        UserSessionStatus status,
+        string securityStamp,
+        DateTimeOffset expiresAtUtc)
+    {
+        return new UserSession
+        {
+            SessionId = Guid.NewGuid(),
+            UserId = "user-1",
+            SecurityStamp = securityStamp,
+            Status = status,
+            CreatedAtUtc = UtcNow.AddMinutes(-1),
+            ExpiresAtUtc = expiresAtUtc
+        };
     }
 
     /// <summary>

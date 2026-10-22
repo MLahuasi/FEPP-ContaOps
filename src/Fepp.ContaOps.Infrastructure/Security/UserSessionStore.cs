@@ -1,5 +1,7 @@
 using System.Data;
 using Fepp.ContaOps.Application.Abstractions;
+using Fepp.ContaOps.Domain.Users;
+using Fepp.ContaOps.Infrastructure.Identity;
 using Fepp.ContaOps.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 
@@ -8,7 +10,7 @@ namespace Fepp.ContaOps.Infrastructure.Security;
 /// <summary>
 /// Almacena una única sesión activa por usuario y su refresh token inicial.
 /// </summary>
-public sealed class UserSessionStore
+public sealed class UserSessionStore : IUserSessionStore
 {
     /// <summary>
     /// Motivo seguro aplicado a la sesión anterior cuando se reemplaza.
@@ -133,6 +135,30 @@ public sealed class UserSessionStore
             await transaction.RollbackAsync(cancellationToken);
             throw;
         }
+    }
+
+    /// <summary>
+    /// Crea la sesión de login y reemplaza cualquier sesión activa anterior.
+    /// </summary>
+    /// <param name="user">Usuario autenticado.</param>
+    /// <param name="createdAtUtc">Instante UTC de creación.</param>
+    /// <param name="expiresAtUtc">Instante UTC de expiración.</param>
+    /// <param name="cancellationToken">Token de cancelación.</param>
+    /// <returns>Identificador de la nueva sesión.</returns>
+    async Task<UserSessionResult> IUserSessionStore.ReplaceActiveSessionAsync(
+        User user,
+        DateTimeOffset createdAtUtc,
+        DateTimeOffset expiresAtUtc,
+        CancellationToken cancellationToken)
+    {
+        UserSessionCreationResult result = await ReplaceActiveSessionAsync(
+            user.Id.Value,
+            user.SecurityStamp,
+            createdAtUtc,
+            expiresAtUtc,
+            expiresAtUtc,
+            cancellationToken);
+        return new UserSessionResult(result.SessionId);
     }
 
     /// <summary>
@@ -270,6 +296,38 @@ public sealed class UserSessionStore
             await transaction.RollbackAsync(cancellationToken);
             throw;
         }
+    }
+
+    /// <summary>
+    /// Comprueba que una sesión JWT exista, pertenezca al usuario indicado y siga activa.
+    /// </summary>
+    /// <param name="sessionId">Identificador de sesión obtenido del claim sid.</param>
+    /// <param name="userId">Identificador de usuario obtenido del claim sub.</param>
+    /// <param name="nowUtc">Instante UTC utilizado para evaluar la vigencia.</param>
+    /// <param name="cancellationToken">Token para cancelar la consulta.</param>
+    /// <returns><see langword="true"/> cuando la sesión persistida es utilizable.</returns>
+    public async Task<bool> IsSessionActiveAsync(
+        Guid sessionId,
+        string userId,
+        DateTimeOffset nowUtc,
+        CancellationToken cancellationToken = default)
+    {
+        UserSession? session = await _dbContext.UserSessions
+            .AsNoTracking()
+            .SingleOrDefaultAsync(item => item.SessionId == sessionId, cancellationToken);
+        ApplicationIdentityUser? user = session is null
+            ? null
+            : await _dbContext.Users
+                .AsNoTracking()
+                .SingleOrDefaultAsync(item => item.Id == session.UserId, cancellationToken);
+
+        return session is not null
+            && session.UserId == userId
+            && session.Status == UserSessionStatus.Active
+            && session.ExpiresAtUtc > nowUtc
+            && user is not null
+            && user.Status == UserStatus.Active
+            && session.SecurityStamp == user.SecurityStamp;
     }
 
     /// <summary>

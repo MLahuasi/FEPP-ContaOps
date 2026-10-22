@@ -11,10 +11,14 @@ public interface ITokenIssuer
     /// Emite un token para un usuario autenticado.
     /// </summary>
     /// <param name="user">Usuario autenticado.</param>
+    /// <param name="sessionId">Identificador de la sesión asociada al token.</param>
+    /// <param name="jti">Identificador único del token.</param>
     /// <param name="cancellationToken">Token de cancelación.</param>
     /// <returns>Resultado de emisión del token.</returns>
     Task<TokenResult> IssueAsync(
         User user,
+        Guid sessionId,
+        string jti,
         CancellationToken cancellationToken = default);
 }
 

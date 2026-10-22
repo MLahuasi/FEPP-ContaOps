@@ -1,11 +1,17 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Net.Http.Headers;
 using System.Text.Json;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Testcontainers.PostgreSql;
+using Fepp.ContaOps.Infrastructure.Identity;
+using Fepp.ContaOps.Infrastructure.Persistence;
 
 namespace Fepp.ContaOps.IntegrationTests;
 
@@ -53,7 +59,8 @@ public sealed class AuthIntegrationTests : IAsyncLifetime
         Assert.False(string.IsNullOrWhiteSpace(accessToken));
         Assert.True(document.RootElement.GetProperty("expiresIn").GetInt64() > 0);
         JwtSecurityToken jwt = new JwtSecurityTokenHandler().ReadJwtToken(accessToken);
-        Assert.Contains(jwt.Claims, claim => claim.Type == ClaimTypes.Role && claim.Value == "Admin");
+        Assert.DoesNotContain(jwt.Claims, claim => claim.Type == ClaimTypes.Email);
+        Assert.DoesNotContain(jwt.Claims, claim => claim.Type == ClaimTypes.Role);
         Assert.Equal("FEPP-ContaOps.Tests", jwt.Issuer);
         Assert.Contains("FEPP-ContaOps.Tests", jwt.Audiences);
         Assert.True(jwt.ValidTo > DateTime.UtcNow);
@@ -77,6 +84,117 @@ public sealed class AuthIntegrationTests : IAsyncLifetime
         using JsonDocument document = JsonDocument.Parse(body);
         Assert.Equal("invalid_credentials", document.RootElement.GetProperty("code").GetString());
         Assert.False(string.IsNullOrWhiteSpace(document.RootElement.GetProperty("traceId").GetString()));
+    }
+
+    /// <summary>
+    /// Comprueba que el segundo login revoca el token emitido para el primer equipo.
+    /// </summary>
+    [Fact]
+    public async Task SuccessiveLogins_LeaveOnlyTheLatestBearerSessionUsable()
+    {
+        await using TestApiFactory factory = new(_database.GetConnectionString());
+        using HttpClient firstDevice = factory.CreateClient();
+        using HttpClient secondDevice = factory.CreateClient();
+
+        string firstToken = await LoginAndReadTokenAsync(firstDevice);
+        string secondToken = await LoginAndReadTokenAsync(secondDevice);
+        JwtSecurityToken firstJwt = new JwtSecurityTokenHandler().ReadJwtToken(firstToken);
+        JwtSecurityToken secondJwt = new JwtSecurityTokenHandler().ReadJwtToken(secondToken);
+
+        string firstSessionId = firstJwt.Claims
+            .Single(claim => claim.Type == JwtRegisteredClaimNames.Sid).Value;
+        string secondSessionId = secondJwt.Claims
+            .Single(claim => claim.Type == JwtRegisteredClaimNames.Sid).Value;
+        string firstJti = firstJwt.Claims
+            .Single(claim => claim.Type == JwtRegisteredClaimNames.Jti).Value;
+        string secondJti = secondJwt.Claims
+            .Single(claim => claim.Type == JwtRegisteredClaimNames.Jti).Value;
+
+        Assert.NotEqual(firstSessionId, secondSessionId);
+        Assert.NotEqual(firstJti, secondJti);
+
+        firstDevice.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", firstToken);
+        secondDevice.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", secondToken);
+
+        HttpResponseMessage firstProtectedResponse = await firstDevice.PostAsJsonAsync(
+            "/api/users/invitations",
+            new { Email = "first-device@example.com" });
+        HttpResponseMessage secondProtectedResponse = await secondDevice.PostAsJsonAsync(
+            "/api/users/invitations",
+            new { Email = "second-device@example.com" });
+
+        Assert.Equal(HttpStatusCode.Unauthorized, firstProtectedResponse.StatusCode);
+        Assert.NotEqual(HttpStatusCode.Unauthorized, secondProtectedResponse.StatusCode);
+    }
+
+    /// <summary>
+    /// Comprueba en PostgreSQL que un cambio de stamp y la expiración revocan el JWT.
+    /// </summary>
+    [Fact]
+    public async Task SecurityStampChangeAndSessionExpiration_RejectBearerToken()
+    {
+        await using TestApiFactory factory = new(_database.GetConnectionString());
+        using HttpClient client = factory.CreateClient();
+
+        string stampToken = await LoginAndReadTokenAsync(client);
+        using (IServiceScope scope = factory.Services.CreateScope())
+        {
+            UserManager<ApplicationIdentityUser> userManager = scope.ServiceProvider
+                .GetRequiredService<UserManager<ApplicationIdentityUser>>();
+            ApplicationIdentityUser user = (await userManager.FindByEmailAsync("admin@example.com"))!;
+            IdentityResult result = await userManager.UpdateSecurityStampAsync(user);
+            Assert.True(result.Succeeded);
+        }
+
+        HttpResponseMessage stampResponse = await SendProtectedAsync(client, stampToken);
+        Assert.Equal(HttpStatusCode.Unauthorized, stampResponse.StatusCode);
+
+        string expiringToken = await LoginAndReadTokenAsync(client);
+        JwtSecurityToken jwt = new JwtSecurityTokenHandler().ReadJwtToken(expiringToken);
+        Guid sessionId = Guid.Parse(jwt.Claims.Single(claim => claim.Type == JwtRegisteredClaimNames.Sid).Value);
+        using (IServiceScope scope = factory.Services.CreateScope())
+        {
+            AppDbContext dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            UserSession session = await dbContext.UserSessions.SingleAsync(item => item.SessionId == sessionId);
+            session.ExpiresAtUtc = DateTimeOffset.UtcNow.AddMinutes(-1);
+            await dbContext.SaveChangesAsync();
+        }
+
+        HttpResponseMessage expirationResponse = await SendProtectedAsync(client, expiringToken);
+        Assert.Equal(HttpStatusCode.Unauthorized, expirationResponse.StatusCode);
+    }
+
+    /// <summary>
+    /// Inicia sesión con el administrador de pruebas y devuelve el JWT emitido.
+    /// </summary>
+    /// <param name="client">Cliente HTTP que representa un equipo.</param>
+    /// <returns>JWT Bearer emitido por la API.</returns>
+    private static async Task<string> LoginAndReadTokenAsync(HttpClient client)
+    {
+        HttpResponseMessage response = await client.PostAsJsonAsync(
+            "/api/auth/login",
+            new { Email = "admin@example.com", Password = "AdminPassword123!" });
+        response.EnsureSuccessStatusCode();
+        using JsonDocument document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        return document.RootElement.GetProperty("accessToken").GetString()!;
+    }
+
+    /// <summary>
+    /// Ejecuta una solicitud administrativa autenticada para probar el pipeline Bearer.
+    /// </summary>
+    /// <param name="client">Cliente HTTP de pruebas.</param>
+    /// <param name="token">JWT Bearer presentado.</param>
+    /// <returns>Respuesta HTTP de la API.</returns>
+    private static async Task<HttpResponseMessage> SendProtectedAsync(HttpClient client, string token)
+    {
+        using HttpRequestMessage request = new(HttpMethod.Post, "/api/users/invitations")
+        {
+            Content = JsonContent.Create(new { Email = $"probe-{Guid.NewGuid():N}@example.com" })
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        return await client.SendAsync(request);
     }
 
     /// <summary>

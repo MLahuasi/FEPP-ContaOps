@@ -34,16 +34,20 @@ public sealed class IdentityJwtCriteriaTests
     {
         JwtTokenIssuer issuer = new(Options.Create(CreateJwtOptions()));
         User user = new(new UserId("admin-id"), "admin@example.com", [IdentitySeeder.AdminRole]);
+        Guid sessionId = Guid.NewGuid();
+        string jti = Guid.NewGuid().ToString("N");
 
-        TokenResult result = await issuer.IssueAsync(user);
+        TokenResult result = await issuer.IssueAsync(user, sessionId, jti);
         JwtSecurityToken token = new JwtSecurityTokenHandler().ReadJwtToken(result.AccessToken);
 
         Assert.Equal("FEPP-ContaOps.Tests", token.Issuer);
         Assert.Contains("FEPP-ContaOps.Tests.Api", token.Audiences);
-        Assert.Contains(token.Claims, claim => claim.Type == JwtRegisteredClaimNames.Email && claim.Value == user.Email);
-        Assert.Contains(token.Claims, claim => claim.Type == ClaimTypes.Role && claim.Value == IdentitySeeder.AdminRole);
+        Assert.DoesNotContain(token.Claims, claim => claim.Type == JwtRegisteredClaimNames.Email);
+        Assert.Contains(token.Claims, claim => claim.Type == JwtRegisteredClaimNames.Sid && claim.Value == sessionId.ToString());
+        Assert.Contains(token.Claims, claim => claim.Type == JwtRegisteredClaimNames.Jti && claim.Value == jti);
+        Assert.DoesNotContain(token.Claims, claim => claim.Type == ClaimTypes.Role);
         Assert.True(token.ValidTo > DateTime.UtcNow);
-        Assert.Equal(3600, result.ExpiresIn);
+        Assert.Equal(900, result.ExpiresIn);
     }
 
     /// <summary>
@@ -55,7 +59,10 @@ public sealed class IdentityJwtCriteriaTests
         JwtOptions options = CreateJwtOptions();
         JwtTokenIssuer issuer = new(Options.Create(options));
         User user = new(new UserId("user-id"), "user@example.com", [IdentitySeeder.UserRole]);
-        string accessToken = (await issuer.IssueAsync(user)).AccessToken;
+        string accessToken = (await issuer.IssueAsync(
+            user,
+            Guid.NewGuid(),
+            Guid.NewGuid().ToString("N"))).AccessToken;
 
         JwtOptions incorrectKey = CreateJwtOptions();
         incorrectKey.SigningKey = "different-signing-key-with-32-bytes!!";
@@ -191,7 +198,7 @@ public sealed class IdentityJwtCriteriaTests
                 ["Jwt:Issuer"] = "FEPP-ContaOps.Tests",
                 ["Jwt:Audience"] = "FEPP-ContaOps.Tests.Api",
                 ["Jwt:SigningKey"] = "test-signing-key-with-at-least-32-bytes",
-                ["Jwt:AccessTokenLifetimeMinutes"] = "60"
+                ["Jwt:AccessTokenLifetimeMinutes"] = "15"
             })
             .Build();
     }
@@ -207,7 +214,7 @@ public sealed class IdentityJwtCriteriaTests
             Issuer = "FEPP-ContaOps.Tests",
             Audience = "FEPP-ContaOps.Tests.Api",
             SigningKey = "test-signing-key-with-at-least-32-bytes",
-            AccessTokenLifetimeMinutes = 60
+            AccessTokenLifetimeMinutes = 15
         };
     }
 

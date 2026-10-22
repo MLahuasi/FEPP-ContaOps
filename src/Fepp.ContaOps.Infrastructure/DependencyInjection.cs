@@ -88,6 +88,7 @@ public static class DependencyInjection
                 });
 
         services.AddScoped<IUserRepository, IdentityUserRepository>();
+        services.AddScoped<IUserRoleReader, IdentityUserRoleReader>();
         services.AddScoped<IUserCredentialService, IdentityCredentialService>();
         services.AddScoped<IUserInvitationService, IdentityUserInvitationService>();
         services.AddOptions<JwtOptions>()
@@ -117,6 +118,8 @@ public static class DependencyInjection
         services.AddSingleton<OpaqueTokenCryptography>();
         services.AddScoped<IOpaqueTokenStore, OpaqueTokenStore>();
         services.AddScoped<UserSessionStore>();
+        services.AddScoped<IUserSessionStore>(
+            serviceProvider => serviceProvider.GetRequiredService<UserSessionStore>());
         services.AddScoped<IdentitySeeder>();
         return services;
     }

@@ -46,6 +46,7 @@ public sealed class IdentityUserRepository : IUserRepository
             new UserId(identityUser.Id),
             identityUser.Email ?? email,
             roles,
-            identityUser.Status);
+            identityUser.Status,
+            await _userManager.GetSecurityStampAsync(identityUser));
     }
 }

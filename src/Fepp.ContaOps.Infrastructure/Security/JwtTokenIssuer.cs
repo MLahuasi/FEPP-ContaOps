@@ -31,10 +31,14 @@ public sealed class JwtTokenIssuer : ITokenIssuer
     /// Emite un JWT con la identidad y los roles del usuario autenticado.
     /// </summary>
     /// <param name="user">Usuario autenticado.</param>
+    /// <param name="sessionId">Identificador de la sesión asociada al token.</param>
+    /// <param name="jti">Identificador único del token.</param>
     /// <param name="cancellationToken">Token de cancelación.</param>
     /// <returns>Token firmado y duración en segundos.</returns>
     public Task<TokenResult> IssueAsync(
         User user,
+        Guid sessionId,
+        string jti,
         CancellationToken cancellationToken = default)
     {
         DateTime issuedAt = DateTime.UtcNow;
@@ -42,10 +46,9 @@ public sealed class JwtTokenIssuer : ITokenIssuer
         List<Claim> claims =
         [
             new(JwtRegisteredClaimNames.Sub, user.Id.Value),
-            new(JwtRegisteredClaimNames.Email, user.Email),
-            new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString("N"))
+            new(JwtRegisteredClaimNames.Sid, sessionId.ToString()),
+            new(JwtRegisteredClaimNames.Jti, jti)
         ];
-        claims.AddRange(user.Roles.Select(role => new Claim(ClaimTypes.Role, role)));
 
         SymmetricSecurityKey signingKey = new(
             Encoding.UTF8.GetBytes(_options.SigningKey));

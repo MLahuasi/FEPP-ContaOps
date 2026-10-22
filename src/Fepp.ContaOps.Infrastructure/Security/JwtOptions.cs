@@ -28,5 +28,5 @@ public sealed class JwtOptions
     /// <summary>
     /// Duración del token en minutos.
     /// </summary>
-    public int AccessTokenLifetimeMinutes { get; set; } = 60;
+    public int AccessTokenLifetimeMinutes { get; set; } = 15;
 }

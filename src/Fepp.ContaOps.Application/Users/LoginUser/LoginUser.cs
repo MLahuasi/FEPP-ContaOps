@@ -25,19 +25,27 @@ public sealed class LoginUser
     private readonly ITokenIssuer _tokenIssuer;
 
     /// <summary>
+    /// Almacenamiento utilizado para crear y reemplazar la sesión autenticada.
+    /// </summary>
+    private readonly IUserSessionStore _sessionStore;
+
+    /// <summary>
     /// Inicializa el caso de uso de inicio de sesión.
     /// </summary>
     /// <param name="userRepository">Repositorio de usuarios autenticables.</param>
     /// <param name="credentialService">Servicio de comprobación de credenciales.</param>
     /// <param name="tokenIssuer">Emisor de tokens de acceso.</param>
+    /// <param name="sessionStore">Almacenamiento de sesiones persistidas.</param>
     public LoginUser(
         IUserRepository userRepository,
         IUserCredentialService credentialService,
-        ITokenIssuer tokenIssuer)
+        ITokenIssuer tokenIssuer,
+        IUserSessionStore sessionStore)
     {
         _userRepository = userRepository;
         _credentialService = credentialService;
         _tokenIssuer = tokenIssuer;
+        _sessionStore = sessionStore;
     }
 
     /// <summary>
@@ -65,7 +73,17 @@ public sealed class LoginUser
             return Result<TokenResult>.Failure(AuthenticationError.Instance);
         }
 
-        TokenResult token = await _tokenIssuer.IssueAsync(user, cancellationToken);
+        DateTimeOffset createdAtUtc = DateTimeOffset.UtcNow;
+        UserSessionResult session = await _sessionStore.ReplaceActiveSessionAsync(
+            user,
+            createdAtUtc,
+            createdAtUtc.AddMinutes(15),
+            cancellationToken);
+        TokenResult token = await _tokenIssuer.IssueAsync(
+            user,
+            session.SessionId,
+            Guid.NewGuid().ToString("N"),
+            cancellationToken);
         return Result<TokenResult>.Success(token);
     }
 }

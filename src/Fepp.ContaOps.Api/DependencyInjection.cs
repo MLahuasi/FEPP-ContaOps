@@ -1,5 +1,6 @@
 using FluentValidation;
 using Fepp.ContaOps.Api.Validation;
+using Fepp.ContaOps.Application.Abstractions;
 using Fepp.ContaOps.Infrastructure.Identity;
 using Fepp.ContaOps.Infrastructure.Security;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -65,11 +66,59 @@ public static class DependencyInjection
                         Encoding.UTF8.GetBytes(jwtOptions.SigningKey)),
                     ValidateLifetime = true,
                     ClockSkew = TimeSpan.Zero,
-                    NameClaimType = JwtRegisteredClaimNames.Email,
+                    NameClaimType = JwtRegisteredClaimNames.Sub,
                     RoleClaimType = ClaimTypes.Role
                 };
                 options.Events = new JwtBearerEvents
                 {
+                    OnTokenValidated = async context =>
+                    {
+                        string? sessionValue = context.Principal?.FindFirstValue(JwtRegisteredClaimNames.Sid)
+                            ?? context.Principal?.FindFirstValue(ClaimTypes.Sid);
+                        string? userValue = context.Principal?.FindFirstValue(JwtRegisteredClaimNames.Sub)
+                            ?? context.Principal?.FindFirstValue(ClaimTypes.NameIdentifier);
+                        if (!Guid.TryParse(sessionValue, out Guid sessionId)
+                            || string.IsNullOrWhiteSpace(userValue))
+                        {
+                            context.Fail("Authentication is required.");
+                            return;
+                        }
+
+                        UserSessionStore sessionStore = context.HttpContext.RequestServices
+                            .GetRequiredService<UserSessionStore>();
+                        bool isActive = await sessionStore.IsSessionActiveAsync(
+                            sessionId,
+                            userValue,
+                            DateTimeOffset.UtcNow,
+                            context.HttpContext.RequestAborted);
+                        if (!isActive)
+                        {
+                            context.Fail("Authentication is required.");
+                            return;
+                        }
+
+                        IUserRoleReader roleReader = context.HttpContext.RequestServices
+                            .GetRequiredService<IUserRoleReader>();
+                        IReadOnlyCollection<string>? roles = await roleReader.GetRolesAsync(
+                            userValue,
+                            context.HttpContext.RequestAborted);
+                        if (roles is null)
+                        {
+                            context.Fail("Authentication is required.");
+                            return;
+                        }
+
+                        if (context.Principal?.Identity is not ClaimsIdentity identity)
+                        {
+                            context.Fail("Authentication is required.");
+                            return;
+                        }
+
+                        foreach (string role in roles)
+                        {
+                            identity.AddClaim(new Claim(ClaimTypes.Role, role));
+                        }
+                    },
                     OnChallenge = context =>
                     {
                         context.HandleResponse();

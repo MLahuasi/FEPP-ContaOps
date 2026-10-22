@@ -753,12 +753,12 @@ public sealed class InvitationIntegrationTests : IAsyncLifetime
         /// Lee el Bearer emitido por el caso de uso de login y crea su identidad de prueba.
         /// </summary>
         /// <returns>Resultado de autenticación.</returns>
-        protected override Task<AuthenticateResult> HandleAuthenticateAsync()
+        protected override async Task<AuthenticateResult> HandleAuthenticateAsync()
         {
             string? authorization = Request.Headers.Authorization.ToString();
             if (!authorization.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
             {
-                return Task.FromResult(AuthenticateResult.NoResult());
+                return AuthenticateResult.NoResult();
             }
 
             string token = authorization["Bearer ".Length..].Trim();
@@ -766,11 +766,31 @@ public sealed class InvitationIntegrationTests : IAsyncLifetime
             ClaimsIdentity identity = new(
                 jwt.Claims,
                 SchemeName,
-                JwtRegisteredClaimNames.Email,
+                JwtRegisteredClaimNames.Sub,
                 ClaimTypes.Role);
+            string? userId = jwt.Claims.FirstOrDefault(
+                claim => claim.Type == JwtRegisteredClaimNames.Sub)?.Value;
+            if (string.IsNullOrWhiteSpace(userId))
+            {
+                return AuthenticateResult.Fail("Authentication is required.");
+            }
+
+            IUserRoleReader roleReader = Context.RequestServices
+                .GetRequiredService<IUserRoleReader>();
+            IReadOnlyCollection<string>? roles = await roleReader.GetRolesAsync(userId, Context.RequestAborted);
+            if (roles is null)
+            {
+                return AuthenticateResult.Fail("Authentication is required.");
+            }
+
+            foreach (string role in roles)
+            {
+                identity.AddClaim(new Claim(ClaimTypes.Role, role));
+            }
+
             ClaimsPrincipal principal = new(identity);
             AuthenticationTicket ticket = new(principal, SchemeName);
-            return Task.FromResult(AuthenticateResult.Success(ticket));
+            return AuthenticateResult.Success(ticket);
         }
 
         /// <summary>
