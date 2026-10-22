@@ -316,7 +316,179 @@ La validación del refresh token ahora exige que el usuario exista, esté activo
 
 ---
 
-### 4. Consumir atómicamente el refresh y crear su reemplazo.
+### 4. Consumir atómicamente el refresh y crear su reemplazo
+
+#### 1. Componentes implementados
+
+| Componente                      | Acción      | Tipo                           | Capa           | Responsabilidad                                                                                                 |
+| ------------------------------- | ----------- | ------------------------------ | -------------- | --------------------------------------------------------------------------------------------------------------- |
+| `RefreshTokenRotationResult`    | Create      | Record                         | Infrastructure | Devuelve el estado de la rotación y el nuevo refresh token cuando la operación es exitosa.                      |
+| `RefreshTokenConsumptionStatus` | Sin cambios | Enum                           | Infrastructure | Representa los resultados `Consumed`, `Invalid`, `Reused` y `Expired`.                                          |
+| `UserSessionStore`              | Update      | Servicio de persistencia       | Infrastructure | Implementa la rotación atómica de refresh tokens y permite consultar múltiples tokens asociados a una sesión.   |
+| `UserRefreshToken`              | Uso         | Entidad de persistencia        | Infrastructure | Conserva el historial de tokens consumidos y almacena los reemplazos generados.                                 |
+| `UserSession`                   | Uso         | Entidad de persistencia        | Infrastructure | Mantiene la sesión original y su fecha máxima de expiración durante las rotaciones.                             |
+| `ApplicationIdentityUser`       | Uso         | Entidad Identity personalizada | Infrastructure | Proporciona el estado del usuario y su `SecurityStamp` para autorizar la rotación.                              |
+| `IOpaqueTokenGenerator`         | Uso         | Interface                      | Application    | Define el contrato para generar un nuevo refresh token opaco.                                                   |
+| `OpaqueTokenCryptography`       | Uso         | Servicio criptográfico         | Infrastructure | Verifica hashes de tokens existentes y calcula el hash del reemplazo.                                           |
+| `AppDbContext`                  | Uso         | DbContext                      | Infrastructure | Persiste el consumo y la creación del reemplazo dentro de una misma transacción.                                |
+| `UserSessionStoreTests`         | Update      | Pruebas unitarias              | Tests          | Incorpora una prueba que verifica el consumo del token anterior y la creación de un único reemplazo utilizable. |
+
+#### 2. Métodos principales
+
+| Clase                     | Método                                                             | Responsabilidad                                                                                          |
+| ------------------------- | ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------- |
+| `UserSessionStore`        | `RotateRefreshTokenAsync()`                                        | Valida el refresh token, consume el anterior y crea su reemplazo dentro de una transacción serializable. |
+| `UserSessionStore`        | `FindRefreshTokenAsync()`                                          | Busca entre los tokens asociados a una sesión y devuelve aquel cuyo hash coincide con el token recibido. |
+| `UserSessionStore`        | `ConsumeRefreshTokenAsync()`                                       | Utiliza la nueva búsqueda por hash para localizar y consumir un token existente sin generar reemplazo.   |
+| `IOpaqueTokenGenerator`   | `Generate()`                                                       | Genera un nuevo refresh token opaco mediante su implementación registrada.                               |
+| `OpaqueTokenCryptography` | `Matches()`                                                        | Comprueba la correspondencia entre el refresh token recibido y un hash persistido.                       |
+| `OpaqueTokenCryptography` | `Hash()`                                                           | Calcula el hash del nuevo refresh token antes de almacenarlo.                                            |
+| `UserSessionStore`        | `RevokeSessionStateAsync()`                                        | Revoca la sesión y sus tokens utilizables cuando se detecta reutilización.                               |
+| `UserSessionStore`        | `MarkSessionExpired()`                                             | Marca una sesión como expirada cuando ha alcanzado su vencimiento.                                       |
+| `UserSessionStoreTests`   | `RotateRefreshToken_ConsumesPresentedTokenAndCreatesReplacement()` | Verifica que la rotación consume el token original y persiste un reemplazo diferente.                    |
+
+#### 3. Componentes de .NET y bibliotecas externas
+
+| Componente / Método                 | Origen                                   | Función                                                             | Uso en el proyecto                                                 |
+| ----------------------------------- | ---------------------------------------- | ------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| `UserSessionStore`                  | Código propio                            | Implementa las reglas de rotación y persistencia de refresh tokens. | Coordinar el consumo y reemplazo de tokens.                        |
+| `RefreshTokenRotationResult`        | Código propio                            | Representa el resultado de la operación.                            | Devolver el estado y el nuevo token.                               |
+| `OpaqueTokenCryptography`           | Código propio                            | Implementa operaciones de hash y comparación.                       | Verificar tokens y proteger sus valores persistidos.               |
+| `ApplicationIdentityUser`           | Código propio / ASP.NET Core Identity    | Representa al usuario persistido con Identity.                      | Validar estado y `SecurityStamp` antes de rotar.                   |
+| `SecurityStamp`                     | ASP.NET Core Identity                    | Sello de seguridad asociado al usuario.                             | Invalidar tokens vinculados a un sello anterior.                   |
+| `Guid.NewGuid()`                    | .NET                                     | Genera identificadores únicos.                                      | Asignar un identificador al nuevo refresh token.                   |
+| `DateTimeOffset`                    | .NET                                     | Representa fechas con desplazamiento horario.                       | Registrar consumo, creación y expiración.                          |
+| `IsolationLevel.Serializable`       | .NET / System.Data                       | Define el nivel de aislamiento de una transacción.                  | Proteger el consumo y reemplazo frente a operaciones concurrentes. |
+| `BeginTransactionAsync()`           | Entity Framework Core                    | Inicia una transacción de base de datos.                            | Agrupar consumo y creación del reemplazo.                          |
+| `Where()` / `ToListAsync()`         | LINQ / Entity Framework Core             | Filtran y materializan consultas.                                   | Recuperar los tokens asociados a una sesión.                       |
+| `SingleOrDefault()`                 | LINQ / .NET                              | Obtiene un único elemento coincidente o `null`.                     | Identificar el token cuyo hash coincide.                           |
+| `SaveChangesAsync()`                | Entity Framework Core                    | Persiste los cambios del contexto.                                  | Guardar el consumo y el reemplazo.                                 |
+| `CommitAsync()` / `RollbackAsync()` | EF Core / Transacciones de base de datos | Confirman o revierten cambios transaccionales.                      | Evitar persistencias parciales ante excepciones.                   |
+| `Microsoft.Data.Sqlite`             | Proveedor ADO.NET / NuGet                | Proporciona conexiones SQLite.                                      | Ejecutar pruebas sobre una base en memoria.                        |
+| `UseSqlite()`                       | EF Core SQLite / NuGet                   | Configura EF Core para utilizar SQLite.                             | Crear el entorno de persistencia de pruebas.                       |
+| `[Fact]` / `Assert.Single()`        | xUnit                                    | Definen pruebas y verificaciones.                                   | Comprobar que existe un único reemplazo utilizable.                |
+
+#### 4. Flujo funcional
+
+| Paso | Componente                | Operación                                                       | Validación / Resultado                                                                   |
+| ---- | ------------------------- | --------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| 1    | `UserSessionStore`        | Recibe `sessionId`, `refreshToken` y `nowUtc`.                  | Rechaza un token nulo o vacío.                                                           |
+| 2    | `UserSessionStore`        | Inicia una transacción con aislamiento `Serializable`.          | Agrupa la validación, el consumo y la creación del reemplazo.                            |
+| 3    | `AppDbContext`            | Recupera la sesión y su usuario propietario.                    | Ambos deben existir.                                                                     |
+| 4    | `FindRefreshTokenAsync()` | Consulta los tokens asociados a la sesión y compara sus hashes. | Selecciona el token coincidente o devuelve `null`.                                       |
+| 5    | `UserSessionStore`        | Verifica el usuario y su `SecurityStamp`.                       | El usuario debe estar activo y conservar el sello registrado en la sesión.               |
+| 6    | `UserSessionStore`        | Comprueba si el token fue consumido o revocado anteriormente.   | Si fue reutilizado, revoca la sesión y devuelve `Reused`.                                |
+| 7    | `UserSessionStore`        | Comprueba el estado de la sesión y los vencimientos.            | Si la sesión no está activa o alguno de los vencimientos se alcanzó, devuelve `Expired`. |
+| 8    | `IOpaqueTokenGenerator`   | Genera un nuevo refresh token.                                  | Obtiene un valor opaco diferente para el reemplazo.                                      |
+| 9    | `UserSessionStore`        | Marca el token anterior con `ConsumedAtUtc = nowUtc`.           | Impide que siga siendo un token utilizable.                                              |
+| 10   | `UserSessionStore`        | Crea un nuevo `UserRefreshToken`.                               | Conserva el mismo `SessionId` y establece `ExpiresAtUtc = session.ExpiresAtUtc`.         |
+| 11   | `OpaqueTokenCryptography` | Calcula el hash del reemplazo.                                  | Persiste `TokenHash`, no el valor original.                                              |
+| 12   | `AppDbContext`            | Guarda los cambios y confirma la transacción.                   | Consumo y reemplazo se persisten conjuntamente.                                          |
+| 13   | `UserSessionStore`        | Devuelve `RefreshTokenRotationResult`.                          | Retorna `Consumed` junto con el nuevo refresh token.                                     |
+
+**Resultados de la rotación**
+
+| Estado     | Condición                                                                          | Acción                                                                  |
+| ---------- | ---------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `Invalid`  | Sesión, token o usuario inexistente; usuario inactivo o `SecurityStamp` diferente. | Rechaza la operación sin generar un token.                              |
+| `Reused`   | El token presentado ya fue consumido o revocado.                                   | Revoca la sesión y sus tokens todavía utilizables.                      |
+| `Expired`  | Sesión no activa, sesión vencida o refresh token vencido.                          | Rechaza la rotación y marca la sesión como expirada cuando corresponde. |
+| `Consumed` | Todas las validaciones son correctas.                                              | Consume el token anterior y devuelve su reemplazo.                      |
+
+**Reglas de rotación**
+
+| Regla                      | Implementación                                                                              |
+| -------------------------- | ------------------------------------------------------------------------------------------- |
+| Consumo único              | El token anterior queda marcado mediante `ConsumedAtUtc`.                                   |
+| Reemplazo                  | Se genera un nuevo token opaco y se almacena su hash.                                       |
+| Historial                  | Los tokens anteriores permanecen persistidos para identificar reutilizaciones.              |
+| Sesión                     | Se conserva el mismo `SessionId`; no se crea una nueva sesión.                              |
+| Expiración                 | El reemplazo hereda `session.ExpiresAtUtc`, sin extender la duración original de la sesión. |
+| Atomicidad                 | Consumo y creación se ejecutan en una única transacción serializable.                       |
+| Detección de reutilización | Presentar nuevamente un token consumido o revocado provoca la revocación de la sesión.      |
+
+**Prueba incorporada**
+
+| Prueba                                                           | Escenario                            | Verificaciones                                                                                                         |
+| ---------------------------------------------------------------- | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
+| `RotateRefreshToken_ConsumesPresentedTokenAndCreatesReplacement` | Rotación de un refresh token válido. | Devuelve `Consumed`, genera un token diferente, conserva dos registros y deja exactamente uno sin consumir ni revocar. |
+
+**Alcance:** se implementa la rotación en `Infrastructure`. El código presentado no incorpora todavía un caso de uso en `Application` ni un endpoint HTTP para solicitar la renovación.
+
+#### 5. Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    subgraph Infrastructure["Infrastructure - Security"]
+        Store["UserSessionStore"]
+        Rotate["RotateRefreshTokenAsync"]
+        Find["FindRefreshTokenAsync"]
+        Crypto["OpaqueTokenCryptography"]
+        DB["AppDbContext"]
+        Result["RefreshTokenRotationResult"]
+    end
+
+    subgraph Application["Application"]
+        Generator["IOpaqueTokenGenerator"]
+    end
+
+    subgraph Identity["Infrastructure - ASP.NET Core Identity"]
+        User["ApplicationIdentityUser"]
+    end
+
+    subgraph Persistence["Infrastructure - Persistence"]
+        Session["UserSession"]
+        Token["UserRefreshToken"]
+    end
+
+    subgraph Database["PostgreSQL"]
+        UsersDB[("Usuarios")]
+        SessionsDB[("Sesiones")]
+        TokensDB[("Refresh Tokens")]
+    end
+
+    Store --> Rotate
+    Rotate -->|"Transacción Serializable"| DB
+
+    DB --> User
+    DB --> Session
+    DB --> Token
+
+    User --> UsersDB
+    Session --> SessionsDB
+    Token --> TokensDB
+
+    Rotate --> Find
+    Find --> Crypto
+
+    Find --> Validation{"Token, usuario y stamp válidos"}
+
+    Validation -->|"No"| Invalid["Invalid"]
+    Validation -->|"Sí"| Reused{"Token consumido o revocado"}
+
+    Reused -->|"Sí"| Revoke["Revocar sesión - Reused"]
+    Reused -->|"No"| Expiration{"Sesión y token vigentes"}
+
+    Expiration -->|"No"| Expired["Expired"]
+    Expiration -->|"Sí"| Generate["Generar reemplazo"]
+
+    Generate --> Generator
+    Generate --> Consume["Marcar token anterior como consumido"]
+    Consume --> Hash["Calcular hash del reemplazo"]
+    Hash --> Crypto
+
+    Hash --> Persist["Crear UserRefreshToken"]
+    Persist -->|"Mismo SessionId y expiración"| DB
+
+    DB --> Commit["Commit"]
+    Commit --> Result
+
+    Result --> Success["Consumed + nuevo RefreshToken"]
+```
+
+#### 6. Resultado
+
+Se implementa la **rotación atómica de refresh tokens**, consumiendo el token anterior y creando su reemplazo en una única transacción. El reemplazo conserva la sesión y su vencimiento original, mientras que los tokens consumidos permanecen registrados para detectar reutilizaciones y revocar la sesión cuando corresponda.
 
 ---
 

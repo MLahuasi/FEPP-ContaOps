@@ -152,6 +152,37 @@ public sealed class UserSessionStoreTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// Comprueba que la rotación consume el token anterior y persiste un único reemplazo utilizable.
+    /// </summary>
+    [Fact]
+    public async Task RotateRefreshToken_ConsumesPresentedTokenAndCreatesReplacement()
+    {
+        UserSessionStore store = CreateStore();
+        DateTimeOffset nowUtc = UtcNow;
+        UserSessionCreationResult created = await store.ReplaceActiveSessionAsync(
+            "user-1",
+            "stamp-1",
+            nowUtc,
+            nowUtc.AddDays(1),
+            nowUtc.AddHours(2));
+
+        RefreshTokenRotationResult result = await store.RotateRefreshTokenAsync(
+            created.SessionId,
+            created.RefreshToken,
+            nowUtc.AddMinutes(1));
+
+        List<UserRefreshToken> tokens = await _dbContext.UserRefreshTokens
+            .Where(item => item.SessionId == created.SessionId)
+            .ToListAsync();
+
+        Assert.Equal(RefreshTokenConsumptionStatus.Consumed, result.Status);
+        Assert.NotNull(result.RefreshToken);
+        Assert.Equal(2, tokens.Count);
+        Assert.Single(tokens, item => item.ConsumedAtUtc is null && item.RevokedAtUtc is null);
+        Assert.NotEqual(created.RefreshToken, result.RefreshToken);
+    }
+
+    /// <summary>
     /// Comprueba que consumir un token de una sesión vencida marca la sesión como expirada.
     /// </summary>
     [Fact]
