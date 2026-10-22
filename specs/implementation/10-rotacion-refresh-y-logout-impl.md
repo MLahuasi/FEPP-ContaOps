@@ -1035,7 +1035,208 @@ Se implementa **`POST /api/auth/logout`** para cerrar la sesión autenticada med
 
 ---
 
-### 8. Probar concurrencia, reutilización, expiración y logout.
+### 8. Probar concurrencia, reutilización, expiración y logout
+
+#### 1. Componentes implementados
+
+| Componente                                                   | Acción | Tipo                              | Capa           | Responsabilidad                                                                                                                             |
+| ------------------------------------------------------------ | ------ | --------------------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `AuthIntegrationTests`                                       | Update | Clase de pruebas de integración   | Tests          | Incorpora cuatro escenarios para verificar rotación, concurrencia, expiración y cierre de sesión mediante solicitudes HTTP reales a la API. |
+| `TestApiFactory`                                             | Uso    | Clase de configuración de pruebas | Tests          | Inicia la API mediante `WebApplicationFactory<Program>` y configura PostgreSQL, JWT, administrador inicial y servicios necesarios.          |
+| `LoginAndReadTokensAsync()`                                  | Uso    | Método auxiliar                   | Tests          | Ejecuta el login y recupera el access token y el refresh token.                                                                             |
+| `SendLogoutAsync()`                                          | Create | Método auxiliar                   | Tests          | Ejecuta `POST /api/auth/logout` utilizando autenticación Bearer.                                                                            |
+| `SendProtectedAsync()`                                       | Uso    | Método auxiliar                   | Tests          | Realiza una solicitud autenticada a un endpoint protegido para comprobar la validez del JWT.                                                |
+| `RefreshRotation_RejectsReuseAndInvalidatesTheReplacement()` | Create | Prueba de integración             | Tests          | Verifica que reutilizar un refresh token consumido invalida la sesión y los JWT asociados.                                                  |
+| `ConcurrentRefreshes_ProduceAtMostOneSuccessfulRotation()`   | Create | Prueba de integración             | Tests          | Comprueba que dos solicitudes concurrentes con el mismo refresh token no producen dos rotaciones exitosas.                                  |
+| `ExpiredSession_RejectsRefreshToken()`                       | Create | Prueba de integración             | Tests          | Verifica que una sesión expirada no permite renovar el access token.                                                                        |
+| `Logout_ImmediatelyInvalidatesAccessAndRefreshTokens()`      | Create | Prueba de integración             | Tests          | Verifica que el logout invalida el JWT actual y el refresh token asociado.                                                                  |
+| `UserSessionStore`                                           | Uso    | Servicio de persistencia          | Infrastructure | Ejecuta la rotación, validación y revocación de sesiones utilizadas en las pruebas.                                                         |
+| `AppDbContext`                                               | Uso    | DbContext                         | Infrastructure | Permite modificar y consultar sesiones persistidas durante los escenarios de prueba.                                                        |
+| `UserSession`                                                | Uso    | Entidad de persistencia           | Infrastructure | Permite modificar la fecha de expiración para comprobar el rechazo de sesiones vencidas.                                                    |
+
+#### 2. Métodos principales
+
+| Clase                  | Método                                                       | Responsabilidad                                                                                       |
+| ---------------------- | ------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------- |
+| `AuthIntegrationTests` | `RefreshRotation_RejectsReuseAndInvalidatesTheReplacement()` | Renueva una sesión, reutiliza el refresh token original y comprueba que ambos JWT quedan invalidados. |
+| `AuthIntegrationTests` | `ConcurrentRefreshes_ProduceAtMostOneSuccessfulRotation()`   | Ejecuta dos solicitudes de renovación concurrentes y verifica que únicamente una responde HTTP 200.   |
+| `AuthIntegrationTests` | `ExpiredSession_RejectsRefreshToken()`                       | Fuerza el vencimiento de una sesión persistida y comprueba que el refresh token es rechazado.         |
+| `AuthIntegrationTests` | `Logout_ImmediatelyInvalidatesAccessAndRefreshTokens()`      | Ejecuta logout y verifica que el JWT y el refresh token dejan de ser utilizables.                     |
+| `AuthIntegrationTests` | `LoginAndReadTokensAsync()`                                  | Autentica al administrador de pruebas y recupera ambos tokens.                                        |
+| `AuthIntegrationTests` | `SendProtectedAsync()`                                       | Comprueba la autenticación Bearer mediante un endpoint administrativo protegido.                      |
+| `AuthIntegrationTests` | `SendLogoutAsync()`                                          | Envía una solicitud autenticada a `/api/auth/logout`.                                                 |
+| `AuthIntegrationTests` | `InitializeAsync()`                                          | Inicia el contenedor PostgreSQL utilizado por las pruebas.                                            |
+| `AuthIntegrationTests` | `DisposeAsync()`                                             | Libera el contenedor PostgreSQL al finalizar las pruebas.                                             |
+| `TestApiFactory`       | `ConfigureWebHost()`                                         | Configura la aplicación y sus dependencias para ejecutar las pruebas de integración.                  |
+
+#### 3. Componentes de .NET y bibliotecas externas
+
+| Componente / Método                      | Origen                                   | Función                                                                | Uso en el proyecto                                                |
+| ---------------------------------------- | ---------------------------------------- | ---------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| `AuthIntegrationTests`                   | Código propio                            | Define escenarios de integración del sistema de autenticación.         | Validar las operaciones de login, refresh y logout.               |
+| `LoginAndReadTokensAsync()`              | Código propio                            | Recupera tokens mediante el endpoint de login.                         | Preparar los escenarios de prueba.                                |
+| `SendProtectedAsync()`                   | Código propio                            | Ejecuta solicitudes HTTP autenticadas.                                 | Verificar la invalidación de JWT.                                 |
+| `SendLogoutAsync()`                      | Código propio                            | Ejecuta solicitudes HTTP de cierre de sesión.                          | Comprobar el comportamiento del logout.                           |
+| `WebApplicationFactory<Program>`         | Microsoft.AspNetCore.Mvc.Testing / NuGet | Permite ejecutar una aplicación ASP.NET Core en un entorno de pruebas. | Realizar solicitudes HTTP contra la API configurada para testing. |
+| `IWebHostBuilder.UseSetting()`           | ASP.NET Core Hosting                     | Define valores de configuración para el host.                          | Configurar JWT, PostgreSQL y servicios de prueba.                 |
+| `HttpClient`                             | .NET / System.Net.Http                   | Cliente para solicitudes HTTP.                                         | Consumir los endpoints de autenticación.                          |
+| `PostAsJsonAsync()`                      | .NET / System.Net.Http.Json              | Envía solicitudes POST con contenido JSON.                             | Ejecutar login y refresh.                                         |
+| `HttpRequestMessage`                     | .NET / System.Net.Http                   | Representa una solicitud HTTP.                                         | Construir solicitudes autenticadas.                               |
+| `AuthenticationHeaderValue`              | .NET / System.Net.Http.Headers           | Representa valores del encabezado Authorization.                       | Enviar JWT mediante el esquema Bearer.                            |
+| `Task.WhenAll()`                         | .NET                                     | Espera la finalización de múltiples tareas.                            | Ejecutar y evaluar solicitudes concurrentes.                      |
+| `JsonDocument`                           | .NET / System.Text.Json                  | Permite analizar documentos JSON.                                      | Extraer access tokens y refresh tokens de las respuestas.         |
+| `JwtSecurityTokenHandler.ReadJwtToken()` | System.IdentityModel.Tokens.Jwt / NuGet  | Lee la estructura de un JWT sin validar su firma.                      | Extraer el claim `sid` para identificar la sesión.                |
+| `PostgreSqlBuilder`                      | Testcontainers.PostgreSql / NuGet        | Construye un contenedor PostgreSQL para pruebas.                       | Preparar una base de datos efímera.                               |
+| `PostgreSqlContainer`                    | Testcontainers.PostgreSql / NuGet        | Administra el ciclo de vida del contenedor.                            | Ejecutar las pruebas utilizando PostgreSQL 16.                    |
+| `IServiceScope`                          | Microsoft.Extensions.DependencyInjection | Define un ámbito de resolución de dependencias.                        | Obtener `AppDbContext` durante las pruebas.                       |
+| `GetRequiredService<T>()`                | Microsoft.Extensions.DependencyInjection | Recupera un servicio registrado.                                       | Acceder al contexto de persistencia.                              |
+| `SingleAsync()`                          | Entity Framework Core                    | Recupera una entidad única mediante una consulta asíncrona.            | Localizar la sesión que se modificará para simular expiración.    |
+| `SaveChangesAsync()`                     | Entity Framework Core                    | Persiste los cambios del contexto.                                     | Guardar la nueva fecha de expiración.                             |
+| `[Fact]`                                 | xUnit                                    | Identifica una prueba.                                                 | Definir los escenarios de integración.                            |
+| `IAsyncLifetime`                         | xUnit                                    | Define inicialización y limpieza asíncronas.                           | Administrar el contenedor PostgreSQL.                             |
+| `Assert.Equal()` / `Assert.Contains()`   | xUnit                                    | Comprueban resultados esperados.                                       | Verificar códigos HTTP y condiciones de autenticación.            |
+
+#### 4. Flujo funcional
+
+**Escenarios de integración**
+
+| Prueba                                                     | Procedimiento                                                                        | Validaciones                                                                                          |
+| ---------------------------------------------------------- | ------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------- |
+| `RefreshRotation_RejectsReuseAndInvalidatesTheReplacement` | Login → Refresh válido → Reutilizar refresh original → Probar ambos JWT.             | Primera renovación HTTP 200; reutilización HTTP 401; JWT original y renovado rechazados con HTTP 401. |
+| `ConcurrentRefreshes_ProduceAtMostOneSuccessfulRotation`   | Login → Dos solicitudes de refresh concurrentes utilizando el mismo token.           | Exactamente una respuesta HTTP 200 y al menos una HTTP 401.                                           |
+| `ExpiredSession_RejectsRefreshToken`                       | Login → Modificar `UserSession.ExpiresAtUtc` a una fecha pasada → Solicitar refresh. | Renovación rechazada con HTTP 401.                                                                    |
+| `Logout_ImmediatelyInvalidatesAccessAndRefreshTokens`      | Login → Logout → Probar JWT original → Intentar refresh.                             | Logout HTTP 204; JWT y refresh token rechazados con HTTP 401.                                         |
+
+**Flujo de validación**
+
+| Paso | Componente                  | Operación                                                               | Resultado esperado                                           |
+| ---- | --------------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------ |
+| 1    | `TestApiFactory`            | Configura la API y sus servicios.                                       | Entorno de integración disponible.                           |
+| 2    | `PostgreSqlContainer`       | Inicia PostgreSQL 16 mediante Testcontainers.                           | Base de datos efímera disponible.                            |
+| 3    | `LoginAndReadTokensAsync()` | Ejecuta `POST /api/auth/login`.                                         | Obtiene access token y refresh token válidos.                |
+| 4    | `HttpClient`                | Ejecuta el escenario de refresh, concurrencia, expiración o logout.     | La API procesa la solicitud mediante su implementación real. |
+| 5    | `UserSessionStore`          | Aplica las validaciones y modificaciones persistentes correspondientes. | Consume, rota, rechaza o revoca tokens según el escenario.   |
+| 6    | `SendProtectedAsync()`      | Utiliza el JWT para consumir `/api/users/invitations`.                  | Comprueba si el JWT continúa siendo aceptado.                |
+| 7    | xUnit                       | Evalúa los códigos de respuesta HTTP.                                   | Verifica las condiciones esperadas de cada prueba.           |
+| 8    | `DisposeAsync()`            | Libera el contenedor PostgreSQL.                                        | Finaliza el entorno de prueba.                               |
+
+**Validaciones de seguridad**
+
+| Condición                      | Comportamiento verificado                                                          |
+| ------------------------------ | ---------------------------------------------------------------------------------- |
+| Rotación válida                | Se entrega un refresh token diferente del original.                                |
+| Reutilización de refresh token | Se rechaza la renovación y dejan de ser utilizables los JWT asociados a la sesión. |
+| Solicitudes concurrentes       | No se permiten dos respuestas exitosas para el mismo refresh token.                |
+| Sesión expirada                | El refresh token no permite renovar el JWT.                                        |
+| Logout                         | La sesión deja de aceptar el access token anterior.                                |
+| Refresh posterior al logout    | La renovación es rechazada.                                                        |
+| Validación de JWT              | Se comprueba mediante una solicitud real a un endpoint protegido.                  |
+
+**Configuración del entorno**
+
+| Elemento                 | Configuración                                                |
+| ------------------------ | ------------------------------------------------------------ |
+| Base de datos            | PostgreSQL 16 Alpine.                                        |
+| Contenedores             | Testcontainers.PostgreSql.                                   |
+| Servidor de pruebas      | `WebApplicationFactory<Program>`.                            |
+| Duración del JWT         | 15 minutos.                                                  |
+| Autenticación de pruebas | Administrador inicial configurado mediante `BootstrapAdmin`. |
+| Persistencia             | `AppDbContext` conectado a PostgreSQL efímero.               |
+| Ejecución HTTP           | `HttpClient` contra la aplicación de pruebas.                |
+
+**Alcance de las pruebas**
+
+Las pruebas utilizan los endpoints HTTP y la persistencia real configurada para el entorno de integración. La prueba de concurrencia verifica los códigos de respuesta, pero no consulta directamente el estado final de los refresh tokens en PostgreSQL.
+
+El código presentado define los escenarios y sus verificaciones; no incluye resultados de una ejecución de la suite.
+
+#### 5. Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    subgraph Tests["Tests - Fepp.ContaOps.IntegrationTests"]
+        Integration["AuthIntegrationTests"]
+
+        Rotation["RefreshRotation_RejectsReuseAndInvalidatesTheReplacement"]
+        Concurrent["ConcurrentRefreshes_ProduceAtMostOneSuccessfulRotation"]
+        Expiration["ExpiredSession_RejectsRefreshToken"]
+        LogoutTest["Logout_ImmediatelyInvalidatesAccessAndRefreshTokens"]
+
+        Factory["TestApiFactory"]
+        Client["HttpClient"]
+    end
+
+    subgraph Presentation["Presentation - Fepp.ContaOps.Api"]
+        Auth["AuthController"]
+        Bearer["ASP.NET Core JWT Bearer"]
+        Protected["Endpoint protegido - User Invitations"]
+    end
+
+    subgraph Application["Application"]
+        Login["LoginUser"]
+        Refresh["RefreshUser"]
+        Logout["LogoutUser"]
+        StoreContract["IUserSessionStore"]
+    end
+
+    subgraph Infrastructure["Infrastructure"]
+        Store["UserSessionStore"]
+        Db["AppDbContext"]
+        Identity["ASP.NET Core Identity"]
+    end
+
+    subgraph Database["PostgreSQL 16 - Testcontainers"]
+        Sessions[("UserSessions")]
+        Tokens[("UserRefreshTokens")]
+        Users[("Usuarios Identity")]
+    end
+
+    Integration --> Rotation
+    Integration --> Concurrent
+    Integration --> Expiration
+    Integration --> LogoutTest
+
+    Integration --> Factory
+    Factory --> Client
+
+    Client -->|"POST /api/auth/login"| Auth
+    Client -->|"POST /api/auth/refresh"| Auth
+    Client -->|"POST /api/auth/logout"| Bearer
+
+    Bearer --> Auth
+    Bearer --> Protected
+
+    Auth --> Login
+    Auth --> Refresh
+    Auth --> Logout
+
+    Login --> StoreContract
+    Refresh --> StoreContract
+    Logout --> StoreContract
+
+    StoreContract -.->|"Implementación"| Store
+
+    Store --> Db
+    Store --> Identity
+
+    Db --> Sessions
+    Db --> Tokens
+    Identity --> Users
+
+    Rotation -->|"Reutilizar refresh"| Client
+    Concurrent -->|"Dos solicitudes simultáneas"| Client
+    Expiration -->|"Modificar ExpiresAtUtc"| Db
+    LogoutTest -->|"Cerrar sesión y reutilizar tokens"| Client
+
+    Client -->|"Comprobar JWT"| Protected
+
+    Protected -->|"HTTP 401 cuando la sesión es inválida"| Integration
+    Auth -->|"HTTP 200 / 204 / 401"| Integration
+```
+
+#### 6. Resultado
+
+Se incorporan **cuatro pruebas de integración** que cubren reutilización de refresh tokens, concurrencia, expiración de sesiones y logout utilizando ASP.NET Core y PostgreSQL mediante Testcontainers. Los escenarios comprueban las respuestas HTTP esperadas y la invalidación de tokens, aunque el archivo proporcionado no acredita todavía la ejecución exitosa de las pruebas.
 
 ---
 
