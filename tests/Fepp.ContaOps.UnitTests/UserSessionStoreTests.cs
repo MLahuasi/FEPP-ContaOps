@@ -220,6 +220,36 @@ public sealed class UserSessionStoreTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// Comprueba que revocar una sesión invalida persistentemente su refresh vigente.
+    /// </summary>
+    [Fact]
+    public async Task RevokeSession_RevokesSessionAndRefreshToken()
+    {
+        UserSessionStore store = CreateStore();
+        DateTimeOffset nowUtc = UtcNow;
+        UserSessionCreationResult created = await store.ReplaceActiveSessionAsync(
+            "user-1",
+            "stamp-1",
+            nowUtc,
+            nowUtc.AddDays(1),
+            nowUtc.AddHours(2));
+
+        await store.RevokeSessionAsync(
+            created.SessionId,
+            "Logout",
+            nowUtc.AddMinutes(1));
+
+        UserSession session = await _dbContext.UserSessions
+            .SingleAsync(item => item.SessionId == created.SessionId);
+        UserRefreshToken token = await _dbContext.UserRefreshTokens
+            .SingleAsync(item => item.SessionId == created.SessionId);
+
+        Assert.Equal(UserSessionStatus.Revoked, session.Status);
+        Assert.Equal("Logout", session.RevocationReason);
+        Assert.NotNull(token.RevokedAtUtc);
+    }
+
+    /// <summary>
     /// Comprueba que consumir un token de una sesión vencida marca la sesión como expirada.
     /// </summary>
     [Fact]

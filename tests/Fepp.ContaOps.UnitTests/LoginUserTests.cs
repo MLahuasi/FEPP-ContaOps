@@ -139,6 +139,14 @@ public sealed class LoginUserTests
 
     private sealed class FakeUserSessionStore : IUserSessionStore
     {
+        public Task RevokeSessionAsync(
+            Guid sessionId,
+            DateTimeOffset revokedAtUtc,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.CompletedTask;
+        }
+
         public Task<RefreshTokenRotationResult> RotateRefreshTokenAsync(
             string refreshToken,
             DateTimeOffset nowUtc,

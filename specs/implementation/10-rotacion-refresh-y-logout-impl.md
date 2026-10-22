@@ -850,7 +850,188 @@ Se implementa **`POST /api/auth/refresh`** para renovar el JWT mediante un refre
 
 ---
 
-### 7. Implementar POST /api/auth/logout.
+### 7. Implementar POST /api/auth/logout
+
+#### 1. Componentes implementados
+
+| Componente              | Acción | Tipo                         | Capa           | Responsabilidad                                                                                                    |
+| ----------------------- | ------ | ---------------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `AuthController`        | Update | Controller                   | Presentation   | Expone `POST /api/auth/logout`, exige autenticación JWT y obtiene el identificador de sesión desde el claim `sid`. |
+| `LogoutUser`            | Create | Caso de uso                  | Application    | Coordina la revocación de la sesión autenticada mediante `IUserSessionStore`.                                      |
+| `IUserSessionStore`     | Update | Interface                    | Application    | Incorpora el contrato `RevokeSessionAsync()` para revocar sesiones sin exponer detalles de persistencia.           |
+| `DependencyInjection`   | Update | Configuración DI             | Application    | Registra `LogoutUser` con ciclo de vida `Scoped`.                                                                  |
+| `UserSessionStore`      | Update | Servicio de persistencia     | Infrastructure | Implementa el contrato de revocación de Application y establece el motivo `Logout`.                                |
+| `UserSession`           | Uso    | Entidad de persistencia      | Infrastructure | Almacena el estado `Revoked`, la fecha y el motivo de revocación.                                                  |
+| `UserRefreshToken`      | Uso    | Entidad de persistencia      | Infrastructure | Registra la revocación de los refresh tokens todavía utilizables asociados a la sesión.                            |
+| `AppDbContext`          | Uso    | DbContext                    | Infrastructure | Gestiona la actualización transaccional de sesiones y refresh tokens.                                              |
+| `LoginUserTests`        | Update | Pruebas unitarias            | Tests          | Actualiza `FakeUserSessionStore` para implementar el nuevo contrato de revocación.                                 |
+| `UserSessionStoreTests` | Update | Pruebas unitarias con SQLite | Tests          | Incorpora una prueba que verifica la revocación persistente de la sesión y su refresh token.                       |
+
+#### 2. Métodos principales
+
+| Clase                   | Método                                          | Responsabilidad                                                                                                 |
+| ----------------------- | ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `AuthController`        | `Logout()`                                      | Obtiene el claim `sid` del usuario autenticado, valida su formato y ejecuta el caso de uso de cierre de sesión. |
+| `LogoutUser`            | `ExecuteAsync()`                                | Solicita la revocación de la sesión utilizando su identificador y la fecha UTC actual.                          |
+| `IUserSessionStore`     | `RevokeSessionAsync()`                          | Define el contrato para revocar una sesión mediante `sessionId` y `revokedAtUtc`.                               |
+| `UserSessionStore`      | `IUserSessionStore.RevokeSessionAsync()`        | Adapta el contrato de Application al método de persistencia y asigna el motivo `Logout`.                        |
+| `UserSessionStore`      | `RevokeSessionAsync(Guid, string, ...)`         | Busca la sesión y ejecuta su revocación dentro de una transacción serializable.                                 |
+| `UserSessionStore`      | `RevokeSessionStateAsync()`                     | Marca la sesión como revocada e invalida sus refresh tokens no consumidos ni revocados.                         |
+| `UserSessionStoreTests` | `RevokeSession_RevokesSessionAndRefreshToken()` | Comprueba que el logout revoca persistentemente la sesión y su refresh token.                                   |
+| `DependencyInjection`   | `AddApplication()`                              | Registra `LogoutUser` en el contenedor de dependencias.                                                         |
+
+#### 3. Componentes de .NET y bibliotecas externas
+
+| Componente / Método                              | Origen                                   | Función                                                                       | Uso en el proyecto                                     |
+| ------------------------------------------------ | ---------------------------------------- | ----------------------------------------------------------------------------- | ------------------------------------------------------ |
+| `LogoutUser`                                     | Código propio                            | Implementa el caso de uso de cierre de sesión.                                | Coordinar la revocación desde Application.             |
+| `UserSessionStore`                               | Código propio                            | Implementa la persistencia y revocación de sesiones.                          | Invalidar sesiones y refresh tokens.                   |
+| `IUserSessionStore`                              | Código propio                            | Define las operaciones disponibles sobre sesiones.                            | Desacoplar Application de Infrastructure.              |
+| `[Authorize]`                                    | ASP.NET Core Authorization               | Exige que la solicitud esté autenticada.                                      | Proteger `POST /api/auth/logout`.                      |
+| `[HttpPost("logout")]`                           | ASP.NET Core MVC                         | Define un endpoint HTTP POST.                                                 | Exponer la ruta `/api/auth/logout`.                    |
+| `[ProducesResponseType]`                         | ASP.NET Core MVC                         | Declara las respuestas HTTP del endpoint.                                     | Documentar respuestas 204 y 401.                       |
+| `ControllerBase.User`                            | ASP.NET Core MVC                         | Proporciona el `ClaimsPrincipal` autenticado.                                 | Acceder a los claims del JWT.                          |
+| `ClaimsPrincipal.FindFirst()`                    | .NET / System.Security.Claims            | Busca un claim por su tipo.                                                   | Recuperar el identificador de sesión.                  |
+| `JwtRegisteredClaimNames.Sid`                    | System.IdentityModel.Tokens.Jwt          | Identifica el claim JWT `sid`.                                                | Localizar la sesión asociada al access token.          |
+| `ClaimTypes.Sid`                                 | .NET / System.Security.Claims            | Identifica el claim de sesión en el modelo de claims de .NET.                 | Admitir la representación alternativa del claim `sid`. |
+| `Guid.TryParse()`                                | .NET                                     | Convierte una cadena en `Guid` sin lanzar una excepción por formato inválido. | Validar el identificador de sesión.                    |
+| `DateTimeOffset.UtcNow`                          | .NET                                     | Obtiene la fecha y hora UTC actual.                                           | Registrar el momento del logout.                       |
+| `ControllerBase.Unauthorized()`                  | ASP.NET Core MVC                         | Genera una respuesta HTTP 401.                                                | Rechazar solicitudes sin un `sid` válido.              |
+| `ControllerBase.NoContent()`                     | ASP.NET Core MVC                         | Genera una respuesta HTTP 204.                                                | Confirmar el cierre de sesión.                         |
+| `IServiceCollection.AddScoped<T>()`              | Microsoft.Extensions.DependencyInjection | Registra un servicio con ciclo de vida por ámbito.                            | Registrar `LogoutUser`.                                |
+| `IsolationLevel.Serializable`                    | .NET / System.Data                       | Define el aislamiento de la transacción.                                      | Proteger la revocación de sesión y tokens.             |
+| `BeginTransactionAsync()`                        | Entity Framework Core                    | Inicia una transacción de base de datos.                                      | Agrupar los cambios de revocación.                     |
+| `SingleOrDefaultAsync()`                         | Entity Framework Core                    | Recupera una entidad o `null`.                                                | Localizar la sesión por identificador.                 |
+| `Where()` / `ToListAsync()`                      | LINQ / Entity Framework Core             | Filtran y recuperan entidades.                                                | Obtener refresh tokens todavía utilizables.            |
+| `SaveChangesAsync()`                             | Entity Framework Core                    | Persiste los cambios del contexto.                                            | Guardar el estado de revocación.                       |
+| `CommitAsync()` / `RollbackAsync()`              | EF Core / Transacciones de base de datos | Confirman o revierten una transacción.                                        | Mantener la consistencia de la revocación.             |
+| `Microsoft.Data.Sqlite`                          | Proveedor ADO.NET / NuGet                | Proporciona conexiones SQLite.                                                | Ejecutar pruebas con una base de datos en memoria.     |
+| `[Fact]` / `Assert.Equal()` / `Assert.NotNull()` | xUnit                                    | Definen pruebas y verificaciones.                                             | Comprobar la revocación persistente.                   |
+
+#### 4. Flujo funcional
+
+| Paso | Componente                  | Operación                                        | Validación / Resultado                                                     |
+| ---- | --------------------------- | ------------------------------------------------ | -------------------------------------------------------------------------- |
+| 1    | `AuthController`            | Recibe `POST /api/auth/logout`.                  | El endpoint requiere autenticación mediante `[Authorize]`.                 |
+| 2    | ASP.NET Core Authentication | Procesa el JWT Bearer recibido.                  | La autenticación debe ser válida para ejecutar el endpoint.                |
+| 3    | `AuthController`            | Recupera el claim `sid`.                         | Busca `JwtRegisteredClaimNames.Sid` y, alternativamente, `ClaimTypes.Sid`. |
+| 4    | `AuthController`            | Convierte `sid` mediante `Guid.TryParse()`.      | Si el identificador es inválido o inexistente, devuelve HTTP 401.          |
+| 5    | `LogoutUser`                | Ejecuta `ExecuteAsync(sessionId)`.               | Utiliza `DateTimeOffset.UtcNow` como fecha de revocación.                  |
+| 6    | `IUserSessionStore`         | Solicita `RevokeSessionAsync()`.                 | Delega la persistencia a Infrastructure.                                   |
+| 7    | `UserSessionStore`          | Asigna el motivo de revocación.                  | Utiliza `LogoutRevocationReason = "Logout"`.                               |
+| 8    | `UserSessionStore`          | Inicia una transacción serializable.             | Protege la actualización de sesión y refresh tokens.                       |
+| 9    | `UserSessionStore`          | Busca la sesión mediante `SessionId`.            | Si no existe, confirma la transacción y finaliza sin realizar cambios.     |
+| 10   | `UserSessionStore`          | Ejecuta `RevokeSessionStateAsync()`.             | Marca la sesión como `Revoked` y registra fecha y motivo.                  |
+| 11   | `UserSessionStore`          | Consulta los refresh tokens todavía utilizables. | Selecciona aquellos sin `ConsumedAtUtc` ni `RevokedAtUtc`.                 |
+| 12   | `UserSessionStore`          | Revoca los refresh tokens encontrados.           | Registra `RevokedAtUtc` en cada token.                                     |
+| 13   | `AppDbContext`              | Persiste y confirma la transacción.              | Guarda los cambios; ante una excepción, ejecuta rollback.                  |
+| 14   | `AuthController`            | Devuelve `NoContent()`.                          | HTTP 204 sin cuerpo de respuesta.                                          |
+
+**Contrato HTTP**
+
+| Elemento     | Valor                                  | Descripción                                                            |
+| ------------ | -------------------------------------- | ---------------------------------------------------------------------- |
+| Método       | `POST`                                 | Solicitud de cierre de sesión.                                         |
+| Ruta         | `/api/auth/logout`                     | Endpoint de autenticación.                                             |
+| Autorización | `[Authorize]`                          | Requiere un usuario autenticado.                                       |
+| Header       | `Authorization: Bearer <access_token>` | JWT asociado a la sesión que se revocará.                              |
+| Request body | No requerido                           | La sesión se identifica mediante el claim `sid`.                       |
+| Response 204 | `No Content`                           | Operación completada.                                                  |
+| Response 401 | `Unauthorized`                         | Autenticación inválida o identificador de sesión ausente o incorrecto. |
+
+**Efectos del logout**
+
+| Elemento                              | Comportamiento                                                                                  |
+| ------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| Sesión persistida                     | Cambia a `UserSessionStatus.Revoked`.                                                           |
+| Fecha de revocación                   | Se registra en `RevokedAtUtc`.                                                                  |
+| Motivo de revocación                  | Se establece `Logout`.                                                                          |
+| Refresh token vigente                 | Se marca como revocado mediante `RevokedAtUtc`.                                                 |
+| Refresh tokens previamente consumidos | Conservan su historial de consumo.                                                              |
+| JWT emitidos para la sesión           | Dejan de superar la validación de sesión activa, aunque su fecha `exp` todavía no haya vencido. |
+| Sesiones inexistentes                 | La operación de persistencia finaliza sin cambios.                                              |
+
+**Prueba incorporada**
+
+| Prueba                                        | Escenario                                                                                      | Verificaciones                                                                                                       |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `RevokeSession_RevokesSessionAndRefreshToken` | Se crea una sesión con refresh token y posteriormente se revoca utilizando el motivo `Logout`. | La sesión queda en estado `Revoked`, registra `RevocationReason = "Logout"` y el refresh token tiene `RevokedAtUtc`. |
+
+**Alcance:** el logout revoca la sesión persistida asociada al JWT presentado; no elimina físicamente los registros ni modifica el `SecurityStamp` del usuario. La invalidación del JWT depende de la validación de sesión activa implementada previamente.
+
+#### 5. Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    Client["Cliente HTTP"]
+
+    subgraph Presentation["Presentation - Fepp.ContaOps.Api"]
+        Auth["ASP.NET Core Authentication"]
+        Controller["AuthController.Logout"]
+        Claims["ClaimsPrincipal - sid"]
+    end
+
+    subgraph Application["Application"]
+        Logout["LogoutUser"]
+        Contract["IUserSessionStore"]
+    end
+
+    subgraph Infrastructure["Infrastructure"]
+        Store["UserSessionStore"]
+        Adapter["IUserSessionStore.RevokeSessionAsync"]
+        Revoke["RevokeSessionAsync"]
+        RevokeState["RevokeSessionStateAsync"]
+        Db["AppDbContext"]
+        Session["UserSession"]
+        RefreshToken["UserRefreshToken"]
+    end
+
+    subgraph Database["PostgreSQL"]
+        SessionsDB[("Sesiones")]
+        TokensDB[("Refresh Tokens")]
+    end
+
+    Client -->|"POST /api/auth/logout - Bearer JWT"| Auth
+
+    Auth -->|"JWT válido"| Controller
+    Auth -->|"JWT inválido"| Unauthorized["HTTP 401"]
+
+    Controller --> Claims
+    Claims --> Validate{"sid es Guid válido"}
+
+    Validate -->|"No"| Unauthorized
+    Validate -->|"Sí"| Logout
+
+    Logout --> Contract
+    Contract -.->|"Implementación"| Adapter
+
+    Adapter -->|"Motivo Logout"| Revoke
+    Revoke -->|"Transacción Serializable"| Db
+
+    Db --> SessionsDB
+    Db --> TokensDB
+
+    Revoke --> Find{"Sesión existente"}
+
+    Find -->|"No"| Complete["Finalizar sin cambios"]
+    Find -->|"Sí"| RevokeState
+
+    RevokeState -->|"Estado Revoked"| Session
+    RevokeState -->|"Registrar RevokedAtUtc"| RefreshToken
+
+    Session --> SessionsDB
+    RefreshToken --> TokensDB
+
+    RevokeState -->|"SaveChanges + Commit"| Complete
+    Complete -->|"Operación completada"| Controller
+
+    Controller -->|"NoContent"| Success["HTTP 204"]
+    Success --> Client
+```
+
+#### 6. Resultado
+
+Se implementa **`POST /api/auth/logout`** para cerrar la sesión autenticada mediante su identificador `sid`, obtenido del JWT Bearer. La operación revoca persistentemente la sesión y sus refresh tokens utilizables, invalidando los access tokens asociados mediante la validación de sesiones existente.
 
 ---
 

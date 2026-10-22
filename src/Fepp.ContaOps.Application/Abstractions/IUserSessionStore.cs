@@ -8,6 +8,18 @@ namespace Fepp.ContaOps.Application.Abstractions;
 public interface IUserSessionStore
 {
     /// <summary>
+    /// Revoca persistentemente una sesión autenticada.
+    /// </summary>
+    /// <param name="sessionId">Identificador de la sesión.</param>
+    /// <param name="revokedAtUtc">Instante UTC de revocación.</param>
+    /// <param name="cancellationToken">Token de cancelación.</param>
+    /// <returns>Una tarea que representa la revocación.</returns>
+    Task RevokeSessionAsync(
+        Guid sessionId,
+        DateTimeOffset revokedAtUtc,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Rota un refresh token opaco sin requerir que el cliente conozca la sesión.
     /// </summary>
     /// <param name="refreshToken">Valor plano presentado por el cliente.</param>

@@ -13,6 +13,11 @@ namespace Fepp.ContaOps.Infrastructure.Security;
 public sealed class UserSessionStore : IUserSessionStore
 {
     /// <summary>
+    /// Motivo seguro de revocación aplicado por el endpoint de logout.
+    /// </summary>
+    private const string LogoutRevocationReason = "Logout";
+
+    /// <summary>
     /// Motivo seguro aplicado a la sesión anterior cuando se reemplaza.
     /// </summary>
     private const string ReplacedSessionReason = "ReplacedByNewSession";
@@ -360,6 +365,25 @@ public sealed class UserSessionStore : IUserSessionStore
             _ => Fepp.ContaOps.Application.Abstractions.RefreshTokenRotationStatus.Invalid
         };
         return new(status, session.UserId, session.SessionId, rotation.RefreshToken);
+    }
+
+    /// <summary>
+    /// Adapta la revocación del puerto de Application al almacén persistente.
+    /// </summary>
+    /// <param name="sessionId">Identificador de la sesión.</param>
+    /// <param name="revokedAtUtc">Instante UTC de revocación.</param>
+    /// <param name="cancellationToken">Token de cancelación.</param>
+    /// <returns>Una tarea que representa la revocación.</returns>
+    Task IUserSessionStore.RevokeSessionAsync(
+        Guid sessionId,
+        DateTimeOffset revokedAtUtc,
+        CancellationToken cancellationToken)
+    {
+        return RevokeSessionAsync(
+            sessionId,
+            LogoutRevocationReason,
+            revokedAtUtc,
+            cancellationToken);
     }
 
     /// <summary>
