@@ -186,8 +186,15 @@ public sealed class UserSessionStore : IUserSessionStore
                 .SingleOrDefaultAsync(item => item.SessionId == sessionId, cancellationToken);
             UserRefreshToken? persistedToken = await _dbContext.UserRefreshTokens
                 .SingleOrDefaultAsync(item => item.SessionId == sessionId, cancellationToken);
+            ApplicationIdentityUser? user = session is null
+                ? null
+                : await _dbContext.Users
+                    .SingleOrDefaultAsync(item => item.Id == session.UserId, cancellationToken);
 
             if (session is null || persistedToken is null
+                || user is null
+                || user.Status != UserStatus.Active
+                || session.SecurityStamp != user.SecurityStamp
                 || !_cryptography.Matches(refreshToken, persistedToken.TokenHash))
             {
                 await transaction.CommitAsync(cancellationToken);

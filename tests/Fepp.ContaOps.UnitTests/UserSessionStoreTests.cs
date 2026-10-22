@@ -178,6 +178,33 @@ public sealed class UserSessionStoreTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// Comprueba que un cambio del sello de seguridad invalida el refresh token.
+    /// </summary>
+    [Fact]
+    public async Task ConsumeRefreshToken_RejectsChangedSecurityStamp()
+    {
+        UserSessionStore store = CreateStore();
+        DateTimeOffset nowUtc = UtcNow;
+        UserSessionCreationResult created = await store.ReplaceActiveSessionAsync(
+            "user-1",
+            "stamp-1",
+            nowUtc,
+            nowUtc.AddDays(1),
+            nowUtc.AddHours(2));
+
+        ApplicationIdentityUser user = await _dbContext.Users.SingleAsync(item => item.Id == "user-1");
+        user.SecurityStamp = "stamp-2";
+        await _dbContext.SaveChangesAsync();
+
+        RefreshTokenConsumptionStatus result = await store.ConsumeRefreshTokenAsync(
+            created.SessionId,
+            created.RefreshToken,
+            nowUtc.AddMinutes(1));
+
+        Assert.Equal(RefreshTokenConsumptionStatus.Invalid, result);
+    }
+
+    /// <summary>
     /// Comprueba que la validación Bearer rechaza estados de sesión y stamps inválidos.
     /// </summary>
     [Fact]
