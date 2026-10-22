@@ -1,6 +1,6 @@
 # SPEC 09 — Sesión única y validación JWT
 
-> **Estado:** Aprobado
+> **Estado:** Implementado
 > **Dependencias:** SPEC 08
 > **Fecha:** 2026-10-20
 > **Objetivo:** Vincular los JWT a una sesión persistida y revocarlos inmediatamente cuando la sesión o el SecurityStamp dejen de ser válidos.
@@ -40,13 +40,13 @@
 
 ## Criterios de aceptación
 
-- [ ] Cada JWT contiene `sid` y `jti` únicos.
-- [ ] Un nuevo login revoca la sesión anterior.
-- [ ] Un JWT anterior recibe 401 en su siguiente request.
-- [ ] La validación consulta PostgreSQL por request autenticado.
-- [ ] Un cambio de SecurityStamp invalida todas las sesiones anteriores.
-- [ ] La vigencia JWT es de 15 minutos.
-- [ ] JWT Bearer conserva firma, issuer y audience válidos.
+- [x] Cada JWT contiene `sid` y `jti` únicos.
+- [x] Un nuevo login revoca la sesión anterior.
+- [x] Un JWT anterior recibe 401 en su siguiente request.
+- [x] La validación consulta PostgreSQL por request autenticado.
+- [x] Un cambio de SecurityStamp invalida todas las sesiones anteriores.
+- [x] La vigencia JWT es de 15 minutos.
+- [x] JWT Bearer conserva firma, issuer y audience válidos.
 
 ## Decisiones
 

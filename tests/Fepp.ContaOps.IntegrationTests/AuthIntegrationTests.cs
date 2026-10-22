@@ -98,6 +98,20 @@ public sealed class AuthIntegrationTests : IAsyncLifetime
 
         string firstToken = await LoginAndReadTokenAsync(firstDevice);
         string secondToken = await LoginAndReadTokenAsync(secondDevice);
+        JwtSecurityToken firstJwt = new JwtSecurityTokenHandler().ReadJwtToken(firstToken);
+        JwtSecurityToken secondJwt = new JwtSecurityTokenHandler().ReadJwtToken(secondToken);
+
+        string firstSessionId = firstJwt.Claims
+            .Single(claim => claim.Type == JwtRegisteredClaimNames.Sid).Value;
+        string secondSessionId = secondJwt.Claims
+            .Single(claim => claim.Type == JwtRegisteredClaimNames.Sid).Value;
+        string firstJti = firstJwt.Claims
+            .Single(claim => claim.Type == JwtRegisteredClaimNames.Jti).Value;
+        string secondJti = secondJwt.Claims
+            .Single(claim => claim.Type == JwtRegisteredClaimNames.Jti).Value;
+
+        Assert.NotEqual(firstSessionId, secondSessionId);
+        Assert.NotEqual(firstJti, secondJti);
 
         firstDevice.DefaultRequestHeaders.Authorization =
             new AuthenticationHeaderValue("Bearer", firstToken);

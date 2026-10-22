@@ -1246,7 +1246,7 @@ Se actualizan las pruebas unitarias y de integración para el nuevo comportamien
 
 ---
 
-### ?. Validación del spec (flujo de trabajo existente):
+### 13. Validación del spec (flujo de trabajo existente):
 
 ```powershell
 /spec-acceptance-validator @specs/09-sesion-unica-y-validacion-jwt.md
@@ -1254,13 +1254,353 @@ Se actualizan las pruebas unitarias y de integración para el nuevo comportamien
 
 Revisar el spec: [`09-sesion-unica-y-validacion-jwt.md`](../09-sesion-unica-y-validacion-jwt.md).
 
+#### 1. Componentes implementados
+
+Se actualiza la prueba de integración de **inicio de sesión sucesivo** para comprobar que cada autenticación genera identificadores de sesión y JWT diferentes, además de verificar que únicamente la última sesión permanece utilizable.
+
+| Componente                                                 | Acción      | Tipo                     | Capa                      | Responsabilidad                                                                                            |
+| ---------------------------------------------------------- | ----------- | ------------------------ | ------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `AuthIntegrationTests`                                     | Update      | Clase de pruebas         | Tests / Integration       | Verifica el comportamiento HTTP de autenticación utilizando PostgreSQL efímero.                            |
+| `SuccessiveLogins_LeaveOnlyTheLatestBearerSessionUsable()` | Update      | Prueba xUnit             | Tests / Integration       | Comprueba la unicidad de `sid` y `jti`, así como la invalidación del primer JWT después del segundo login. |
+| `JwtTokenIssuer`                                           | Uso         | Servicio de emisión JWT  | Infrastructure / Security | Genera los tokens con los identificadores proporcionados por el caso de uso.                               |
+| `UserSessionStore`                                         | Uso         | Servicio de persistencia | Infrastructure / Security | Revoca la sesión anterior y registra la nueva.                                                             |
+| `TestApiFactory`                                           | Sin cambios | Fábrica de aplicación    | Tests / Integration       | Ejecuta la API con una instancia PostgreSQL de prueba.                                                     |
+
+#### 2. Métodos principales
+
+| Clase                     | Método                                                     | Responsabilidad                                                                                                         |
+| ------------------------- | ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `AuthIntegrationTests`    | `SuccessiveLogins_LeaveOnlyTheLatestBearerSessionUsable()` | Ejecuta dos autenticaciones consecutivas y comprueba la unicidad de los identificadores y el resultado de autorización. |
+| `AuthIntegrationTests`    | `LoginAndReadTokenAsync()`                                 | Obtiene el JWT emitido después de una autenticación satisfactoria.                                                      |
+| `JwtSecurityTokenHandler` | `ReadJwtToken()`                                           | Decodifica los JWT para consultar sus claims.                                                                           |
+| `UserSessionStore`        | `ReplaceActiveSessionAsync()`                              | Reemplaza la sesión persistida del usuario.                                                                             |
+| `UserSessionStore`        | `IsSessionActiveAsync()`                                   | Comprueba la vigencia de la sesión durante la autenticación Bearer.                                                     |
+
+#### 3. Componentes de .NET y bibliotecas externas
+
+| Componente / Método              | Origen                          | Función                                       | Uso en el proyecto                                        |
+| -------------------------------- | ------------------------------- | --------------------------------------------- | --------------------------------------------------------- |
+| `[Fact]`                         | xUnit                           | Define una prueba automatizada.               | Ejecuta el escenario de logins sucesivos.                 |
+| `Assert.NotEqual()`              | xUnit                           | Comprueba que dos valores sean diferentes.    | Verifica que `sid` y `jti` cambien entre autenticaciones. |
+| `Assert.Equal()`                 | xUnit                           | Comprueba un resultado esperado.              | Verifica HTTP 401 para la sesión anterior.                |
+| `JwtSecurityTokenHandler`        | System.IdentityModel.Tokens.Jwt | Procesa tokens JWT.                           | Permite inspeccionar los identificadores emitidos.        |
+| `JwtRegisteredClaimNames.Sid`    | System.IdentityModel.Tokens.Jwt | Identifica el claim de sesión.                | Recupera `sid`.                                           |
+| `JwtRegisteredClaimNames.Jti`    | System.IdentityModel.Tokens.Jwt | Identifica el claim único del token.          | Recupera `jti`.                                           |
+| `HttpClient`                     | .NET                            | Ejecuta solicitudes HTTP.                     | Simula dos clientes independientes.                       |
+| `AuthenticationHeaderValue`      | .NET                            | Configura encabezados de autenticación.       | Envía cada JWT mediante Bearer.                           |
+| `WebApplicationFactory<Program>` | ASP.NET Core                    | Ejecuta una instancia de la API para pruebas. | Permite comprobar el flujo HTTP completo.                 |
+| `PostgreSqlContainer`            | Testcontainers.PostgreSql       | Administra PostgreSQL efímero.                | Ejecuta las pruebas con persistencia real.                |
+
+#### 4. Flujo funcional
+
+| Paso | Operación                                             | Resultado esperado                              |
+| ---- | ----------------------------------------------------- | ----------------------------------------------- |
+| 1    | Autenticar al usuario desde el primer cliente.        | Se genera el primer JWT y su sesión persistida. |
+| 2    | Autenticar al mismo usuario desde el segundo cliente. | Se crea otra sesión y se revoca la anterior.    |
+| 3    | Extraer `sid` de ambos JWT.                           | Los identificadores de sesión son diferentes.   |
+| 4    | Extraer `jti` de ambos JWT.                           | Los identificadores de token son diferentes.    |
+| 5    | Utilizar el primer JWT en un endpoint protegido.      | HTTP 401 Unauthorized.                          |
+| 6    | Utilizar el segundo JWT en el mismo endpoint.         | Respuesta diferente de HTTP 401.                |
+
+**Validaciones incorporadas:**
+
+| Validación                           | Implementación                                                                     |
+| ------------------------------------ | ---------------------------------------------------------------------------------- |
+| Identificadores de sesión diferentes | `Assert.NotEqual(firstSessionId, secondSessionId)`                                 |
+| Identificadores JWT diferentes       | `Assert.NotEqual(firstJti, secondJti)`                                             |
+| Invalidación de la sesión anterior   | `Assert.Equal(HttpStatusCode.Unauthorized, firstProtectedResponse.StatusCode)`     |
+| Vigencia de la última sesión         | `Assert.NotEqual(HttpStatusCode.Unauthorized, secondProtectedResponse.StatusCode)` |
+
+#### 5. Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    subgraph Tests["Tests - Integration"]
+        TEST["SuccessiveLogins_LeaveOnlyTheLatestBearerSessionUsable"]
+        C1["HttpClient - Equipo 1"]
+        C2["HttpClient - Equipo 2"]
+        ASSERT["Assert.NotEqual / Assert.Equal"]
+    end
+
+    subgraph Presentation["Presentation - API"]
+        LOGIN["POST /api/auth/login"]
+        BEARER["JWT Bearer"]
+        PROTECTED["POST /api/users/invitations"]
+    end
+
+    subgraph Application["Application"]
+        USECASE["LoginUser"]
+    end
+
+    subgraph Infrastructure["Infrastructure"]
+        STORE["UserSessionStore"]
+        ISSUER["JwtTokenIssuer"]
+        CHECK["IsSessionActiveAsync"]
+    end
+
+    subgraph Database["PostgreSQL - Testcontainers"]
+        SESSIONS[("UserSessions")]
+    end
+
+    TEST --> C1
+    TEST --> C2
+
+    C1 --> LOGIN
+    C2 --> LOGIN
+
+    LOGIN --> USECASE
+    USECASE --> STORE
+    STORE -->|"Revoca anterior y crea nueva"| SESSIONS
+
+    USECASE --> ISSUER
+    ISSUER -->|"JWT con sid y jti"| C1
+    ISSUER -->|"JWT con sid y jti"| C2
+
+    C1 -->|"Primer JWT"| PROTECTED
+    C2 -->|"Segundo JWT"| PROTECTED
+
+    PROTECTED --> BEARER
+    BEARER --> CHECK
+    CHECK --> SESSIONS
+
+    BEARER -->|"Primer JWT: 401"| ASSERT
+    BEARER -->|"Segundo JWT: distinto de 401"| ASSERT
+
+    TEST -->|"Compara sid y jti"| ASSERT
+```
+
+#### 6. Resultado
+
+Se fortalece la prueba de integración para verificar que **cada login genera un `sid` y un `jti` diferentes**, y que el segundo inicio de sesión invalida el acceso del primero.
+
+#### El código confirma las verificaciones incorporadas, pero no incluye resultados de ejecución que permitan certificar que todas las pruebas del spec finalizaron satisfactoriamente.
+
 ---
 
-### ?. Diagrama Final: Arquitectura del spec-09-sesion-unica-y-validacion-jwt
+### 14. Diagrama Final: Arquitectura del spec-09-sesion-unica-y-validacion-jwt
+
+Este diagrama integra la implementación final de **sesión única por usuario, emisión de JWT mínimos, validación de sesiones persistidas y autorización mediante roles dinámicos**.
+
+Se consideran los cambios de los pasos más recientes, reemplazando las implementaciones anteriores que incluían correo electrónico y roles dentro del JWT.
+
+#### 1. Diagrama de arquitectura consolidado
+
+```mermaid
+flowchart TD
+    CLIENT["Cliente HTTP / JWT Bearer"]
+
+    subgraph Presentation["Presentation - Fepp.ContaOps.Api"]
+        LOGINAPI["POST /api/auth/login"]
+        PROTECTED["Endpoint protegido"]
+        BEARER["ASP.NET Core JWT Bearer"]
+        VALIDATION["TokenValidationParameters"]
+        EVENT["JwtBearerEvents.OnTokenValidated"]
+        PRINCIPAL["ClaimsPrincipal / ClaimsIdentity"]
+        AUTHORIZATION["ASP.NET Core Authorization"]
+        ADMIN["Política AdminOnly"]
+        REJECT["401 authentication_required"]
+        FORBIDDEN["403 forbidden"]
+    end
+
+    subgraph Application["Application - Casos de uso y contratos"]
+        LOGIN["LoginUser.ExecuteAsync()"]
+        IREPO["IUserRepository"]
+        ICREDENTIAL["IUserCredentialService"]
+        ISESSION["IUserSessionStore"]
+        ITOKEN["ITokenIssuer"]
+        IROLES["IUserRoleReader"]
+        SESSIONRESULT["UserSessionResult"]
+        TOKENRESULT["TokenResult"]
+    end
+
+    subgraph Domain["Domain - Modelo de negocio"]
+        USER["User"]
+        USERSTATUS["UserStatus"]
+        SECURITYSTAMP["SecurityStamp"]
+    end
+
+    subgraph Infrastructure["Infrastructure - Adaptadores"]
+        USERREPO["IdentityUserRepository"]
+        CREDENTIAL["IdentityCredentialService"]
+        SESSIONSTORE["UserSessionStore"]
+        JWTISSUER["JwtTokenIssuer"]
+        ROLEREADER["IdentityUserRoleReader"]
+        DBCONTEXT["AppDbContext"]
+        JWTOPTIONS["JwtOptions"]
+    end
+
+    subgraph Identity["ASP.NET Core Identity"]
+        USERMANAGER["UserManager"]
+        GETSTAMP["GetSecurityStampAsync"]
+        GETROLES["GetRolesAsync"]
+        FINDUSER["FindByIdAsync"]
+    end
+
+    subgraph Security["Seguridad y persistencia de sesiones"]
+        REPLACE["ReplaceActiveSessionAsync"]
+        CHECK["IsSessionActiveAsync"]
+        TRANSACTION["Transacción Serializable"]
+        SESSIONENTITY["UserSession"]
+        REFRESHENTITY["UserRefreshToken"]
+        OPAQUE["OpaqueTokenGenerator"]
+        HASH["OpaqueTokenCryptography"]
+    end
+
+    subgraph JWT["Emisión JWT"]
+        CLAIMS["Claims: sub, sid, jti"]
+        SIGN["HMAC-SHA256"]
+        JWTMIN["JWT mínimo: sub, sid, jti, iss, aud, nbf, exp"]
+    end
+
+    subgraph Database["PostgreSQL"]
+        USERS[("AspNetUsers")]
+        USERROLES[("AspNetUserRoles")]
+        SESSIONS[("UserSessions")]
+        REFRESH[("UserRefreshTokens")]
+    end
+
+    CLIENT -->|"Credenciales"| LOGINAPI
+    LOGINAPI --> LOGIN
+
+    LOGIN --> IREPO
+    LOGIN --> ICREDENTIAL
+
+    IREPO -.-> USERREPO
+    ICREDENTIAL -.-> CREDENTIAL
+
+    USERREPO --> USERMANAGER
+    CREDENTIAL --> USERMANAGER
+    USERMANAGER --> USERS
+    USERMANAGER --> GETSTAMP
+
+    USERREPO --> USER
+    USER --> USERSTATUS
+    USER --> SECURITYSTAMP
+
+    LOGIN -->|"Credenciales válidas"| ISESSION
+    ISESSION -.-> SESSIONSTORE
+
+    SESSIONSTORE --> REPLACE
+    REPLACE --> TRANSACTION
+    REPLACE --> OPAQUE
+    REPLACE --> HASH
+
+    TRANSACTION --> DBCONTEXT
+    DBCONTEXT --> SESSIONS
+    DBCONTEXT --> REFRESH
+
+    REPLACE --> SESSIONENTITY
+    REPLACE --> REFRESHENTITY
+
+    SESSIONSTORE --> SESSIONRESULT
+    SESSIONRESULT -->|"SessionId persistido"| LOGIN
+
+    LOGIN -->|"User, SessionId, Jti"| ITOKEN
+    ITOKEN -.-> JWTISSUER
+
+    JWTOPTIONS --> JWTISSUER
+    JWTISSUER --> CLAIMS
+    CLAIMS --> SIGN
+    SIGN --> JWTMIN
+
+    JWTISSUER --> TOKENRESULT
+    TOKENRESULT --> LOGINAPI
+    LOGINAPI -->|"AccessToken + ExpiresIn"| CLIENT
+
+    CLIENT -->|"Authorization: Bearer"| PROTECTED
+    PROTECTED --> BEARER
+    BEARER --> VALIDATION
+    VALIDATION -->|"JWT criptográficamente válido"| EVENT
+
+    EVENT -->|"sid + sub"| SESSIONSTORE
+    SESSIONSTORE --> CHECK
+    CHECK --> DBCONTEXT
+    CHECK -->|"Consulta sesión y usuario"| SESSIONS
+    CHECK --> USERS
+
+    EVENT -->|"Sesión inválida"| REJECT
+
+    EVENT -->|"Sesión válida / sub"| IROLES
+    IROLES -.-> ROLEREADER
+
+    ROLEREADER --> USERMANAGER
+    USERMANAGER --> FINDUSER
+    USERMANAGER --> GETROLES
+    GETROLES --> USERROLES
+
+    ROLEREADER -->|"Roles actuales"| PRINCIPAL
+    PRINCIPAL -->|"Claims de rol dinámicos"| AUTHORIZATION
+    AUTHORIZATION --> ADMIN
+
+    ADMIN -->|"Sin rol Admin"| FORBIDDEN
+    ADMIN -->|"Rol Admin válido"| PROTECTED
+```
+
+#### 2. Componentes y responsabilidades
+
+| Capa           | Componente                         | Responsabilidad                                                |
+| -------------- | ---------------------------------- | -------------------------------------------------------------- |
+| Presentation   | `Login` API                        | Recibe credenciales y devuelve el JWT.                         |
+| Presentation   | `JwtBearerEvents.OnTokenValidated` | Verifica la sesión persistida y carga los roles actuales.      |
+| Presentation   | `AdminOnly`                        | Autoriza operaciones administrativas según los roles vigentes. |
+| Application    | `LoginUser`                        | Coordina autenticación, creación de sesión y emisión del JWT.  |
+| Application    | `IUserSessionStore`                | Define el contrato de reemplazo de sesiones.                   |
+| Application    | `ITokenIssuer`                     | Define el contrato de emisión JWT.                             |
+| Application    | `IUserRoleReader`                  | Define la consulta de roles actuales.                          |
+| Domain         | `User`                             | Representa al usuario autenticable y su `SecurityStamp`.       |
+| Infrastructure | `IdentityUserRepository`           | Recupera el usuario y sus datos desde Identity.                |
+| Infrastructure | `IdentityCredentialService`        | Verifica las credenciales.                                     |
+| Infrastructure | `UserSessionStore`                 | Crea, reemplaza y valida sesiones persistidas.                 |
+| Infrastructure | `JwtTokenIssuer`                   | Emite JWT mínimos firmados.                                    |
+| Infrastructure | `IdentityUserRoleReader`           | Consulta los roles actuales mediante Identity.                 |
+| Infrastructure | `AppDbContext`                     | Accede a usuarios, roles, sesiones y refresh tokens.           |
+
+#### 3. Reglas finales implementadas
+
+| Funcionalidad           | Implementación final                                                    |
+| ----------------------- | ----------------------------------------------------------------------- |
+| Sesión única            | Cada nuevo login revoca la sesión activa anterior del usuario.          |
+| Persistencia            | Las sesiones se almacenan en PostgreSQL mediante EF Core.               |
+| Reemplazo transaccional | Utiliza una transacción con aislamiento `Serializable`.                 |
+| JWT mínimo              | Contiene `sub`, `sid`, `jti`, `iss`, `aud`, `nbf` y `exp`.              |
+| Datos excluidos         | El JWT no contiene correo electrónico ni roles.                         |
+| Duración JWT            | 15 minutos por defecto, configurable mediante `JwtOptions`.             |
+| Identificador de sesión | `sid` corresponde al `SessionId` persistido.                            |
+| Identificador del JWT   | `jti` identifica individualmente cada token emitido.                    |
+| Validación Bearer       | Verifica firma, issuer, audience y expiración del JWT.                  |
+| Validación de sesión    | Comprueba existencia, propietario, estado y vigencia.                   |
+| Validación del usuario  | Comprueba estado activo y coincidencia de `SecurityStamp`.              |
+| Roles dinámicos         | Se consultan desde ASP.NET Core Identity en cada solicitud autenticada. |
+| Autorización            | Los roles se agregan al `ClaimsPrincipal` antes de evaluar `AdminOnly`. |
+| Sesión inválida         | HTTP 401, código `authentication_required`.                             |
+| Permisos insuficientes  | HTTP 403, código `forbidden`.                                           |
+
+#### 4. Pruebas de validación
+
+| Prueba                                                        | Verificación                                                                            |
+| ------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `LoginUserTests`                                              | Autenticación y emisión mediante los contratos de Application.                          |
+| `IdentityJwtCriteriaTests`                                    | Claims mínimos, firma, issuer, audience y expiración.                                   |
+| `UserSessionStoreTests`                                       | Rechazo de sesiones inexistentes, revocadas, expiradas o con `SecurityStamp` diferente. |
+| `SuccessiveLogins_LeaveOnlyTheLatestBearerSessionUsable()`    | Un segundo login invalida el JWT anterior y genera nuevos `sid` y `jti`.                |
+| `SecurityStampChangeAndSessionExpiration_RejectBearerToken()` | Cambios persistidos en Identity o en la expiración de sesión provocan HTTP 401.         |
+| `InvitationIntegrationTests`                                  | Comprueba las restricciones de autorización, incluida la política `AdminOnly`.          |
+
+Las pruebas de integración de autenticación utilizan PostgreSQL efímero mediante Testcontainers.
+
+#### 5. Resultado final
+
+El spec implementa **una única sesión activa por usuario**, vinculando cada JWT con una sesión persistida mediante `sid`.
+
+La autenticación depende tanto de la validez criptográfica del JWT como del estado vigente de la sesión y del usuario en PostgreSQL.
+
+Los roles se consultan dinámicamente desde ASP.NET Core Identity, evitando incluir información innecesaria en el JWT y permitiendo aplicar cambios de permisos sin emitir un nuevo token.
+
+**Alcance:** El flujo de login crea y almacena un refresh token inicial, pero únicamente devuelve el access token y su duración. La entrega y renovación mediante refresh token no forman parte del flujo implementado en este spec.
 
 ---
 
-### ?. Comandos Git / PR\*\* (una vez validada la implementación y revisados los cambios)
+### 15. Comandos Git / PR\*\* (una vez validada la implementación y revisados los cambios)
 
 ```powershell
 git add .
