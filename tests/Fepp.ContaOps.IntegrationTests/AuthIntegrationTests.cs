@@ -59,7 +59,8 @@ public sealed class AuthIntegrationTests : IAsyncLifetime
         Assert.False(string.IsNullOrWhiteSpace(accessToken));
         Assert.True(document.RootElement.GetProperty("expiresIn").GetInt64() > 0);
         JwtSecurityToken jwt = new JwtSecurityTokenHandler().ReadJwtToken(accessToken);
-        Assert.Contains(jwt.Claims, claim => claim.Type == ClaimTypes.Role && claim.Value == "Admin");
+        Assert.DoesNotContain(jwt.Claims, claim => claim.Type == ClaimTypes.Email);
+        Assert.DoesNotContain(jwt.Claims, claim => claim.Type == ClaimTypes.Role);
         Assert.Equal("FEPP-ContaOps.Tests", jwt.Issuer);
         Assert.Contains("FEPP-ContaOps.Tests", jwt.Audiences);
         Assert.True(jwt.ValidTo > DateTime.UtcNow);

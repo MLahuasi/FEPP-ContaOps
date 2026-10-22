@@ -88,6 +88,7 @@ public static class DependencyInjection
                 });
 
         services.AddScoped<IUserRepository, IdentityUserRepository>();
+        services.AddScoped<IUserRoleReader, IdentityUserRoleReader>();
         services.AddScoped<IUserCredentialService, IdentityCredentialService>();
         services.AddScoped<IUserInvitationService, IdentityUserInvitationService>();
         services.AddOptions<JwtOptions>()

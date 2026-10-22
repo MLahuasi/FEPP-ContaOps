@@ -1147,7 +1147,7 @@ Ambos escenarios se comprueban mediante solicitudes HTTP que deben devolver `401
 
 ---
 
-### ?. Ajustes por pruebas manuales
+### 11. Ajustes por pruebas manuales
 
 **Levantar PostgreSQL y pgAdmin:**
 
@@ -1165,7 +1165,7 @@ dotnet test FEPP-ContaOps.slnx
 
 ---
 
-### ?. Validación, ejecución local y Git
+### 12. Validación, ejecución local y Git
 
 **Prerrequisitos:** Docker disponible; crear un archivo `.env` local a partir de `.env.example` y sustituir todos los valores de ejemplo por credenciales y secretos propios. **No subir `.env` a Git.**
 
@@ -1174,6 +1174,75 @@ dotnet test FEPP-ContaOps.slnx
 ```powershell
 .\run-local.ps1
 ```
+
+#### 1. Contexto del cambio
+
+Durante las pruebas manuales se identificó que el JWT exponía información innecesaria del usuario, específicamente su correo electrónico y sus roles. Aunque el JWT está firmado, su contenido puede decodificarse fácilmente.
+
+Se decidió implementar un **JWT mínimo**, manteniendo únicamente los identificadores necesarios para autenticar y validar la sesión.
+
+#### 2. Componentes implementados
+
+| Componente                     | Acción | Capa           | Responsabilidad                                                                           |
+| ------------------------------ | ------ | -------------- | ----------------------------------------------------------------------------------------- |
+| `JwtTokenIssuer`               | Update | Infrastructure | Elimina email y roles del JWT. Conserva `sub`, `sid`, `jti`, `iss`, `aud`, `nbf` y `exp`. |
+| `IUserRoleReader`              | Create | Application    | Define el contrato para consultar los roles actuales del usuario.                         |
+| `IdentityUserRoleReader`       | Create | Infrastructure | Obtiene los roles mediante ASP.NET Core Identity.                                         |
+| `DependencyInjection`          | Update | Infrastructure | Registra `IUserRoleReader` como servicio Scoped.                                          |
+| `DependencyInjection.AddApi()` | Update | Presentation   | Consulta los roles en `OnTokenValidated` y los incorpora al `ClaimsPrincipal`.            |
+| `IdentityJwtCriteriaTests`     | Update | Tests          | Verifica los claims del JWT mínimo.                                                       |
+| `AuthIntegrationTests`         | Update | Tests          | Comprueba la autenticación con JWT sin email ni roles.                                    |
+| `InvitationIntegrationTests`   | Update | Tests          | Adapta las pruebas de autorización a la consulta dinámica de roles.                       |
+
+#### 3. Componentes de .NET utilizados
+
+| Componente                         | Origen                     | Función                                                  |
+| ---------------------------------- | -------------------------- | -------------------------------------------------------- |
+| `JwtBearerEvents.OnTokenValidated` | ASP.NET Core               | Ejecuta la validación de sesión y recuperación de roles. |
+| `UserManager.FindByIdAsync()`      | ASP.NET Core Identity      | Localiza al usuario mediante `sub`.                      |
+| `UserManager.GetRolesAsync()`      | ASP.NET Core Identity      | Obtiene los roles vigentes.                              |
+| `ClaimsIdentity.AddClaim()`        | .NET                       | Agrega dinámicamente los roles al usuario autenticado.   |
+| `RequireRole()`                    | ASP.NET Core Authorization | Evalúa políticas como `AdminOnly`.                       |
+| `JwtSecurityToken`                 | Biblioteca JWT             | Construye el token mínimo firmado.                       |
+
+#### 4. Flujo funcional
+
+| Paso | Operación                                                                |
+| ---- | ------------------------------------------------------------------------ |
+| 1    | El usuario inicia sesión y recibe un JWT mínimo.                         |
+| 2    | JWT Bearer valida firma, issuer, audience y expiración.                  |
+| 3    | `UserSessionStore` verifica la sesión persistida mediante `sid` y `sub`. |
+| 4    | `IdentityUserRoleReader` consulta los roles actuales en Identity.        |
+| 5    | Los roles se incorporan al `ClaimsPrincipal`.                            |
+| 6    | ASP.NET Core Authorization evalúa `AdminOnly` y las demás políticas.     |
+
+#### 5. Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    JWT["JWT mínimo: sub, sid, jti"]
+    AUTH["JWT Bearer / OnTokenValidated"]
+    SESSION["UserSessionStore"]
+    ROLE["IUserRoleReader"]
+    IDENTITY["IdentityUserRoleReader"]
+    MANAGER["ASP.NET Core Identity / UserManager"]
+    CLAIMS["ClaimsPrincipal + roles actuales"]
+    POLICY["Authorization / AdminOnly"]
+
+    JWT --> AUTH
+    AUTH --> SESSION
+    SESSION -->|"Sesión válida"| ROLE
+    ROLE --> IDENTITY
+    IDENTITY --> MANAGER
+    MANAGER --> CLAIMS
+    CLAIMS --> POLICY
+```
+
+#### 6. Resultado
+
+Se elimina información innecesaria del JWT y se implementa la **consulta dinámica de roles desde Identity**, permitiendo que los cambios de permisos se reflejen sin emitir nuevos tokens.
+
+Se actualizan las pruebas unitarias y de integración para el nuevo comportamiento. El código proporcionado no incluye resultados de ejecución local ni operaciones Git verificables.
 
 ---
 

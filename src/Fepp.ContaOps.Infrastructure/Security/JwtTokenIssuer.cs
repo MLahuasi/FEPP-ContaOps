@@ -46,11 +46,9 @@ public sealed class JwtTokenIssuer : ITokenIssuer
         List<Claim> claims =
         [
             new(JwtRegisteredClaimNames.Sub, user.Id.Value),
-            new(JwtRegisteredClaimNames.Email, user.Email),
             new(JwtRegisteredClaimNames.Sid, sessionId.ToString()),
             new(JwtRegisteredClaimNames.Jti, jti)
         ];
-        claims.AddRange(user.Roles.Select(role => new Claim(ClaimTypes.Role, role)));
 
         SymmetricSecurityKey signingKey = new(
             Encoding.UTF8.GetBytes(_options.SigningKey));

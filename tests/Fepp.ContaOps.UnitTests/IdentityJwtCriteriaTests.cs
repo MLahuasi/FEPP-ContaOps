@@ -42,10 +42,10 @@ public sealed class IdentityJwtCriteriaTests
 
         Assert.Equal("FEPP-ContaOps.Tests", token.Issuer);
         Assert.Contains("FEPP-ContaOps.Tests.Api", token.Audiences);
-        Assert.Contains(token.Claims, claim => claim.Type == JwtRegisteredClaimNames.Email && claim.Value == user.Email);
+        Assert.DoesNotContain(token.Claims, claim => claim.Type == JwtRegisteredClaimNames.Email);
         Assert.Contains(token.Claims, claim => claim.Type == JwtRegisteredClaimNames.Sid && claim.Value == sessionId.ToString());
         Assert.Contains(token.Claims, claim => claim.Type == JwtRegisteredClaimNames.Jti && claim.Value == jti);
-        Assert.Contains(token.Claims, claim => claim.Type == ClaimTypes.Role && claim.Value == IdentitySeeder.AdminRole);
+        Assert.DoesNotContain(token.Claims, claim => claim.Type == ClaimTypes.Role);
         Assert.True(token.ValidTo > DateTime.UtcNow);
         Assert.Equal(900, result.ExpiresIn);
     }
