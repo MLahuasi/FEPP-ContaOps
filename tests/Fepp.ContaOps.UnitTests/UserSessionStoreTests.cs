@@ -183,6 +183,43 @@ public sealed class UserSessionStoreTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// Comprueba que reutilizar un refresh rotado revoca la sesión y el reemplazo vigente.
+    /// </summary>
+    [Fact]
+    public async Task RotateRefreshToken_RejectsReuseAndRevokesSession()
+    {
+        UserSessionStore store = CreateStore();
+        DateTimeOffset nowUtc = UtcNow;
+        UserSessionCreationResult created = await store.ReplaceActiveSessionAsync(
+            "user-1",
+            "stamp-1",
+            nowUtc,
+            nowUtc.AddDays(1),
+            nowUtc.AddHours(2));
+
+        RefreshTokenRotationResult rotated = await store.RotateRefreshTokenAsync(
+            created.SessionId,
+            created.RefreshToken,
+            nowUtc.AddMinutes(1));
+        RefreshTokenRotationResult reused = await store.RotateRefreshTokenAsync(
+            created.SessionId,
+            created.RefreshToken,
+            nowUtc.AddMinutes(2));
+
+        UserSession session = await _dbContext.UserSessions
+            .SingleAsync(item => item.SessionId == created.SessionId);
+        List<UserRefreshToken> tokens = await _dbContext.UserRefreshTokens
+            .Where(item => item.SessionId == created.SessionId)
+            .ToListAsync();
+
+        Assert.Equal(RefreshTokenConsumptionStatus.Consumed, rotated.Status);
+        Assert.Equal(RefreshTokenConsumptionStatus.Reused, reused.Status);
+        Assert.Equal(UserSessionStatus.Revoked, session.Status);
+        Assert.Equal("RefreshTokenReuseDetected", session.RevocationReason);
+        Assert.All(tokens, item => Assert.NotNull(item.ConsumedAtUtc ?? item.RevokedAtUtc));
+    }
+
+    /// <summary>
     /// Comprueba que consumir un token de una sesión vencida marca la sesión como expirada.
     /// </summary>
     [Fact]

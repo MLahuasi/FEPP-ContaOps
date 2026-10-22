@@ -492,7 +492,151 @@ Se implementa la **rotación atómica de refresh tokens**, consumiendo el token 
 
 ---
 
-### 5. Detectar reutilización y revocar la sesión.
+### 5. Detectar reutilización y revocar la sesión
+
+#### 1. Componentes implementados
+
+| Componente                      | Acción      | Tipo                           | Capa           | Responsabilidad                                                                                                      |
+| ------------------------------- | ----------- | ------------------------------ | -------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `UserSessionStoreTests`         | Update      | Clase de pruebas unitarias     | Tests          | Incorpora una prueba para verificar que reutilizar un refresh token rotado revoca la sesión y el token de reemplazo. |
+| `UserSessionStore`              | Sin cambios | Servicio de persistencia       | Infrastructure | Detecta la reutilización de refresh tokens y ejecuta la revocación transaccional de la sesión.                       |
+| `RefreshTokenRotationResult`    | Uso         | Record                         | Infrastructure | Devuelve `Reused` y un refresh token nulo cuando se detecta reutilización.                                           |
+| `RefreshTokenConsumptionStatus` | Uso         | Enum                           | Infrastructure | Identifica los resultados `Consumed` y `Reused` utilizados en la prueba.                                             |
+| `UserSession`                   | Uso         | Entidad de persistencia        | Infrastructure | Registra el estado `Revoked` y el motivo `RefreshTokenReuseDetected`.                                                |
+| `UserRefreshToken`              | Uso         | Entidad de persistencia        | Infrastructure | Conserva el token consumido y registra la revocación del reemplazo todavía utilizable.                               |
+| `AppDbContext`                  | Uso         | DbContext                      | Infrastructure | Consulta y verifica los cambios persistidos sobre sesiones y refresh tokens.                                         |
+| `ApplicationIdentityUser`       | Uso         | Entidad Identity personalizada | Infrastructure | Representa al usuario propietario de la sesión durante las pruebas.                                                  |
+| `OpaqueTokenGenerator`          | Uso         | Servicio criptográfico         | Infrastructure | Genera los refresh tokens utilizados durante las pruebas.                                                            |
+| `OpaqueTokenCryptography`       | Uso         | Servicio criptográfico         | Infrastructure | Permite identificar los tokens mediante la comparación de hashes.                                                    |
+
+#### 2. Métodos principales
+
+| Clase                   | Método                                               | Responsabilidad                                                                                              |
+| ----------------------- | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `UserSessionStoreTests` | `RotateRefreshToken_RejectsReuseAndRevokesSession()` | Verifica que reutilizar un token previamente rotado revoca la sesión y todos sus refresh tokens utilizables. |
+| `UserSessionStore`      | `ReplaceActiveSessionAsync()`                        | Crea la sesión inicial y su refresh token para la prueba.                                                    |
+| `UserSessionStore`      | `RotateRefreshTokenAsync()`                          | Consume el token original, genera su reemplazo y detecta un segundo intento de uso del token anterior.       |
+| `UserSessionStore`      | `RevokeSessionStateAsync()`                          | Revoca la sesión y los refresh tokens que todavía no fueron consumidos ni revocados.                         |
+| `UserSessionStore`      | `FindRefreshTokenAsync()`                            | Identifica el token presentado comparándolo con los hashes asociados a la sesión.                            |
+| `UserSessionStoreTests` | `CreateStore()`                                      | Construye el servicio de persistencia con las dependencias utilizadas en las pruebas.                        |
+
+#### 3. Componentes de .NET y bibliotecas externas
+
+| Componente / Método          | Origen                                | Función                                                       | Uso en el proyecto                                               |
+| ---------------------------- | ------------------------------------- | ------------------------------------------------------------- | ---------------------------------------------------------------- |
+| `UserSessionStore`           | Código propio                         | Implementa rotación, detección de reutilización y revocación. | Ejecutar las operaciones de seguridad verificadas por la prueba. |
+| `RefreshTokenRotationResult` | Código propio                         | Representa el resultado de una rotación.                      | Comprobar que la reutilización devuelve `Reused`.                |
+| `UserSessionStatus.Revoked`  | Código propio                         | Estado de una sesión revocada.                                | Verificar que la sesión deja de estar activa.                    |
+| `ApplicationIdentityUser`    | Código propio / ASP.NET Core Identity | Representa al usuario Identity persistido.                    | Proporcionar el usuario asociado a la sesión de prueba.          |
+| `DbContextOptionsBuilder<T>` | Entity Framework Core                 | Configura las opciones de un contexto.                        | Preparar `AppDbContext` para las pruebas.                        |
+| `UseSqlite()`                | EF Core SQLite / NuGet                | Configura el proveedor SQLite.                                | Utilizar una base de datos SQLite en memoria.                    |
+| `SqliteConnection`           | Microsoft.Data.Sqlite / NuGet         | Administra conexiones SQLite.                                 | Mantener disponible la base de datos durante cada prueba.        |
+| `EnsureCreatedAsync()`       | Entity Framework Core                 | Crea el esquema de base de datos a partir del modelo.         | Inicializar las tablas necesarias para las pruebas.              |
+| `Where()` / `ToListAsync()`  | LINQ / Entity Framework Core          | Filtran y recuperan registros.                                | Consultar los refresh tokens asociados a la sesión.              |
+| `SingleAsync()`              | Entity Framework Core                 | Recupera una única entidad.                                   | Consultar la sesión revocada.                                    |
+| `IAsyncLifetime`             | xUnit                                 | Define inicialización y limpieza asíncronas.                  | Preparar y liberar la base de datos de prueba.                   |
+| `[Fact]`                     | xUnit                                 | Identifica una prueba unitaria.                               | Ejecutar el escenario de reutilización.                          |
+| `Assert.Equal()`             | xUnit                                 | Compara valores esperados y obtenidos.                        | Verificar los estados de rotación y sesión.                      |
+| `Assert.All()`               | xUnit                                 | Comprueba una condición sobre todos los elementos.            | Verificar que ningún refresh token permanece utilizable.         |
+| `Assert.NotNull()`           | xUnit                                 | Comprueba que un valor no sea nulo.                           | Verificar el registro de consumo o revocación de cada token.     |
+
+#### 4. Flujo funcional
+
+| Paso | Componente              | Operación                                                 | Validación / Resultado                                                  |
+| ---- | ----------------------- | --------------------------------------------------------- | ----------------------------------------------------------------------- |
+| 1    | `UserSessionStoreTests` | Crea una sesión mediante `ReplaceActiveSessionAsync()`.   | Obtiene el identificador de sesión y el refresh token inicial.          |
+| 2    | `UserSessionStore`      | Ejecuta la primera llamada a `RotateRefreshTokenAsync()`. | El token original es válido y no fue consumido.                         |
+| 3    | `UserSessionStore`      | Consume el token original y genera su reemplazo.          | Devuelve `RefreshTokenConsumptionStatus.Consumed`.                      |
+| 4    | `UserSessionStoreTests` | Presenta nuevamente el token original.                    | Intenta reutilizar un refresh token previamente consumido.              |
+| 5    | `UserSessionStore`      | Localiza el token y comprueba `ConsumedAtUtc`.            | Detecta que el token ya fue utilizado.                                  |
+| 6    | `UserSessionStore`      | Ejecuta `RevokeSessionStateAsync()`.                      | Cambia el estado de la sesión a `Revoked`.                              |
+| 7    | `UserSessionStore`      | Registra el motivo de revocación.                         | Establece `RevocationReason = "RefreshTokenReuseDetected"`.             |
+| 8    | `UserSessionStore`      | Revoca los refresh tokens todavía utilizables.            | El token de reemplazo recibe `RevokedAtUtc`.                            |
+| 9    | `UserSessionStore`      | Confirma la transacción.                                  | Devuelve `RefreshTokenConsumptionStatus.Reused` sin generar otro token. |
+| 10   | `UserSessionStoreTests` | Consulta la sesión y sus refresh tokens.                  | Verifica la revocación y que ningún token permanezca utilizable.        |
+
+**Validaciones de la prueba**
+
+| Condición                                      | Resultado esperado                                  |
+| ---------------------------------------------- | --------------------------------------------------- |
+| Primera rotación con token válido              | `RefreshTokenConsumptionStatus.Consumed`.           |
+| Segunda rotación utilizando el token original  | `RefreshTokenConsumptionStatus.Reused`.             |
+| Estado final de la sesión                      | `UserSessionStatus.Revoked`.                        |
+| Motivo de revocación                           | `RefreshTokenReuseDetected`.                        |
+| Token original                                 | Conserva su registro de consumo en `ConsumedAtUtc`. |
+| Token de reemplazo                             | Queda revocado mediante `RevokedAtUtc`.             |
+| Tokens utilizables después de la reutilización | Ninguno.                                            |
+
+**Alcance:** este paso agrega la prueba `RotateRefreshToken_RejectsReuseAndRevokesSession()`. El mecanismo de detección y revocación ya fue implementado en el paso anterior; no se presentan modificaciones adicionales a `UserSessionStore`.
+
+#### 5. Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    subgraph Tests["Tests - Fepp.ContaOps.UnitTests"]
+        Test["UserSessionStoreTests"]
+        Scenario["RotateRefreshToken_RejectsReuseAndRevokesSession"]
+    end
+
+    subgraph Infrastructure["Infrastructure - Security"]
+        Store["UserSessionStore"]
+        Rotate["RotateRefreshTokenAsync"]
+        Find["FindRefreshTokenAsync"]
+        Revoke["RevokeSessionStateAsync"]
+        Crypto["OpaqueTokenCryptography"]
+        Db["AppDbContext"]
+    end
+
+    subgraph Persistence["Infrastructure - Persistence"]
+        Session["UserSession"]
+        Token["UserRefreshToken"]
+    end
+
+    subgraph Database["SQLite en memoria - Pruebas"]
+        SessionsDB[("Sesiones")]
+        TokensDB[("Refresh Tokens")]
+    end
+
+    Test --> Scenario
+    Scenario -->|"1. Crear sesión inicial"| Store
+
+    Store --> Rotate
+    Rotate --> Find
+    Find --> Crypto
+
+    Scenario -->|"2. Primera rotación"| Rotate
+    Rotate -->|"Token válido"| Consume["Consumir token original"]
+    Consume --> Replace["Crear refresh token de reemplazo"]
+
+    Replace -->|"Resultado"| Consumed["Consumed"]
+
+    Scenario -->|"3. Reutilizar token original"| Rotate
+
+    Rotate -->|"Token ya consumido"| Reuse{"Reutilización detectada"}
+
+    Reuse -->|"Sí"| Revoke
+
+    Revoke -->|"Actualizar estado"| Session
+    Revoke -->|"Revocar reemplazo"| Token
+
+    Session --> SessionsDB
+    Token --> TokensDB
+
+    Store --> Db
+    Db --> SessionsDB
+    Db --> TokensDB
+
+    Revoke --> Result["Reused"]
+
+    Result --> Verify["Verificar resultados"]
+    Verify --> Revoked["Sesión Revoked"]
+    Verify --> Reason["RefreshTokenReuseDetected"]
+    Verify --> NoTokens["Ningún token utilizable"]
+```
+
+#### 6. Resultado
+
+Se incorpora una prueba unitaria que verifica la **detección de reutilización de refresh tokens** y la revocación de la sesión comprometida. La prueba confirma que el token de reemplazo también queda invalidado y que ningún refresh token asociado permanece utilizable.
 
 ---
 
