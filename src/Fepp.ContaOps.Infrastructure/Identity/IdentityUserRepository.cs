@@ -49,4 +49,24 @@ public sealed class IdentityUserRepository : IUserRepository
             identityUser.Status,
             await _userManager.GetSecurityStampAsync(identityUser));
     }
+
+    /// <inheritdoc />
+    public async Task<User?> FindByIdAsync(
+        string userId,
+        CancellationToken cancellationToken = default)
+    {
+        ApplicationIdentityUser? identityUser = await _userManager.FindByIdAsync(userId);
+        if (identityUser is null)
+        {
+            return null;
+        }
+
+        IList<string> roles = await _userManager.GetRolesAsync(identityUser);
+        return new User(
+            new UserId(identityUser.Id),
+            identityUser.Email ?? identityUser.UserName ?? userId,
+            roles,
+            identityUser.Status,
+            await _userManager.GetSecurityStampAsync(identityUser));
+    }
 }

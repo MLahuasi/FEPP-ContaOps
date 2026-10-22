@@ -100,6 +100,11 @@ public sealed class LoginUserTests
         {
             return Task.FromResult(_user);
         }
+
+        public Task<User?> FindByIdAsync(string userId, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(_user);
+        }
     }
 
     private sealed class FakeCredentialService : IUserCredentialService
@@ -134,6 +139,18 @@ public sealed class LoginUserTests
 
     private sealed class FakeUserSessionStore : IUserSessionStore
     {
+        public Task<RefreshTokenRotationResult> RotateRefreshTokenAsync(
+            string refreshToken,
+            DateTimeOffset nowUtc,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(new RefreshTokenRotationResult(
+                RefreshTokenRotationStatus.Invalid,
+                null,
+                null,
+                null));
+        }
+
         public Task<UserSessionResult> ReplaceActiveSessionAsync(
             User user,
             DateTimeOffset createdAtUtc,

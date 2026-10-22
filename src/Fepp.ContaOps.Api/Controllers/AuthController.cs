@@ -5,6 +5,7 @@ using Fepp.ContaOps.Application.Abstractions;
 using Fepp.ContaOps.Application.Results;
 using Fepp.ContaOps.Application.Users.ActivateUser;
 using Fepp.ContaOps.Application.Users.LoginUser;
+using Fepp.ContaOps.Application.Users.RefreshUser;
 using Fepp.ContaOps.Domain.Users;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -24,6 +25,11 @@ public sealed class AuthController : ControllerBase
     private readonly LoginUser _loginUser;
 
     /// <summary>
+    /// Caso de uso de renovación de sesión.
+    /// </summary>
+    private readonly RefreshUser _refreshUser;
+
+    /// <summary>
     /// Caso de uso de activación de usuarios.
     /// </summary>
     private readonly ActivateUser _activateUser;
@@ -38,15 +44,45 @@ public sealed class AuthController : ControllerBase
     /// </summary>
     /// <param name="loginUser">Caso de uso de inicio de sesión.</param>
     /// <param name="activateUser">Caso de uso de activación.</param>
+    /// <param name="refreshUser">Caso de uso de renovación.</param>
     /// <param name="errorMapper">Traductor de errores esperados.</param>
     public AuthController(
         LoginUser loginUser,
         ActivateUser activateUser,
+        RefreshUser refreshUser,
         ApplicationErrorProblemDetailsMapper errorMapper)
     {
         _loginUser = loginUser;
         _activateUser = activateUser;
+        _refreshUser = refreshUser;
         _errorMapper = errorMapper;
+    }
+
+    /// <summary>
+    /// Renueva una sesión mediante rotación obligatoria del refresh token.
+    /// </summary>
+    /// <param name="request">Refresh token opaco.</param>
+    /// <param name="cancellationToken">Token de cancelación.</param>
+    /// <returns>Nuevos tokens o un error neutral de autenticación.</returns>
+    [AllowAnonymous]
+    [HttpPost("refresh")]
+    [ProducesResponseType(typeof(LoginResponse), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ProblemDetails), StatusCodes.Status401Unauthorized)]
+    public async Task<IActionResult> Refresh(
+        RefreshRequest request,
+        CancellationToken cancellationToken)
+    {
+        Result<TokenResult> result = await _refreshUser.ExecuteAsync(
+            request.RefreshToken,
+            cancellationToken);
+        if (!result.IsSuccess)
+        {
+            return _errorMapper.Map(HttpContext, result.Error!);
+        }
+
+        TokenResult token = result.Value!;
+        return Ok(new LoginResponse(token.AccessToken, "Bearer", token.ExpiresIn, token.RefreshToken));
     }
 
     /// <summary>

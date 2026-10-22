@@ -16,4 +16,14 @@ public interface IUserRepository
     Task<User?> FindByEmailAsync(
         string email,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Busca un usuario por su identificador técnico.
+    /// </summary>
+    /// <param name="userId">Identificador técnico del usuario.</param>
+    /// <param name="cancellationToken">Token de cancelación de la operación.</param>
+    /// <returns>Usuario encontrado o <see langword="null"/>.</returns>
+    Task<User?> FindByIdAsync(
+        string userId,
+        CancellationToken cancellationToken = default);
 }

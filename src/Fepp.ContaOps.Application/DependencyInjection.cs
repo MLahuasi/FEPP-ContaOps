@@ -3,6 +3,7 @@ using Fepp.ContaOps.Application.Users.ActivateUser;
 using Fepp.ContaOps.Application.Users.CreateUserInvitation;
 using Fepp.ContaOps.Application.Users.LoginUser;
 using Fepp.ContaOps.Application.Users.ResendUserInvitation;
+using Fepp.ContaOps.Application.Users.RefreshUser;
 
 namespace Fepp.ContaOps.Application;
 
@@ -22,6 +23,7 @@ public static class DependencyInjection
         services.AddScoped<CreateUserInvitation>();
         services.AddScoped<ActivateUser>();
         services.AddScoped<ResendUserInvitation>();
+        services.AddScoped<RefreshUser>();
         return services;
     }
 }

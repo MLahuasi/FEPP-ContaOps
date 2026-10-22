@@ -640,7 +640,213 @@ Se incorpora una prueba unitaria que verifica la **detección de reutilización 
 
 ---
 
-### 6. Implementar POST /api/auth/refresh.
+### 6. Implementar POST /api/auth/refresh
+
+#### 1. Componentes implementados
+
+| Componente                             | Acción | Tipo                           | Capa           | Responsabilidad                                                                                                                |
+| -------------------------------------- | ------ | ------------------------------ | -------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `RefreshRequest`                       | Create | Record (DTO)                   | Presentation   | Recibe el refresh token opaco enviado por el cliente.                                                                          |
+| `RefreshRequestValidator`              | Create | Validador FluentValidation     | Presentation   | Verifica que el refresh token no esté vacío y tenga como máximo 512 caracteres.                                                |
+| `AuthController`                       | Update | Controller                     | Presentation   | Expone `POST /api/auth/refresh` y devuelve los nuevos tokens o un error HTTP.                                                  |
+| `RefreshUser`                          | Create | Caso de uso                    | Application    | Coordina la rotación del refresh token, recupera al usuario y emite un nuevo JWT.                                              |
+| `IUserSessionStore`                    | Update | Interface                      | Application    | Incorpora un contrato de rotación que recibe únicamente el refresh token, sin requerir el identificador de sesión del cliente. |
+| `RefreshTokenRotationStatus`           | Create | Enum                           | Application    | Define los resultados `Rotated`, `Invalid`, `Reused` y `Expired`.                                                              |
+| `RefreshTokenRotationResult`           | Create | Record                         | Application    | Transporta el estado de rotación, identificadores internos y nuevo refresh token.                                              |
+| `IUserRepository`                      | Update | Interface                      | Application    | Añade la búsqueda de usuarios mediante su identificador técnico.                                                               |
+| `DependencyInjection`                  | Update | Configuración DI               | Application    | Registra `RefreshUser` con ciclo de vida `Scoped`.                                                                             |
+| `IdentityUserRepository`               | Update | Repositorio / Adaptador        | Infrastructure | Implementa `FindByIdAsync()` utilizando ASP.NET Core Identity y transforma el resultado al modelo de Domain.                   |
+| `UserSessionStore`                     | Update | Servicio de persistencia       | Infrastructure | Resuelve la sesión desde el refresh token y adapta el resultado de la rotación al contrato de Application.                     |
+| `JwtTokenIssuer`                       | Uso    | Servicio JWT                   | Infrastructure | Emite un nuevo access token asociado a la sesión existente.                                                                    |
+| `ApplicationIdentityUser`              | Uso    | Entidad Identity personalizada | Infrastructure | Proporciona identidad, estado, roles y `SecurityStamp` del usuario.                                                            |
+| `User`                                 | Uso    | Entidad                        | Domain         | Representa al usuario autenticable utilizado por el caso de uso.                                                               |
+| `LoginResponse`                        | Uso    | Record (DTO)                   | Presentation   | Reutiliza el contrato de respuesta del login para entregar ambos tokens.                                                       |
+| `ApplicationErrorProblemDetailsMapper` | Uso    | Servicio                       | Presentation   | Convierte los errores de Application en respuestas HTTP.                                                                       |
+| `LoginUserTests`                       | Update | Pruebas unitarias              | Tests          | Actualiza los dobles de prueba para implementar los nuevos métodos de los contratos.                                           |
+
+#### 2. Métodos principales
+
+| Clase                    | Método                                        | Responsabilidad                                                                                                         |
+| ------------------------ | --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `AuthController`         | `Refresh()`                                   | Recibe el refresh token, ejecuta `RefreshUser` y responde con nuevos tokens o un error HTTP.                            |
+| `RefreshUser`            | `ExecuteAsync()`                              | Valida la entrada, solicita la rotación, recupera el usuario activo y genera un nuevo JWT.                              |
+| `IUserSessionStore`      | `RotateRefreshTokenAsync()`                   | Define el contrato para rotar un token sin recibir el identificador de sesión.                                          |
+| `UserSessionStore`       | `IUserSessionStore.RotateRefreshTokenAsync()` | Localiza el token, obtiene la sesión, ejecuta la rotación y transforma el resultado interno al contrato de Application. |
+| `UserSessionStore`       | `FindRefreshTokenByValueAsync()`              | Busca el refresh token comparando su valor con los hashes almacenados.                                                  |
+| `UserSessionStore`       | `RotateRefreshTokenAsync(Guid, ...)`          | Ejecuta la rotación transaccional del token asociado a una sesión identificada.                                         |
+| `IUserRepository`        | `FindByIdAsync()`                             | Define el contrato para consultar un usuario mediante su identificador.                                                 |
+| `IdentityUserRepository` | `FindByIdAsync()`                             | Recupera el usuario mediante Identity y construye una entidad `User` con sus roles, estado y `SecurityStamp`.           |
+| `ITokenIssuer`           | `IssueAsync()`                                | Define la emisión de un JWT asociado al usuario y a la sesión.                                                          |
+| `DependencyInjection`    | `AddApplication()`                            | Registra el nuevo caso de uso en el contenedor de dependencias.                                                         |
+
+#### 3. Componentes de .NET y bibliotecas externas
+
+| Componente / Método                      | Origen                                   | Función                                                                     | Uso en el proyecto                                       |
+| ---------------------------------------- | ---------------------------------------- | --------------------------------------------------------------------------- | -------------------------------------------------------- |
+| `RefreshUser`                            | Código propio                            | Implementa el caso de uso de renovación.                                    | Coordinar rotación y emisión del nuevo JWT.              |
+| `UserSessionStore`                       | Código propio                            | Implementa persistencia y rotación de tokens.                               | Validar y reemplazar refresh tokens.                     |
+| `IdentityUserRepository`                 | Código propio                            | Adapta ASP.NET Core Identity al modelo de Domain.                           | Recuperar usuarios autenticables.                        |
+| `[ApiController]`                        | ASP.NET Core MVC                         | Habilita comportamientos propios de controladores API.                      | Gestionar solicitudes HTTP y validación del modelo.      |
+| `[HttpPost("refresh")]`                  | ASP.NET Core MVC                         | Define una ruta HTTP POST.                                                  | Exponer `/api/auth/refresh`.                             |
+| `[AllowAnonymous]`                       | ASP.NET Core Authorization               | Permite acceder sin autenticación Bearer previa.                            | Autorizar el ingreso al endpoint mediante refresh token. |
+| `[ProducesResponseType]`                 | ASP.NET Core MVC                         | Documenta los tipos de respuesta HTTP.                                      | Declarar respuestas 200, 400 y 401.                      |
+| `ControllerBase.Ok()`                    | ASP.NET Core MVC                         | Genera una respuesta HTTP 200.                                              | Entregar los tokens renovados.                           |
+| `ProblemDetails`                         | ASP.NET Core MVC                         | Representa errores HTTP estructurados.                                      | Documentar las respuestas de error.                      |
+| `AbstractValidator<T>`                   | FluentValidation / NuGet                 | Clase base para validadores.                                                | Implementar `RefreshRequestValidator`.                   |
+| `RuleFor()`                              | FluentValidation / NuGet                 | Define reglas para propiedades.                                             | Validar `RefreshToken`.                                  |
+| `NotEmpty()`                             | FluentValidation / NuGet                 | Rechaza valores vacíos.                                                     | Exigir un refresh token.                                 |
+| `MaximumLength(512)`                     | FluentValidation / NuGet                 | Limita la longitud de una cadena.                                           | Restringir el tamaño del token recibido.                 |
+| `UserManager<T>.FindByIdAsync()`         | ASP.NET Core Identity                    | Busca un usuario por identificador.                                         | Implementar `IdentityUserRepository.FindByIdAsync()`.    |
+| `UserManager<T>.GetRolesAsync()`         | ASP.NET Core Identity                    | Recupera los roles asignados al usuario.                                    | Construir la entidad `User` de Domain.                   |
+| `UserManager<T>.GetSecurityStampAsync()` | ASP.NET Core Identity                    | Recupera el sello de seguridad actual.                                      | Incorporar el `SecurityStamp` al usuario de Domain.      |
+| `IServiceCollection.AddScoped<T>()`      | Microsoft.Extensions.DependencyInjection | Registra servicios con ciclo de vida por ámbito.                            | Registrar `RefreshUser`.                                 |
+| `DateTimeOffset.UtcNow`                  | .NET                                     | Obtiene la fecha UTC actual.                                                | Evaluar la vigencia del refresh token.                   |
+| `Guid.NewGuid()`                         | .NET                                     | Genera un identificador único.                                              | Crear el `jti` del nuevo JWT.                            |
+| `DbContext` / `AsNoTracking()`           | Entity Framework Core                    | Permiten consultar entidades sin seguimiento de cambios.                    | Recuperar la sesión asociada al token.                   |
+| `ToListAsync()`                          | Entity Framework Core                    | Materializa consultas asíncronas.                                           | Recuperar refresh tokens persistidos.                    |
+| `SingleOrDefault()`                      | LINQ / .NET                              | Obtiene un único elemento coincidente o `null`.                             | Identificar el refresh token por su hash.                |
+| `record` / expresión `with`              | C# / .NET                                | Representan resultados y permiten crear copias con propiedades modificadas. | Incorporar el refresh token rotado al `TokenResult`.     |
+
+#### 4. Flujo funcional
+
+| Paso | Componente                | Operación                                                 | Validación / Resultado                                                             |
+| ---- | ------------------------- | --------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| 1    | `AuthController`          | Recibe `POST /api/auth/refresh`.                          | No requiere un JWT Bearer previo.                                                  |
+| 2    | `RefreshRequestValidator` | Valida `RefreshToken`.                                    | Debe contener un valor y no superar 512 caracteres.                                |
+| 3    | `RefreshUser`             | Ejecuta `ExecuteAsync()`.                                 | Rechaza valores nulos, vacíos o compuestos únicamente por espacios.                |
+| 4    | `IUserSessionStore`       | Solicita la rotación mediante el refresh token.           | El cliente no necesita proporcionar `SessionId`.                                   |
+| 5    | `UserSessionStore`        | Busca el token mediante `FindRefreshTokenByValueAsync()`. | Compara el valor recibido con los hashes persistidos.                              |
+| 6    | `UserSessionStore`        | Recupera la sesión asociada al token.                     | Si no existe el token o su sesión, devuelve `Invalid`.                             |
+| 7    | `UserSessionStore`        | Ejecuta la rotación transaccional existente.              | Valida usuario, `SecurityStamp`, estado de sesión, expiración y reutilización.     |
+| 8    | `UserSessionStore`        | Consume el token anterior y genera su reemplazo.          | Conserva el `SessionId` y la expiración original de la sesión.                     |
+| 9    | `UserSessionStore`        | Traduce el resultado interno al contrato de Application.  | Convierte `Consumed` en `Rotated` y conserva los demás estados.                    |
+| 10   | `RefreshUser`             | Comprueba el resultado de la rotación.                    | Solo continúa si recibe `Rotated`, `UserId`, `SessionId` y el nuevo refresh token. |
+| 11   | `IUserRepository`         | Recupera el usuario mediante `FindByIdAsync()`.           | El usuario debe existir y tener estado `Active`.                                   |
+| 12   | `ITokenIssuer`            | Emite un nuevo JWT.                                       | Utiliza el usuario, la sesión existente y un nuevo `jti`.                          |
+| 13   | `RefreshUser`             | Construye `TokenResult`.                                  | Incorpora el refresh token generado durante la rotación.                           |
+| 14   | `AuthController`          | Devuelve `LoginResponse`.                                 | HTTP 200 con `AccessToken`, `TokenType`, `ExpiresIn` y `RefreshToken`.             |
+
+**Contrato HTTP**
+
+| Elemento     | Valor               | Descripción                             |
+| ------------ | ------------------- | --------------------------------------- |
+| Método       | `POST`              | Solicitud de renovación.                |
+| Ruta         | `/api/auth/refresh` | Endpoint de autenticación.              |
+| Autorización | `[AllowAnonymous]`  | No requiere un JWT previo.              |
+| Request      | `RefreshRequest`    | Contiene únicamente `RefreshToken`.     |
+| Response 200 | `LoginResponse`     | Devuelve JWT y refresh token renovados. |
+| Response 400 | `ProblemDetails`    | Error de validación de la solicitud.    |
+| Response 401 | `ProblemDetails`    | Error de autenticación o renovación.    |
+
+**Resultados de la rotación**
+
+| Estado en Application | Estado interno | Comportamiento                                                       |
+| --------------------- | -------------- | -------------------------------------------------------------------- |
+| `Rotated`             | `Consumed`     | Devuelve un nuevo refresh token y permite emitir otro JWT.           |
+| `Invalid`             | `Invalid`      | Rechaza el refresh token.                                            |
+| `Reused`              | `Reused`       | Rechaza la renovación; la lógica de Infrastructure revoca la sesión. |
+| `Expired`             | `Expired`      | Rechaza la renovación por vencimiento o estado no activo.            |
+
+Todos los resultados distintos de `Rotated` se traducen a `AuthenticationError.Instance` desde `RefreshUser`, evitando exponer al cliente la causa interna del rechazo.
+
+**Cambios relevantes respecto al paso anterior**
+
+| Antes                                                                | Ahora                                                                                         |
+| -------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| La rotación requería `SessionId` y refresh token.                    | Application recibe únicamente el refresh token.                                               |
+| La rotación estaba disponible directamente en Infrastructure.        | Se incorpora el caso de uso `RefreshUser`.                                                    |
+| El resultado de rotación pertenecía a Infrastructure.                | Se introduce un resultado independiente en Application.                                       |
+| No existía un endpoint de renovación.                                | Se expone `POST /api/auth/refresh`.                                                           |
+| El usuario se recuperaba mediante los datos de la sesión persistida. | Application también recupera al usuario de Domain mediante `IUserRepository.FindByIdAsync()`. |
+| La rotación devolvía un refresh token nuevo.                         | El flujo completo devuelve refresh token y JWT nuevos.                                        |
+
+**Alcance:** la búsqueda inicial del refresh token recupera los tokens persistidos y compara sus hashes en memoria mediante `FindRefreshTokenByValueAsync()`. La rotación mantiene el vencimiento original de la sesión, establecido en 7 días durante el login.
+
+#### 5. Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    Client["Cliente HTTP"]
+
+    subgraph Presentation["Presentation - Fepp.ContaOps.Api"]
+        Controller["AuthController"]
+        Request["RefreshRequest"]
+        Validator["RefreshRequestValidator"]
+        Response["LoginResponse"]
+        Mapper["ApplicationErrorProblemDetailsMapper"]
+    end
+
+    subgraph Application["Application"]
+        Refresh["RefreshUser"]
+        SessionContract["IUserSessionStore"]
+        UserContract["IUserRepository"]
+        TokenContract["ITokenIssuer"]
+        RotationResult["RefreshTokenRotationResult"]
+        TokenResult["TokenResult"]
+    end
+
+    subgraph Domain["Domain"]
+        User["User"]
+    end
+
+    subgraph Infrastructure["Infrastructure"]
+        SessionStore["UserSessionStore"]
+        Repository["IdentityUserRepository"]
+        Issuer["JwtTokenIssuer"]
+        Crypto["OpaqueTokenCryptography"]
+        Generator["IOpaqueTokenGenerator"]
+        Db["AppDbContext"]
+        Identity["ASP.NET Core Identity"]
+    end
+
+    subgraph Database["PostgreSQL"]
+        UsersDB[("Usuarios")]
+        SessionsDB[("Sesiones")]
+        TokensDB[("Refresh Tokens")]
+    end
+
+    Client -->|"POST /api/auth/refresh"| Controller
+    Controller --> Request
+    Request --> Validator
+
+    Validator -->|"Request válido"| Refresh
+
+    Refresh --> SessionContract
+    SessionContract -.->|"Implementación"| SessionStore
+
+    SessionStore -->|"Buscar token por hash"| Crypto
+    SessionStore -->|"Consultar sesión y tokens"| Db
+    Db --> SessionsDB
+    Db --> TokensDB
+
+    SessionStore -->|"Rotación atómica"| Generator
+    SessionStore -->|"Resultado de rotación"| RotationResult
+    RotationResult --> Refresh
+
+    Refresh -->|"Buscar usuario por ID"| UserContract
+    UserContract -.->|"Implementación"| Repository
+
+    Repository --> Identity
+    Identity --> UsersDB
+    Repository --> User
+
+    Refresh -->|"Emitir nuevo JWT"| TokenContract
+    TokenContract -.->|"Implementación"| Issuer
+
+    Issuer --> TokenResult
+    TokenResult --> Refresh
+
+    Refresh -->|"Resultado exitoso"| Controller
+    Controller --> Response
+    Response -->|"HTTP 200"| Client
+
+    Refresh -->|"AuthenticationError"| Mapper
+    Mapper -->|"HTTP 401"| Client
+```
+
+#### 6. Resultado
+
+Se implementa **`POST /api/auth/refresh`** para renovar el JWT mediante un refresh token opaco, sin requerir credenciales ni un access token vigente. La operación rota el refresh token, conserva la sesión original y devuelve ambos tokens renovados, manteniendo la separación de responsabilidades entre Presentation, Application e Infrastructure.
 
 ---
 
