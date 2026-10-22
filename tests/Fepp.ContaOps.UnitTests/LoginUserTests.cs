@@ -128,7 +128,7 @@ public sealed class LoginUserTests
             string jti,
             CancellationToken cancellationToken = default)
         {
-            return Task.FromResult(new TokenResult("token", 900));
+            return Task.FromResult(new TokenResult("token", 900, "refresh-token"));
         }
     }
 
@@ -140,7 +140,7 @@ public sealed class LoginUserTests
             DateTimeOffset expiresAtUtc,
             CancellationToken cancellationToken = default)
         {
-            return Task.FromResult(new UserSessionResult(Guid.NewGuid()));
+            return Task.FromResult(new UserSessionResult(Guid.NewGuid(), "refresh-token"));
         }
     }
 }

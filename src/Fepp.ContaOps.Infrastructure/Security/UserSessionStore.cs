@@ -158,7 +158,7 @@ public sealed class UserSessionStore : IUserSessionStore
             expiresAtUtc,
             expiresAtUtc,
             cancellationToken);
-        return new UserSessionResult(result.SessionId);
+        return new UserSessionResult(result.SessionId, result.RefreshToken);
     }
 
     /// <summary>

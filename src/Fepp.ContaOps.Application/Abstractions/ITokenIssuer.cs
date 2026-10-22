@@ -27,4 +27,5 @@ public interface ITokenIssuer
 /// </summary>
 /// <param name="AccessToken">Token de acceso.</param>
 /// <param name="ExpiresIn">Duración del token en segundos.</param>
-public sealed record TokenResult(string AccessToken, long ExpiresIn);
+/// <param name="RefreshToken">Token de renovación asociado a la sesión.</param>
+public sealed record TokenResult(string AccessToken, long ExpiresIn, string RefreshToken = "");

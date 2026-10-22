@@ -6,7 +6,174 @@
 
 ---
 
-### 2. Añadir refresh token al login y limitar la sesión a 7 días.
+### 2. Añadir refresh token al login y limitar la sesión a 7 días
+
+#### 1. Componentes implementados
+
+| Componente | Acción | Tipo | Capa | Responsabilidad |
+| ---------- | ------ | ---- | ---- | --------------- |
+| `LoginResponse` | Update | Record (DTO) | Presentation | Incorpora `RefreshToken` a la respuesta HTTP del login. |
+| `AuthController` | Update | Controller | Presentation | Devuelve el JWT, su duración y el refresh token generado. |
+| `TokenResult` | Update | Record | Application | Transporta `AccessToken`, `ExpiresIn` y `RefreshToken` entre capas. |
+| `ITokenIssuer` | Sin cambios | Interface | Application | Contrato para emitir JWT asociados a una sesión. |
+| `IUserSessionStore` | Update | Interface | Application | Devuelve el identificador de sesión y el refresh token inicial. |
+| `UserSessionResult` | Create | Record | Application | Representa el resultado de crear una sesión autenticada. |
+| `LoginUser` | Update | Caso de uso | Application | Autentica credenciales, crea una sesión de 7 días y entrega ambos tokens. |
+| `JwtTokenIssuer` | Sin cambios | Servicio | Infrastructure | Genera el JWT firmado con los claims `sub`, `sid` y `jti`. |
+| `UserSessionStore` | Update | Servicio de persistencia | Infrastructure | Reemplaza sesiones anteriores y genera un refresh token opaco almacenado mediante hash. |
+| `UserSession` | Uso | Entidad de persistencia | Infrastructure | Almacena el estado, propietario, `SecurityStamp` y vencimiento de la sesión. |
+| `UserRefreshToken` | Uso | Entidad de persistencia | Infrastructure | Almacena el hash, vencimiento y estado de consumo o revocación del refresh token. |
+| `AppDbContext` | Uso | DbContext | Infrastructure | Proporciona acceso transaccional a sesiones, refresh tokens y usuarios. |
+| `IOpaqueTokenGenerator` | Uso | Interface | Application | Contrato para generar tokens opacos. |
+| `OpaqueTokenCryptography` | Uso | Servicio criptográfico | Infrastructure | Calcula el hash del refresh token y permite verificarlo. |
+| `LoginUserTests` | Sin cambios | Pruebas unitarias | Tests | Verifica autenticación válida e inválida mediante implementaciones simuladas. |
+
+#### 2. Métodos principales
+
+| Clase | Método | Responsabilidad |
+| ----- | ------ | --------------- |
+| `AuthController` | `Login()` | Ejecuta el caso de uso y devuelve `LoginResponse`, incluyendo el refresh token. |
+| `LoginUser` | `ExecuteAsync()` | Valida credenciales, establece una vigencia de 7 días y solicita la creación de sesión y emisión del JWT. |
+| `IUserSessionStore` | `ReplaceActiveSessionAsync()` | Define el contrato para reemplazar una sesión y devolver `UserSessionResult`. |
+| `UserSessionStore` | `ReplaceActiveSessionAsync(User, ...)` | Implementa el contrato y utiliza la misma expiración para la sesión y el refresh token. |
+| `UserSessionStore` | `ReplaceActiveSessionAsync(string, ...)` | Revoca sesiones anteriores y sus refresh tokens utilizables; crea una nueva sesión y persiste el hash del nuevo token. |
+| `JwtTokenIssuer` | `IssueAsync()` | Genera un JWT firmado, asociado al identificador de sesión y con expiración independiente. |
+| `OpaqueTokenCryptography` | `Hash()` | Calcula el hash utilizado para almacenar el refresh token sin persistir su valor original. |
+| `UserSessionStore` | `ConsumeRefreshTokenAsync()` | Valida y consume un refresh token mediante una transacción; detecta tokens inválidos, reutilizados o expirados. |
+| `UserSessionStore` | `RevokeSessionAsync()` | Revoca una sesión y sus refresh tokens todavía utilizables. |
+| `UserSessionStore` | `ExpireSessionsAsync()` | Marca como expiradas las sesiones activas cuyo plazo terminó. |
+| `UserSessionStore` | `IsSessionActiveAsync()` | Verifica usuario, estado de sesión, vigencia y coincidencia del `SecurityStamp`. |
+
+#### 3. Componentes de .NET y bibliotecas externas
+
+| Componente / Método | Origen | Función | Uso en el proyecto |
+| ------------------- | ------ | ------- | ------------------ |
+| `LoginUser`, `UserSessionStore`, `TokenResult` | Código propio | Implementación de autenticación y sesiones. | Coordinar login, emisión de tokens y persistencia. |
+| `ControllerBase.Ok()` | ASP.NET Core MVC | Genera respuestas HTTP 200. | Entregar `LoginResponse`. |
+| `DateTimeOffset.UtcNow` | .NET | Obtiene la fecha y hora UTC. | Establecer el inicio de la sesión. |
+| `DateTimeOffset.AddDays()` | .NET | Calcula una fecha posterior. | Definir el vencimiento a 7 días. |
+| `Guid.NewGuid()` | .NET | Genera identificadores únicos. | Identificar sesiones, tokens y JWT. |
+| `record` y expresión `with` | C# / .NET | Representan datos y permiten crear copias con propiedades modificadas. | Incorporar el refresh token al resultado emitido. |
+| `JwtSecurityToken` | Microsoft.IdentityModel / JWT | Representa un JWT. | Construir el access token. |
+| `JwtSecurityTokenHandler.WriteToken()` | Microsoft.IdentityModel / JWT | Serializa el JWT. | Obtener el token enviado al cliente. |
+| `SymmetricSecurityKey` | Microsoft.IdentityModel.Tokens | Representa una clave simétrica. | Firmar el JWT. |
+| `SecurityAlgorithms.HmacSha256` | Microsoft.IdentityModel.Tokens | Identifica el algoritmo HS256. | Configurar la firma del JWT. |
+| `ApplicationIdentityUser.SecurityStamp` | ASP.NET Core Identity / Código propio | Propiedad de seguridad del usuario Identity. | Asociar y validar la sesión frente al estado actual del usuario. |
+| `DbContext.Database.BeginTransactionAsync()` | Entity Framework Core | Inicia una transacción. | Ejecutar cambios de sesión y tokens de forma transaccional. |
+| `IsolationLevel.Serializable` | .NET / System.Data | Define el nivel de aislamiento de transacciones. | Proteger operaciones de reemplazo y consumo de tokens. |
+| `ToListAsync()` / `SingleOrDefaultAsync()` | Entity Framework Core | Ejecutan consultas asíncronas. | Consultar sesiones y refresh tokens. |
+| `SaveChangesAsync()` | Entity Framework Core | Persiste modificaciones. | Guardar sesiones, hashes y revocaciones. |
+| `IOpaqueTokenGenerator` | Código propio | Define la generación de tokens opacos. | Obtener el refresh token inicial. |
+| `OpaqueTokenCryptography` | Código propio | Proporciona operaciones criptográficas sobre tokens. | Almacenar y comparar hashes. |
+| `[Fact]` / `[Theory]` | xUnit | Definen pruebas unitarias. | Verificar resultados del caso de uso de login. |
+
+#### 4. Flujo funcional
+
+| Paso | Componente | Operación | Validación / Resultado |
+| ---- | ---------- | --------- | --------------------- |
+| 1 | `AuthController` | Recibe `POST /api/auth/login`. | Obtiene correo y contraseña. |
+| 2 | `LoginUser` | Busca al usuario mediante `IUserRepository`. | Si no existe, devuelve `AuthenticationError`. |
+| 3 | `LoginUser` | Verifica la contraseña mediante `IUserCredentialService`. | Si es incorrecta, devuelve `AuthenticationError`. |
+| 4 | `LoginUser` | Calcula `createdAtUtc` y `expiresAtUtc`. | La sesión vence exactamente 7 días después de su creación. |
+| 5 | `UserSessionStore` | Inicia una transacción serializable. | Protege el reemplazo de la sesión. |
+| 6 | `UserSessionStore` | Consulta sesiones activas anteriores. | Revoca sus refresh tokens utilizables y marca las sesiones como `Revoked`. |
+| 7 | `UserSessionStore` | Genera un refresh token opaco. | Utiliza `IOpaqueTokenGenerator.Generate()`. |
+| 8 | `UserSessionStore` | Crea `UserSession` y `UserRefreshToken`. | Ambos reciben el mismo vencimiento de 7 días. |
+| 9 | `UserSessionStore` | Calcula y almacena `TokenHash`. | El refresh token original no se almacena en texto plano. |
+| 10 | `UserSessionStore` | Guarda los cambios y confirma la transacción. | Devuelve `SessionId` y refresh token original. |
+| 11 | `JwtTokenIssuer` | Genera el JWT asociado a la nueva sesión. | Incluye `sub`, `sid`, `jti` y vigencia configurada en `JwtOptions`. |
+| 12 | `LoginUser` | Incorpora el refresh token a `TokenResult`. | Devuelve ambos tokens mediante `Result.Success()`. |
+| 13 | `AuthController` | Construye `LoginResponse`. | HTTP 200 con `AccessToken`, `TokenType`, `ExpiresIn` y `RefreshToken`. |
+
+**Consideraciones de vigencia**
+
+| Elemento | Vigencia | Comportamiento |
+| -------- | -------- | -------------- |
+| Sesión autenticada | 7 días | Se establece mediante `SessionLifetimeDays = 7`. |
+| Refresh token inicial | 7 días | Comparte la fecha de expiración de la sesión. |
+| Access token JWT | Configurable | Utiliza `JwtOptions.AccessTokenLifetimeMinutes`. |
+| Login posterior | Nueva sesión de 7 días | Revoca la sesión activa anterior y sus refresh tokens utilizables. |
+
+**Alcance:** este paso implementa la emisión y entrega del refresh token durante el login. El código presentado no incorpora un endpoint HTTP para renovar el access token.
+
+#### 5. Diagrama de arquitectura
+
+```mermaid
+flowchart TD
+    Client["Cliente HTTP"]
+
+    subgraph Presentation["Presentation - Fepp.ContaOps.Api"]
+        AC["AuthController"]
+        LR["LoginResponse"]
+    end
+
+    subgraph Application["Application"]
+        LU["LoginUser"]
+        UR["IUserRepository"]
+        CS["IUserCredentialService"]
+        SS["IUserSessionStore"]
+        TI["ITokenIssuer"]
+        SR["UserSessionResult"]
+        TR["TokenResult"]
+        TG["IOpaqueTokenGenerator"]
+    end
+
+    subgraph Domain["Domain"]
+        U["User"]
+    end
+
+    subgraph Infrastructure["Infrastructure"]
+        USS["UserSessionStore"]
+        JWT["JwtTokenIssuer"]
+        TC["OpaqueTokenCryptography"]
+        DB["AppDbContext"]
+        US["UserSession"]
+        RT["UserRefreshToken"]
+    end
+
+    subgraph Database["PostgreSQL"]
+        SESSIONS[("Sesiones")]
+        TOKENS[("Refresh tokens")]
+    end
+
+    Client -->|"POST /api/auth/login"| AC
+    AC --> LU
+
+    LU -->|"Buscar usuario"| UR
+    UR --> U
+
+    LU -->|"Verificar contraseña"| CS
+
+    LU -->|"Crear sesión de 7 días"| SS
+    SS -.->|"Implementación"| USS
+
+    USS -->|"Generar token opaco"| TG
+    USS -->|"Calcular hash"| TC
+    USS --> DB
+
+    DB --> US
+    DB --> RT
+
+    US --> SESSIONS
+    RT --> TOKENS
+
+    USS -->|"SessionId + RefreshToken"| SR
+    SR --> LU
+
+    LU -->|"Emitir JWT"| TI
+    TI -.->|"Implementación"| JWT
+
+    JWT -->|"AccessToken + ExpiresIn"| TR
+    TR --> LU
+
+    LU -->|"TokenResult con RefreshToken"| AC
+    AC --> LR
+    LR -->|"HTTP 200"| Client
+```
+
+#### 6. Resultado
+
+El login ahora devuelve un JWT y un refresh token opaco, cuyo hash se almacena en PostgreSQL junto con una sesión autenticada limitada a **7 días**. Cada nuevo inicio de sesión reemplaza la sesión activa anterior, conservando la vigencia independiente del access token configurada en `JwtOptions`.
 
 ---
 

@@ -73,7 +73,7 @@ public sealed class AuthController : ControllerBase
         }
 
         TokenResult token = result.Value!;
-        return Ok(new LoginResponse(token.AccessToken, "Bearer", token.ExpiresIn));
+        return Ok(new LoginResponse(token.AccessToken, "Bearer", token.ExpiresIn, token.RefreshToken));
     }
 
     /// <summary>

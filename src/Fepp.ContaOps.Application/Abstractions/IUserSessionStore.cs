@@ -14,7 +14,7 @@ public interface IUserSessionStore
     /// <param name="createdAtUtc">Instante UTC de creación.</param>
     /// <param name="expiresAtUtc">Instante UTC de expiración.</param>
     /// <param name="cancellationToken">Token de cancelación.</param>
-    /// <returns>Identificador de la nueva sesión.</returns>
+    /// <returns>Identificador de la nueva sesión y refresh token inicial.</returns>
     Task<UserSessionResult> ReplaceActiveSessionAsync(
         User user,
         DateTimeOffset createdAtUtc,
@@ -23,7 +23,8 @@ public interface IUserSessionStore
 }
 
 /// <summary>
-/// Resultado mínimo de la creación de una sesión para asociarla al JWT.
+/// Resultado de la creación de una sesión para asociarla al JWT y entregar el refresh token.
 /// </summary>
 /// <param name="SessionId">Identificador persistido de la sesión.</param>
-public sealed record UserSessionResult(Guid SessionId);
+/// <param name="RefreshToken">Valor plano del refresh token disponible solo para la respuesta de login.</param>
+public sealed record UserSessionResult(Guid SessionId, string RefreshToken);

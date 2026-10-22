@@ -6,4 +6,5 @@ namespace Fepp.ContaOps.Api.Contracts.Responses;
 public sealed record LoginResponse(
     string AccessToken,
     string TokenType,
-    long ExpiresIn);
+    long ExpiresIn,
+    string RefreshToken);
