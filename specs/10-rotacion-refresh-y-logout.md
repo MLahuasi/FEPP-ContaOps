@@ -1,6 +1,6 @@
 # SPEC 10 — Rotación de refresh tokens y logout
 
-> **Estado:** Borrador
+> **Estado:** Aprobado
 > **Dependencias:** SPEC 09
 > **Fecha:** 2026-10-20
 > **Objetivo:** Permitir renovar sesiones sin repetir credenciales y cerrar sesiones invalidando inmediatamente sus tokens.
