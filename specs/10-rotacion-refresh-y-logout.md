@@ -44,13 +44,13 @@
 
 ## Criterios de aceptación
 
-- [ ] Login devuelve JWT y refresh token.
-- [ ] El refresh anterior queda inutilizable tras rotar.
-- [ ] Dos refresh concurrentes no generan dos sesiones válidas.
-- [ ] Reutilizar un refresh consumido revoca la sesión.
-- [ ] Logout invalida refresh y JWT inmediatamente.
-- [ ] La sesión no puede superar siete días.
-- [ ] Las respuestas no contienen hashes ni identificadores internos innecesarios.
+- [x] Login devuelve JWT y refresh token.
+- [x] El refresh anterior queda inutilizable tras rotar.
+- [x] Dos refresh concurrentes no generan dos sesiones válidas.
+- [x] Reutilizar un refresh consumido revoca la sesión.
+- [x] Logout invalida refresh y JWT inmediatamente.
+- [x] La sesión no puede superar siete días.
+- [x] Las respuestas no contienen hashes ni identificadores internos innecesarios.
 
 ## Decisiones
 

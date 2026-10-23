@@ -1276,6 +1276,424 @@ dotnet test FEPP-ContaOps.slnx
 .\run-local.ps1
 ```
 
+#### Escenarios manuales para validar SPEC 10
+
+##### 1. Login emite ambos tokens — **Validado**
+
+1. Ejecutar `POST /api/auth/login` con credenciales válidas de prueba.
+2. Verificar `200 OK`.
+3. Confirmar que la respuesta contiene únicamente `accessToken`, `tokenType`, `expiresIn` y `refreshToken`.
+4. Confirmar que el refresh token no aparece en logs ni se persiste en texto plano.
+
+**Resultado observado:**
+
+```text
+Propiedades recibidas: accessToken, tokenType, expiresIn, refreshToken
+OK: login devuelve refreshToken.
+OK: el refresh token no aparece en los logs.
+```
+
+**Consulta de estructura:**
+
+```sql
+SELECT column_name, data_type
+FROM information_schema.columns
+WHERE table_schema = 'public'
+  AND table_name = 'UserRefreshTokens'
+ORDER BY ordinal_position;
+```
+
+**Resultado observado:** `TokenHash` es `bytea`; la tabla contiene `TokenId`, `SessionId`, `TokenHash`, `CreatedAtUtc`, `ExpiresAtUtc`, `ConsumedAtUtc` y `RevokedAtUtc`.
+
+**Consulta de hash:**
+
+```sql
+SELECT
+    EXISTS (
+        SELECT 1
+        FROM "UserRefreshTokens"
+        WHERE encode("TokenHash", 'hex') = 'SHA256_DEL_REFRESH_EN_MEMORIA'
+    ) AS hash_coincide,
+    COUNT(*) AS hashes_de_32_bytes
+FROM "UserRefreshTokens"
+WHERE octet_length("TokenHash") = 32;
+```
+
+**Resultado observado:**
+
+```text
+hash_coincide | hashes_de_32_bytes
+--------------+-------------------
+t             | 9
+```
+
+##### 2. Refresh exitoso y rotación — **Validado**
+
+1. Ejecutar `POST /api/auth/refresh` con el refresh vigente.
+2. Verificar `200 OK`.
+3. Confirmar que devuelve `accessToken`, `tokenType`, `expiresIn` y un nuevo `refreshToken`.
+4. Confirmar que el JWT y el refresh nuevos son distintos de los anteriores.
+
+**Resultado observado:** `200 OK`; la respuesta contiene los cuatro campos esperados, cambia el `jti`, cambia el JWT y cambia el refresh token. El `sid` se conserva y `expiresIn` es `900`.
+
+##### 3. Respuestas neutrales para refresh inválido — **Validado**
+
+Se probaron refresh tokens consumidos, inexistentes y expirados. Todos respondieron con la misma estructura funcional:
+
+```http
+401 Unauthorized
+```
+
+```json
+{
+  "type": "https://httpstatuses.com/401",
+  "title": "Authentication failed.",
+  "status": 401,
+  "detail": "The supplied credentials are invalid.",
+  "instance": "/api/auth/refresh",
+  "code": "invalid_credentials",
+  "traceId": "TRACE_ID_VARIABLE"
+}
+```
+
+El `traceId` cambia entre solicitudes y no revela el motivo del rechazo.
+
+**Resultados observados:**
+
+- Token consumido: `401`, `code = invalid_credentials`.
+- Token inexistente: `401`, `code = invalid_credentials`.
+- Token expirado: `401`, `code = invalid_credentials`.
+- Token revocado: validado mediante el escenario 4.
+
+##### 4. Reutilización revoca la sesión completa — **Validado**
+
+1. Crear una sesión nueva y rotar el refresh una vez.
+2. Reutilizar el refresh original: `401 Unauthorized`.
+3. Probar el refresh de reemplazo: `401 Unauthorized`.
+4. Probar el JWT original y el JWT de reemplazo contra un endpoint protegido: ambos `401 Unauthorized`.
+
+**Consulta de sesión:**
+
+```sql
+SELECT
+    "SessionId",
+    "Status",
+    "RevokedAtUtc",
+    "RevocationReason"
+FROM "UserSessions"
+WHERE "SessionId" = 'cf842da9-c9b7-4a2f-b1a5-f314d6312444';
+```
+
+**Resultado observado:**
+
+```text
+SessionId                                Status  RevokedAtUtc                    RevocationReason
+cf842da9-c9b7-4a2f-b1a5-f314d6312444    2       2026-10-23 18:43:19.517444+00  RefreshTokenReuseDetected
+```
+
+**Consulta de refresh asociados:**
+
+```sql
+SELECT
+    "TokenId",
+    "CreatedAtUtc",
+    "ConsumedAtUtc",
+    "RevokedAtUtc"
+FROM "UserRefreshTokens"
+WHERE "SessionId" = 'cf842da9-c9b7-4a2f-b1a5-f314d6312444'
+ORDER BY "CreatedAtUtc";
+```
+
+**Resultado observado:** el refresh original tiene `ConsumedAtUtc`; el refresh de reemplazo tiene `RevokedAtUtc` informado.
+
+**Consulta de refresh utilizables:**
+
+```sql
+SELECT COUNT(*) AS "Usables"
+FROM "UserRefreshTokens"
+WHERE "SessionId" = 'cf842da9-c9b7-4a2f-b1a5-f314d6312444'
+  AND "ConsumedAtUtc" IS NULL
+  AND "RevokedAtUtc" IS NULL;
+```
+
+**Resultado observado:**
+
+```text
+Usables
+-------
+0
+```
+
+##### 5. Refresh expirado — **Validado**
+
+Se creó una sesión nueva y se modificó controladamente la expiración en PostgreSQL:
+
+```sql
+BEGIN;
+
+UPDATE "UserSessions"
+SET "ExpiresAtUtc" = CURRENT_TIMESTAMP - INTERVAL '1 minute'
+WHERE "SessionId" = '3983bbd3-9899-4833-9dda-e8dcd3904283';
+
+UPDATE "UserRefreshTokens"
+SET "ExpiresAtUtc" = CURRENT_TIMESTAMP - INTERVAL '1 minute'
+WHERE "SessionId" = '3983bbd3-9899-4833-9dda-e8dcd3904283'
+  AND "ConsumedAtUtc" IS NULL
+  AND "RevokedAtUtc" IS NULL;
+
+COMMIT;
+```
+
+El refresh expirado respondió `401` con `code = invalid_credentials`.
+
+**Consulta y resultado:**
+
+```sql
+SELECT "SessionId", "ExpiresAtUtc", "Status"
+FROM "UserSessions"
+WHERE "SessionId" = '3983bbd3-9899-4833-9dda-e8dcd3904283';
+```
+
+```text
+SessionId                                ExpiresAtUtc                     Status
+3983bbd3-9899-4833-9dda-e8dcd3904283    2026-10-23 18:12:36.687485+00    3
+```
+
+##### 6. Dos refresh concurrentes — **Validado**
+
+1. Crear una sesión y conservar un único refresh token de prueba.
+2. Enviar dos solicitudes simultáneas a `POST /api/auth/refresh` con el mismo token.
+3. Confirmar como máximo una rotación exitosa y una respuesta neutral para la solicitud competidora.
+
+**Resultado observado:** una solicitud respondió `200 OK` con nuevos tokens y la otra respondió `401` con `code = invalid_credentials`.
+
+**Consulta de sesión:**
+
+```sql
+SELECT
+    "SessionId",
+    "Status",
+    "RevokedAtUtc",
+    "RevocationReason"
+FROM "UserSessions"
+WHERE "SessionId" = 'cec4df43-fd85-465f-86fd-f03d2555c6e6';
+```
+
+**Resultado observado:**
+
+```text
+SessionId                                Status  RevokedAtUtc                    RevocationReason
+cec4df43-fd85-465f-86fd-f03d2555c6e6    2       2026-10-23 19:08:11.5049+00  RefreshTokenReuseDetected
+```
+
+**Consulta de refresh asociados:**
+
+```sql
+SELECT
+    "TokenId",
+    "CreatedAtUtc",
+    "ConsumedAtUtc",
+    "RevokedAtUtc"
+FROM "UserRefreshTokens"
+WHERE "SessionId" = 'cec4df43-fd85-465f-86fd-f03d2555c6e6'
+ORDER BY "CreatedAtUtc";
+```
+
+**Resultado observado:** el token presentado quedó consumido y el reemplazo generado por la solicitud `200` quedó posteriormente revocado durante la detección de reutilización.
+
+```text
+TokenId                                 CreatedAtUtc                     ConsumedAtUtc                    RevokedAtUtc
+3d12aa8a-f41a-4069-a1da-02c86dea80de   2026-10-23 19:02:01.886954+00  2026-10-23 19:08:11.341247+00
+dcb17933-b806-4ada-bc58-d4395fbee701   2026-10-23 19:08:11.341247+00                                  2026-10-23 19:08:11.5049+00
+```
+
+**Consulta de refresh utilizables:**
+
+```sql
+SELECT COUNT(*) AS "Usables"
+FROM "UserRefreshTokens"
+WHERE "SessionId" = 'cec4df43-fd85-465f-86fd-f03d2555c6e6'
+  AND "ConsumedAtUtc" IS NULL
+  AND "RevokedAtUtc" IS NULL;
+```
+
+**Resultado observado:** `Usables = 0`.
+
+> La evidencia manual con dos navegadores confirma el resultado observado. La prueba automatizada con solicitudes realmente concurrentes ofrece una garantía más rigurosa. El comportamiento actual revoca toda la sesión, incluido el reemplazo que pudo devolverse con `200`.
+
+##### 7. Logout exitoso e invalidación inmediata — **Validado**
+
+1. Crear una sesión y conservar el JWT y el refresh token únicamente en memoria o en un almacén seguro de pruebas.
+2. Ejecutar `POST /api/auth/logout` con `Authorization: Bearer <accessToken>`.
+3. Verificar `204 No Content` sin cuerpo.
+4. Probar el JWT contra un endpoint protegido y el refresh contra `POST /api/auth/refresh`.
+
+**Resultados observados:**
+
+- Logout: `204 No Content`.
+- JWT posterior: `401` con `code = authentication_required`.
+- Refresh posterior: `401` con `code = invalid_credentials`.
+- El endpoint refresh no requiere ni debe recibir un header Bearer; recibe únicamente el refresh token en el cuerpo.
+
+**Consulta de sesión:**
+
+```sql
+SELECT
+    "SessionId",
+    "Status",
+    "RevokedAtUtc",
+    "RevocationReason"
+FROM "UserSessions"
+WHERE "SessionId" = '84c2da7c-a5aa-4c28-b07e-36d7466102a7';
+```
+
+**Resultado observado:**
+
+```text
+SessionId                                Status  RevokedAtUtc                    RevocationReason
+84c2da7c-a5aa-4c28-b07e-36d7466102a7    2       2026-10-23 19:21:00.783743+00  Logout
+```
+
+**Consulta de refresh asociados:**
+
+```sql
+SELECT
+    "TokenId",
+    "CreatedAtUtc",
+    "ConsumedAtUtc",
+    "RevokedAtUtc"
+FROM "UserRefreshTokens"
+WHERE "SessionId" = '84c2da7c-a5aa-4c28-b07e-36d7466102a7'
+ORDER BY "CreatedAtUtc";
+```
+
+**Resultado observado:**
+
+```text
+TokenId                                 CreatedAtUtc                     ConsumedAtUtc  RevokedAtUtc
+ff22babe-0976-40f6-b4cd-5d201eeaabbe   2026-10-23 19:17:19.800637+00                    2026-10-23 19:21:00.783743+00
+```
+
+```sql
+SELECT COUNT(*) AS "Usables"
+FROM "UserRefreshTokens"
+WHERE "SessionId" = '84c2da7c-a5aa-4c28-b07e-36d7466102a7'
+  AND "ConsumedAtUtc" IS NULL
+  AND "RevokedAtUtc" IS NULL;
+```
+
+**Resultado observado:** `Usables = 0`.
+
+##### 8. JWT con sesión expirada — **Validado funcionalmente**
+
+1. Crear un JWT válido de prueba.
+2. Forzar la expiración persistida de su sesión:
+
+```sql
+BEGIN;
+
+UPDATE "UserSessions"
+SET "ExpiresAtUtc" = CURRENT_TIMESTAMP - INTERVAL '1 minute'
+WHERE "SessionId" = '4e3a319c-6db1-49c3-ab1e-897b8e0d4aaf';
+
+COMMIT;
+```
+
+3. Usar el JWT contra un endpoint protegido.
+
+**Resultado observado:** `401` con `code = authentication_required`, aunque el `exp` criptográfico del JWT todavía no había vencido.
+
+**Nota:** la evidencia demuestra la invalidación inmediata del JWT mediante `IsSessionActiveAsync`; no incluye una consulta posterior que confirme `Status = 3` en la sesión.
+
+##### 9. SecurityStamp cambiado — **Parcialmente validado**
+
+1. Crear un JWT y un refresh token válidos de prueba.
+2. Cambiar el sello almacenado en la sesión:
+
+```sql
+BEGIN;
+
+UPDATE "UserSessions"
+SET "SecurityStamp" = 'UPD-' || "SecurityStamp"
+WHERE "SessionId" = '48c6fe95-fef8-44d9-9831-7968c7e29601';
+
+COMMIT;
+```
+
+3. Probar el JWT contra un endpoint protegido.
+4. Probar el refresh mediante `POST /api/auth/refresh` con el cuerpo correspondiente.
+
+**Resultado acreditado:** el JWT fue rechazado con `401` porque el `SecurityStamp` de la sesión dejó de coincidir con el sello actual del usuario.
+
+**Pendiente para completar el escenario:** la prueba documentada no muestra la respuesta de `POST /api/auth/refresh`; por tanto, todavía falta acreditar explícitamente su `401` neutral. Además, modificar `UserSessions.SecurityStamp` prueba una discrepancia de sesión. Para probar un cambio real del usuario se debe modificar `AspNetUsers.SecurityStamp` y dejar intacto el sello de la sesión.
+
+Consulta para el cambio real del usuario:
+
+```sql
+BEGIN;
+
+UPDATE "AspNetUsers" u
+SET "SecurityStamp" = 'UPD-' || u."SecurityStamp"
+FROM "UserSessions" s
+WHERE s."SessionId" = 'SESSION_ID'
+  AND u."Id" = s."UserId";
+
+COMMIT;
+```
+
+##### 10. Vigencia máxima, logs y Swagger — **Parcialmente validado**
+
+### Vigencia máxima de siete días
+
+```sql
+SELECT
+    "ExpiresAtUtc",
+    "CreatedAtUtc",
+    "ExpiresAtUtc" - "CreatedAtUtc" AS "DuracionSesion"
+FROM "UserSessions"
+WHERE "SessionId" = '79979506-1d06-4775-8d87-3a106ccded76';
+```
+
+**Resultado observado:** `DuracionSesion = 7 days`, con `CreatedAtUtc = 2026-10-23 20:57:54.251194+00` y `ExpiresAtUtc = 2026-10-30 20:57:54.251194+00`.
+
+### La rotación no extiende la sesión
+
+```sql
+SELECT
+    original."ExpiresAtUtc" AS "Original_ExpiresAtUtc",
+    refresh."ExpiresAtUtc" AS "Refresh_ExpiresAtUtc",
+    original."ExpiresAtUtc" = refresh."ExpiresAtUtc" AS "SonIguales"
+FROM "UserSessions" original
+JOIN "UserRefreshTokens" refresh
+  ON original."SessionId" = refresh."SessionId"
+WHERE original."SessionId" = '79979506-1d06-4775-8d87-3a106ccded76'
+ORDER BY refresh."CreatedAtUtc";
+```
+
+**Resultado observado:** ambos refresh conservaron `2026-10-30 20:57:54.251194+00` y `SonIguales = true`.
+
+### Estados de consumo y revocación
+
+```sql
+SELECT
+    "TokenId",
+    "ConsumedAtUtc",
+    "RevokedAtUtc"
+FROM "UserRefreshTokens"
+WHERE "SessionId" = '79979506-1d06-4775-8d87-3a106ccded76'
+ORDER BY "CreatedAtUtc";
+```
+
+**Resultado observado:** dos tokens tienen `ConsumedAtUtc` informado y el token posterior revocado tiene `RevokedAtUtc` informado.
+
+### Pendientes
+
+- Revisar exhaustivamente logs para confirmar ausencia de JWT, refresh tokens, hashes, contraseñas y cuerpos sensibles.
+- Revisar `/swagger` y `/swagger/v1/swagger.json` por operación, incluyendo cuerpo de refresh, respuestas de tokens, `204` de logout y requisito Bearer.
+
+> Los valores reales de correo, contraseña, JWT y refresh tokens utilizados en las pruebas fueron retirados de esta documentación. Deben considerarse comprometidos y revocarse o cambiarse.
+
+
 ---
 
 ### 13. Validación del spec (flujo de trabajo existente):
@@ -1304,3 +1722,5 @@ git switch main
 git pull
 git branch -d spec-10-rotacion-refresh-y-logout
 ```
+
+---
