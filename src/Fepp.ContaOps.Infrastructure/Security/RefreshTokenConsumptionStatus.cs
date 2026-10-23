@@ -25,3 +25,12 @@ public enum RefreshTokenConsumptionStatus
     /// </summary>
     Expired = 4
 }
+
+/// <summary>
+/// Resultado de una rotación de refresh token.
+/// </summary>
+/// <param name="Status">Estado de validación y consumo del token presentado.</param>
+/// <param name="RefreshToken">Nuevo valor plano cuando la rotación fue exitosa.</param>
+public sealed record RefreshTokenRotationResult(
+    RefreshTokenConsumptionStatus Status,
+    string? RefreshToken);

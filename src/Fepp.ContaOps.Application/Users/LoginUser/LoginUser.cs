@@ -10,6 +10,11 @@ namespace Fepp.ContaOps.Application.Users.LoginUser;
 public sealed class LoginUser
 {
     /// <summary>
+    /// Vigencia máxima de una sesión creada mediante login.
+    /// </summary>
+    private const int SessionLifetimeDays = 7;
+
+    /// <summary>
     /// Repositorio utilizado para localizar el usuario por correo.
     /// </summary>
     private readonly IUserRepository _userRepository;
@@ -77,13 +82,13 @@ public sealed class LoginUser
         UserSessionResult session = await _sessionStore.ReplaceActiveSessionAsync(
             user,
             createdAtUtc,
-            createdAtUtc.AddMinutes(15),
+            createdAtUtc.AddDays(SessionLifetimeDays),
             cancellationToken);
         TokenResult token = await _tokenIssuer.IssueAsync(
             user,
             session.SessionId,
             Guid.NewGuid().ToString("N"),
             cancellationToken);
-        return Result<TokenResult>.Success(token);
+        return Result<TokenResult>.Success(token with { RefreshToken = session.RefreshToken });
     }
 }

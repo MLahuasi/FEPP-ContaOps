@@ -167,18 +167,135 @@ public sealed class AuthIntegrationTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// Comprueba que renovar consume el refresh anterior y que reutilizarlo revoca la sesión.
+    /// </summary>
+    [Fact]
+    public async Task RefreshRotation_RejectsReuseAndInvalidatesTheReplacement()
+    {
+        await using TestApiFactory factory = new(_database.GetConnectionString());
+        using HttpClient client = factory.CreateClient();
+        (string accessToken, string refreshToken) = await LoginAndReadTokensAsync(client);
+
+        HttpResponseMessage refreshResponse = await client.PostAsJsonAsync(
+            "/api/auth/refresh",
+            new { refreshToken });
+        string refreshBody = await refreshResponse.Content.ReadAsStringAsync();
+        Assert.Equal(HttpStatusCode.OK, refreshResponse.StatusCode);
+        using JsonDocument refreshDocument = JsonDocument.Parse(refreshBody);
+        string replacement = refreshDocument.RootElement.GetProperty("refreshToken").GetString()!;
+        string replacementAccessToken = refreshDocument.RootElement.GetProperty("accessToken").GetString()!;
+        Assert.NotEqual(refreshToken, replacement);
+
+        HttpResponseMessage reusedResponse = await client.PostAsJsonAsync(
+            "/api/auth/refresh",
+            new { refreshToken });
+        Assert.Equal(HttpStatusCode.Unauthorized, reusedResponse.StatusCode);
+
+        HttpResponseMessage replacementAccessResponse = await SendProtectedAsync(client, replacementAccessToken);
+        HttpResponseMessage originalAccessResponse = await SendProtectedAsync(client, accessToken);
+        Assert.Equal(HttpStatusCode.Unauthorized, replacementAccessResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, originalAccessResponse.StatusCode);
+    }
+
+    /// <summary>
+    /// Comprueba que dos rotaciones concurrentes no producen dos refresh utilizables.
+    /// </summary>
+    [Fact]
+    public async Task ConcurrentRefreshes_ProduceAtMostOneSuccessfulRotation()
+    {
+        await using TestApiFactory factory = new(_database.GetConnectionString());
+        using HttpClient firstClient = factory.CreateClient();
+        using HttpClient secondClient = factory.CreateClient();
+        (_, string refreshToken) = await LoginAndReadTokensAsync(firstClient);
+
+        Task<HttpResponseMessage> firstRefresh = firstClient.PostAsJsonAsync(
+            "/api/auth/refresh",
+            new { refreshToken });
+        Task<HttpResponseMessage> secondRefresh = secondClient.PostAsJsonAsync(
+            "/api/auth/refresh",
+            new { refreshToken });
+        HttpResponseMessage[] responses = await Task.WhenAll(firstRefresh, secondRefresh);
+
+        Assert.Equal(1, responses.Count(response => response.StatusCode == HttpStatusCode.OK));
+        Assert.Contains(responses, response => response.StatusCode == HttpStatusCode.Unauthorized);
+    }
+
+    /// <summary>
+    /// Comprueba que un refresh de sesión expirada devuelve un error neutral.
+    /// </summary>
+    [Fact]
+    public async Task ExpiredSession_RejectsRefreshToken()
+    {
+        await using TestApiFactory factory = new(_database.GetConnectionString());
+        using HttpClient client = factory.CreateClient();
+        (string accessToken, string refreshToken) = await LoginAndReadTokensAsync(client);
+        Guid sessionId = Guid.Parse(new JwtSecurityTokenHandler()
+            .ReadJwtToken(accessToken)
+            .Claims
+            .Single(claim => claim.Type == JwtRegisteredClaimNames.Sid)
+            .Value);
+
+        using (IServiceScope scope = factory.Services.CreateScope())
+        {
+            AppDbContext dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            UserSession session = await dbContext.UserSessions.SingleAsync(item => item.SessionId == sessionId);
+            session.ExpiresAtUtc = DateTimeOffset.UtcNow.AddMinutes(-1);
+            await dbContext.SaveChangesAsync();
+        }
+
+        HttpResponseMessage response = await client.PostAsJsonAsync(
+            "/api/auth/refresh",
+            new { refreshToken });
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    /// <summary>
+    /// Comprueba que logout invalida el Bearer actual y el refresh persistido.
+    /// </summary>
+    [Fact]
+    public async Task Logout_ImmediatelyInvalidatesAccessAndRefreshTokens()
+    {
+        await using TestApiFactory factory = new(_database.GetConnectionString());
+        using HttpClient client = factory.CreateClient();
+        (string accessToken, string refreshToken) = await LoginAndReadTokensAsync(client);
+
+        HttpResponseMessage logoutResponse = await SendLogoutAsync(client, accessToken);
+        Assert.Equal(HttpStatusCode.NoContent, logoutResponse.StatusCode);
+
+        HttpResponseMessage accessResponse = await SendProtectedAsync(client, accessToken);
+        HttpResponseMessage refreshResponse = await client.PostAsJsonAsync(
+            "/api/auth/refresh",
+            new { refreshToken });
+        Assert.Equal(HttpStatusCode.Unauthorized, accessResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, refreshResponse.StatusCode);
+    }
+
+    /// <summary>
     /// Inicia sesión con el administrador de pruebas y devuelve el JWT emitido.
     /// </summary>
     /// <param name="client">Cliente HTTP que representa un equipo.</param>
     /// <returns>JWT Bearer emitido por la API.</returns>
     private static async Task<string> LoginAndReadTokenAsync(HttpClient client)
     {
+        (string accessToken, _) = await LoginAndReadTokensAsync(client);
+        return accessToken;
+    }
+
+    /// <summary>
+    /// Inicia sesión y devuelve ambos tokens de la respuesta.
+    /// </summary>
+    /// <param name="client">Cliente HTTP que representa un equipo.</param>
+    /// <returns>JWT de acceso y refresh token opaco.</returns>
+    private static async Task<(string AccessToken, string RefreshToken)> LoginAndReadTokensAsync(HttpClient client)
+    {
         HttpResponseMessage response = await client.PostAsJsonAsync(
             "/api/auth/login",
             new { Email = "admin@example.com", Password = "AdminPassword123!" });
         response.EnsureSuccessStatusCode();
         using JsonDocument document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
-        return document.RootElement.GetProperty("accessToken").GetString()!;
+        return (
+            document.RootElement.GetProperty("accessToken").GetString()!,
+            document.RootElement.GetProperty("refreshToken").GetString()!);
     }
 
     /// <summary>
@@ -193,6 +310,19 @@ public sealed class AuthIntegrationTests : IAsyncLifetime
         {
             Content = JsonContent.Create(new { Email = $"probe-{Guid.NewGuid():N}@example.com" })
         };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        return await client.SendAsync(request);
+    }
+
+    /// <summary>
+    /// Envía una solicitud de logout autenticada.
+    /// </summary>
+    /// <param name="client">Cliente HTTP que representa un equipo.</param>
+    /// <param name="token">JWT Bearer actual.</param>
+    /// <returns>Respuesta HTTP del logout.</returns>
+    private static async Task<HttpResponseMessage> SendLogoutAsync(HttpClient client, string token)
+    {
+        using HttpRequestMessage request = new(HttpMethod.Post, "/api/auth/logout");
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
         return await client.SendAsync(request);
     }

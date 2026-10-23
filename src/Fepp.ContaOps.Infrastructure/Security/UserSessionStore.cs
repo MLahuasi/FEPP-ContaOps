@@ -13,6 +13,11 @@ namespace Fepp.ContaOps.Infrastructure.Security;
 public sealed class UserSessionStore : IUserSessionStore
 {
     /// <summary>
+    /// Motivo seguro de revocación aplicado por el endpoint de logout.
+    /// </summary>
+    private const string LogoutRevocationReason = "Logout";
+
+    /// <summary>
     /// Motivo seguro aplicado a la sesión anterior cuando se reemplaza.
     /// </summary>
     private const string ReplacedSessionReason = "ReplacedByNewSession";
@@ -158,7 +163,7 @@ public sealed class UserSessionStore : IUserSessionStore
             expiresAtUtc,
             expiresAtUtc,
             cancellationToken);
-        return new UserSessionResult(result.SessionId);
+        return new UserSessionResult(result.SessionId, result.RefreshToken);
     }
 
     /// <summary>
@@ -184,10 +189,19 @@ public sealed class UserSessionStore : IUserSessionStore
         {
             UserSession? session = await _dbContext.UserSessions
                 .SingleOrDefaultAsync(item => item.SessionId == sessionId, cancellationToken);
-            UserRefreshToken? persistedToken = await _dbContext.UserRefreshTokens
-                .SingleOrDefaultAsync(item => item.SessionId == sessionId, cancellationToken);
+            UserRefreshToken? persistedToken = await FindRefreshTokenAsync(
+                sessionId,
+                refreshToken,
+                cancellationToken);
+            ApplicationIdentityUser? user = session is null
+                ? null
+                : await _dbContext.Users
+                    .SingleOrDefaultAsync(item => item.Id == session.UserId, cancellationToken);
 
             if (session is null || persistedToken is null
+                || user is null
+                || user.Status != UserStatus.Active
+                || session.SecurityStamp != user.SecurityStamp
                 || !_cryptography.Matches(refreshToken, persistedToken.TokenHash))
             {
                 await transaction.CommitAsync(cancellationToken);
@@ -221,6 +235,155 @@ public sealed class UserSessionStore : IUserSessionStore
             await transaction.RollbackAsync(cancellationToken);
             throw;
         }
+    }
+
+    /// <summary>
+    /// Consume el refresh token presentado y crea su reemplazo en una única transacción.
+    /// </summary>
+    /// <param name="sessionId">Identificador de la sesión del token.</param>
+    /// <param name="refreshToken">Valor plano presentado por el cliente.</param>
+    /// <param name="nowUtc">Instante UTC usado para evaluar la vigencia.</param>
+    /// <param name="cancellationToken">Token de cancelación de la operación.</param>
+    /// <returns>Estado de la operación y nuevo token cuando corresponde.</returns>
+    public async Task<RefreshTokenRotationResult> RotateRefreshTokenAsync(
+        Guid sessionId,
+        string refreshToken,
+        DateTimeOffset nowUtc,
+        CancellationToken cancellationToken = default)
+    {
+        ValidateRequiredValue(refreshToken, nameof(refreshToken));
+
+        await using Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction transaction =
+            await _dbContext.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
+
+        try
+        {
+            UserSession? session = await _dbContext.UserSessions
+                .SingleOrDefaultAsync(item => item.SessionId == sessionId, cancellationToken);
+            UserRefreshToken? persistedToken = await FindRefreshTokenAsync(
+                sessionId,
+                refreshToken,
+                cancellationToken);
+            ApplicationIdentityUser? user = session is null
+                ? null
+                : await _dbContext.Users
+                    .SingleOrDefaultAsync(item => item.Id == session.UserId, cancellationToken);
+
+            if (session is null || persistedToken is null
+                || user is null
+                || user.Status != UserStatus.Active
+                || session.SecurityStamp != user.SecurityStamp)
+            {
+                await transaction.CommitAsync(cancellationToken);
+                return new RefreshTokenRotationResult(RefreshTokenConsumptionStatus.Invalid, null);
+            }
+
+            if (persistedToken.ConsumedAtUtc is not null || persistedToken.RevokedAtUtc is not null)
+            {
+                await RevokeSessionStateAsync(session, nowUtc, "RefreshTokenReuseDetected", cancellationToken);
+                await transaction.CommitAsync(cancellationToken);
+                return new RefreshTokenRotationResult(RefreshTokenConsumptionStatus.Reused, null);
+            }
+
+            if (session.Status != UserSessionStatus.Active
+                || session.ExpiresAtUtc <= nowUtc
+                || persistedToken.ExpiresAtUtc <= nowUtc)
+            {
+                MarkSessionExpired(session, nowUtc);
+                await _dbContext.SaveChangesAsync(cancellationToken);
+                await transaction.CommitAsync(cancellationToken);
+                return new RefreshTokenRotationResult(RefreshTokenConsumptionStatus.Expired, null);
+            }
+
+            string replacement = _tokenGenerator.Generate();
+            persistedToken.ConsumedAtUtc = nowUtc;
+            _dbContext.UserRefreshTokens.Add(new UserRefreshToken
+            {
+                TokenId = Guid.NewGuid(),
+                SessionId = sessionId,
+                TokenHash = _cryptography.Hash(replacement),
+                CreatedAtUtc = nowUtc,
+                ExpiresAtUtc = session.ExpiresAtUtc
+            });
+            await _dbContext.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return new RefreshTokenRotationResult(RefreshTokenConsumptionStatus.Consumed, replacement);
+        }
+        catch
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Resuelve la sesión por el hash del token y delega la rotación atómica.
+    /// </summary>
+    /// <param name="refreshToken">Valor plano presentado por el cliente.</param>
+    /// <param name="nowUtc">Instante UTC usado para evaluar la vigencia.</param>
+    /// <param name="cancellationToken">Token de cancelación.</param>
+    /// <returns>Resultado de Application sin hashes ni entidades persistentes.</returns>
+    async Task<Fepp.ContaOps.Application.Abstractions.RefreshTokenRotationResult>
+        IUserSessionStore.RotateRefreshTokenAsync(
+            string refreshToken,
+            DateTimeOffset nowUtc,
+            CancellationToken cancellationToken)
+    {
+        ValidateRequiredValue(refreshToken, nameof(refreshToken));
+        UserRefreshToken? persistedToken = await FindRefreshTokenByValueAsync(refreshToken, cancellationToken);
+        if (persistedToken is null)
+        {
+            return new(
+                Fepp.ContaOps.Application.Abstractions.RefreshTokenRotationStatus.Invalid,
+                null,
+                null,
+                null);
+        }
+
+        UserSession? session = await _dbContext.UserSessions
+            .AsNoTracking()
+            .SingleOrDefaultAsync(item => item.SessionId == persistedToken.SessionId, cancellationToken);
+        if (session is null)
+        {
+            return new(
+                Fepp.ContaOps.Application.Abstractions.RefreshTokenRotationStatus.Invalid,
+                null,
+                null,
+                null);
+        }
+
+        RefreshTokenRotationResult rotation = await RotateRefreshTokenAsync(
+            session.SessionId,
+            refreshToken,
+            nowUtc,
+            cancellationToken);
+        Fepp.ContaOps.Application.Abstractions.RefreshTokenRotationStatus status = rotation.Status switch
+        {
+            RefreshTokenConsumptionStatus.Consumed => Fepp.ContaOps.Application.Abstractions.RefreshTokenRotationStatus.Rotated,
+            RefreshTokenConsumptionStatus.Reused => Fepp.ContaOps.Application.Abstractions.RefreshTokenRotationStatus.Reused,
+            RefreshTokenConsumptionStatus.Expired => Fepp.ContaOps.Application.Abstractions.RefreshTokenRotationStatus.Expired,
+            _ => Fepp.ContaOps.Application.Abstractions.RefreshTokenRotationStatus.Invalid
+        };
+        return new(status, session.UserId, session.SessionId, rotation.RefreshToken);
+    }
+
+    /// <summary>
+    /// Adapta la revocación del puerto de Application al almacén persistente.
+    /// </summary>
+    /// <param name="sessionId">Identificador de la sesión.</param>
+    /// <param name="revokedAtUtc">Instante UTC de revocación.</param>
+    /// <param name="cancellationToken">Token de cancelación.</param>
+    /// <returns>Una tarea que representa la revocación.</returns>
+    Task IUserSessionStore.RevokeSessionAsync(
+        Guid sessionId,
+        DateTimeOffset revokedAtUtc,
+        CancellationToken cancellationToken)
+    {
+        return RevokeSessionAsync(
+            sessionId,
+            LogoutRevocationReason,
+            revokedAtUtc,
+            cancellationToken);
     }
 
     /// <summary>
@@ -338,6 +501,41 @@ public sealed class UserSessionStore : IUserSessionStore
     private static void ValidateRequiredValue(string value, string parameterName)
     {
         ArgumentException.ThrowIfNullOrEmpty(value, parameterName);
+    }
+
+    /// <summary>
+    /// Busca el refresh token por sesión y compara su hash sin conservar el valor plano.
+    /// </summary>
+    /// <param name="sessionId">Identificador de la sesión propietaria.</param>
+    /// <param name="refreshToken">Valor plano presentado.</param>
+    /// <param name="cancellationToken">Token de cancelación de la consulta.</param>
+    /// <returns>Token persistido coincidente o <see langword="null"/>.</returns>
+    private async Task<UserRefreshToken?> FindRefreshTokenAsync(
+        Guid sessionId,
+        string refreshToken,
+        CancellationToken cancellationToken)
+    {
+        List<UserRefreshToken> persistedTokens = await _dbContext.UserRefreshTokens
+            .Where(item => item.SessionId == sessionId)
+            .ToListAsync(cancellationToken);
+        return persistedTokens.SingleOrDefault(item =>
+            _cryptography.Matches(refreshToken, item.TokenHash));
+    }
+
+    /// <summary>
+    /// Busca un refresh token por su hash entre todas las sesiones.
+    /// </summary>
+    /// <param name="refreshToken">Valor plano presentado.</param>
+    /// <param name="cancellationToken">Token de cancelación.</param>
+    /// <returns>Token persistido coincidente o <see langword="null"/>.</returns>
+    private async Task<UserRefreshToken?> FindRefreshTokenByValueAsync(
+        string refreshToken,
+        CancellationToken cancellationToken)
+    {
+        List<UserRefreshToken> persistedTokens = await _dbContext.UserRefreshTokens
+            .ToListAsync(cancellationToken);
+        return persistedTokens.SingleOrDefault(item =>
+            _cryptography.Matches(refreshToken, item.TokenHash));
     }
 
     /// <summary>

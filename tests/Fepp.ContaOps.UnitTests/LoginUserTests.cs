@@ -100,6 +100,11 @@ public sealed class LoginUserTests
         {
             return Task.FromResult(_user);
         }
+
+        public Task<User?> FindByIdAsync(string userId, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(_user);
+        }
     }
 
     private sealed class FakeCredentialService : IUserCredentialService
@@ -128,19 +133,39 @@ public sealed class LoginUserTests
             string jti,
             CancellationToken cancellationToken = default)
         {
-            return Task.FromResult(new TokenResult("token", 900));
+            return Task.FromResult(new TokenResult("token", 900, "refresh-token"));
         }
     }
 
     private sealed class FakeUserSessionStore : IUserSessionStore
     {
+        public Task RevokeSessionAsync(
+            Guid sessionId,
+            DateTimeOffset revokedAtUtc,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task<RefreshTokenRotationResult> RotateRefreshTokenAsync(
+            string refreshToken,
+            DateTimeOffset nowUtc,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(new RefreshTokenRotationResult(
+                RefreshTokenRotationStatus.Invalid,
+                null,
+                null,
+                null));
+        }
+
         public Task<UserSessionResult> ReplaceActiveSessionAsync(
             User user,
             DateTimeOffset createdAtUtc,
             DateTimeOffset expiresAtUtc,
             CancellationToken cancellationToken = default)
         {
-            return Task.FromResult(new UserSessionResult(Guid.NewGuid()));
+            return Task.FromResult(new UserSessionResult(Guid.NewGuid(), "refresh-token"));
         }
     }
 }
